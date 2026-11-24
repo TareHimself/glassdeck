@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235,
     D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
     D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
     ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoDevice, ID3D11VideoProcessor,
@@ -26,7 +27,7 @@ use windows::Win32::Media::MediaFoundation::{
     METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_TYPE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
-    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
     MFCreateAttributes, MFCreateDXGIDeviceManager, MFCreateDXGISurfaceBuffer, MFCreateMediaType,
     MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_FULL,
     MFSampleExtension_CleanPoint, MFStartup, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_ADAPTER_LUID,
@@ -34,7 +35,7 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
     MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264, MFVideoFormat_NV12,
-    MFVideoInterlace_Progressive, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High,
+    MFNominalRange_16_235, MFVideoInterlace_Progressive, MFVideoTransferMatrix_BT709, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE};
@@ -45,6 +46,11 @@ use crate::stream::{EncodedFrame, EncoderSettings};
 
 const QUEUED_FRAMES: usize = 2;
 const HUNDRED_NS_PER_US: u64 = 10;
+/// D3D11_VIDEO_PROCESSOR_COLOR_SPACE bits: 1 = RGB_Range (limited), 2 = YCbCr_Matrix (BT.709), 4-5 = Nominal_Range.
+const FULL_RANGE_RGB: D3D11_VIDEO_PROCESSOR_COLOR_SPACE = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 };
+const BT709_LIMITED_YUV: D3D11_VIDEO_PROCESSOR_COLOR_SPACE = D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
+    _bitfield: 1 << 2 | (D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235.0 as u32) << 4,
+};
 const H264_PROFILE: u32 = eAVEncH264VProfile_High.0 as u32;
 
 struct GpuFrame {
@@ -132,6 +138,8 @@ impl Nv12Converter {
         let (enumerator, processor) = unsafe {
             let enumerator = video_device.CreateVideoProcessorEnumerator(&desc)?;
             let processor = video_device.CreateVideoProcessor(&enumerator, 0)?;
+            video_context.VideoProcessorSetStreamColorSpace(&processor, 0, &FULL_RANGE_RGB);
+            video_context.VideoProcessorSetOutputColorSpace(&processor, &BT709_LIMITED_YUV);
             (enumerator, processor)
         };
         Ok(Self {
@@ -477,6 +485,8 @@ unsafe fn output_type(config: EncoderSettings) -> Result<IMFMediaType> {
         t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))?;
         t.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         t.SetUINT32(&MF_MT_MPEG2_PROFILE, H264_PROFILE)?;
+        t.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
+        t.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;
         Ok(t)
     }
 }
@@ -497,6 +507,111 @@ unsafe fn input_type(config: EncoderSettings) -> Result<IMFMediaType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+        D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_STAGING, D3D11CreateDevice,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+
+    const SIZE: u32 = 16;
+
+    fn device() -> (ID3D11Device, ID3D11DeviceContext) {
+        let (mut device, mut context) = (None, None);
+        unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .unwrap();
+        }
+        (device.unwrap(), context.unwrap())
+    }
+
+    fn solid_bgra(device: &ID3D11Device, bgra: [u8; 4]) -> ID3D11Texture2D {
+        let pixels: Vec<u8> = bgra.iter().copied().cycle().take((SIZE * SIZE * 4) as usize).collect();
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: SIZE,
+            Height: SIZE,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let data = D3D11_SUBRESOURCE_DATA { pSysMem: pixels.as_ptr().cast(), SysMemPitch: SIZE * 4, SysMemSlicePitch: 0 };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)).unwrap() };
+        texture.unwrap()
+    }
+
+    fn read_yuv(device: &ID3D11Device, context: &ID3D11DeviceContext, nv12: &ID3D11Texture2D) -> (u8, u8, u8) {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { nv12.GetDesc(&mut desc) };
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        let mut staging = None;
+        unsafe {
+            device.CreateTexture2D(&desc, None, Some(&mut staging)).unwrap();
+            let staging = staging.unwrap();
+            context.CopyResource(&staging, nv12);
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).unwrap();
+            let base = mapped.pData as *const u8;
+            let pitch = mapped.RowPitch as usize;
+            let y = *base.add(pitch * 8 + 8);
+            let chroma = base.add(pitch * SIZE as usize + pitch * 4 + 8);
+            let yuv = (y, *chroma, *chroma.add(1));
+            context.Unmap(&staging, 0);
+            yuv
+        }
+    }
+
+    fn assert_close(got: (u8, u8, u8), expected: (u8, u8, u8), what: &str) {
+        let near = |a: u8, b: u8| (a as i32 - b as i32).abs() <= 2;
+        assert!(
+            near(got.0, expected.0) && near(got.1, expected.1) && near(got.2, expected.2),
+            "{what}: got YUV {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a GPU; run with cargo test -- --ignored"]
+    fn converter_produces_bt709_limited_range() {
+        let (device, context) = device();
+        let settings = EncoderSettings {
+            width: SIZE,
+            height: SIZE,
+            fps: 60,
+            bitrate: 1_000_000,
+            keyframe_every: 60,
+            vbv_frames: None,
+        };
+        let converter = Nv12Converter::new(&device, &context, settings).unwrap();
+        let cases = [
+            ([0, 0, 0, 255], (16, 128, 128), "black"),
+            ([255, 255, 255, 255], (235, 128, 128), "white"),
+            ([0, 0, 255, 255], (63, 102, 240), "red"),
+            ([0, 255, 0, 255], (173, 42, 26), "green"),
+            ([255, 0, 0, 255], (32, 240, 118), "blue"),
+        ];
+        for (bgra, expected, what) in cases {
+            let nv12 = converter.convert(&solid_bgra(&device, bgra)).unwrap();
+            assert_close(read_yuv(&device, &context, &nv12), expected, what);
+        }
+    }
 
     #[test]
     fn packs_size_as_high_and_low_words() {
