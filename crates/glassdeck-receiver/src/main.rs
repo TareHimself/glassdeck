@@ -1,7 +1,9 @@
+mod decode;
 mod overlay;
+mod playout;
 mod stats;
+mod yuv;
 
-use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,13 +12,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use glassdeck_proto::{FrameHeader, HEADER_LEN, unix_micros};
 use fontdue::{Font, FontSettings};
+use glassdeck_proto::{Action, Message, Mode, SessionState, StreamInfo, step, unix_micros};
 use minifb::{Key, Window, WindowOptions};
-use openh264::decoder::Decoder;
-use openh264::formats::YUVSource;
 
+use decode::{Decoder, Picture};
 use overlay::Overlay;
+use playout::PlayoutClock;
 use stats::{FrameTimes, LatencyStats};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -24,7 +26,7 @@ const IDLE_POLL: Duration = Duration::from_millis(1);
 const UNTHROTTLED: usize = 0;
 
 #[derive(Parser)]
-#[command(about = "Stand-in for the keyboard: decode the stream and show it with key labels")]
+#[command(about = "Stand-in for the keyboard: decode streams and show them with key labels")]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1:7878")]
     listen: SocketAddr,
@@ -35,74 +37,48 @@ struct Cli {
     no_labels: bool,
 }
 
-struct DecodedFrame {
-    pixels: Vec<u32>,
-    width: usize,
-    height: usize,
-    capture_us: u64,
-    received_us: u64,
-    decoded_us: u64,
+enum Timing {
+    Live { capture_us: u64, received_us: u64, decoded_us: u64 },
+    Paced { late_us: u64 },
 }
 
-enum StreamState {
-    Running,
-    Ended(Result<()>),
+struct ShownFrame {
+    picture: Picture,
+    timing: Timing,
 }
 
-/// Holds only the newest decoded frame, so a slow display skips frames instead of falling behind.
+/// Holds only the newest frame, so a slow display skips frames instead of falling behind.
 struct Mailbox {
-    slot: Mutex<Slot>,
-}
-
-struct Slot {
-    frame: Option<DecodedFrame>,
-    replaced: u32,
-    state: StreamState,
+    slot: Mutex<(Option<ShownFrame>, u32)>,
 }
 
 impl Mailbox {
     fn new() -> Self {
-        Self { slot: Mutex::new(Slot { frame: None, replaced: 0, state: StreamState::Running }) }
+        Self { slot: Mutex::new((None, 0)) }
     }
 
-    fn put(&self, frame: DecodedFrame) {
+    fn put(&self, frame: ShownFrame) {
         let mut slot = self.slot.lock().expect("mailbox poisoned");
-        if slot.frame.replace(frame).is_some() {
-            slot.replaced += 1;
+        if slot.0.replace(frame).is_some() {
+            slot.1 += 1;
         }
     }
 
-    fn end(&self, result: Result<()>) {
-        self.slot.lock().expect("mailbox poisoned").state = StreamState::Ended(result);
-    }
-
-    fn take(&self) -> (Option<DecodedFrame>, u32, Option<Result<()>>) {
+    fn take(&self) -> (Option<ShownFrame>, u32) {
         let mut slot = self.slot.lock().expect("mailbox poisoned");
-        let ended = match std::mem::replace(&mut slot.state, StreamState::Running) {
-            StreamState::Running => None,
-            StreamState::Ended(result) => Some(result),
-        };
-        (slot.frame.take(), std::mem::take(&mut slot.replaced), ended)
+        (slot.0.take(), std::mem::take(&mut slot.1))
     }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let font = if cli.no_labels { None } else { Some(load_font(&cli.font)?) };
-
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
-    println!("Waiting for a stream on {}", cli.listen);
-    let (socket, peer) = listener.accept()?;
-    socket.set_nodelay(true)?;
-    println!("Streaming from {peer}");
+    println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
     let producer = Arc::clone(&mailbox);
-    thread::spawn(move || {
-        let result = receive_loop(socket, &producer);
-        producer.end(result);
-    });
-
+    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer))?;
     display_loop(&mailbox, font.as_ref())
 }
 
@@ -111,41 +87,83 @@ fn load_font(path: &PathBuf) -> Result<Font> {
     Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing font: {e}"))
 }
 
-fn receive_loop(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
-    let mut decoder = Decoder::new()?;
-    let mut header = [0u8; HEADER_LEN];
-    let mut payload = Vec::new();
-    let mut rgba = Vec::new();
-
-    loop {
-        match socket.read_exact(&mut header) {
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-            other => other.context("reading frame header")?,
+/// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
+fn accept_loop(listener: TcpListener, mailbox: &Mailbox) {
+    if let Err(e) = decode::init_media_foundation() {
+        eprintln!("error: starting Media Foundation: {e:#}");
+        std::process::exit(1);
+    }
+    for connection in listener.incoming() {
+        let result = connection
+            .context("accepting connection")
+            .and_then(|socket| serve(socket, mailbox));
+        match result {
+            Ok(()) => println!("Sender disconnected"),
+            Err(e) => eprintln!("error: {e:#}"),
         }
-        let frame = FrameHeader::decode(&header)?;
-        payload.resize(frame.payload_len as usize, 0);
-        socket.read_exact(&mut payload).context("reading frame payload")?;
+    }
+}
+
+struct Playback {
+    info: StreamInfo,
+    decoder: Decoder,
+    clock: Option<PlayoutClock>,
+}
+
+fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
+    socket.set_nodelay(true)?;
+    println!("Sender connected from {}", socket.peer_addr()?);
+    let mut state = SessionState::Idle;
+    let mut playback: Option<Playback> = None;
+
+    while let Some(message) = Message::read_from(&mut socket)? {
         let received_us = unix_micros();
+        let (next, action) = step(state, &message)?;
+        state = next;
+        match action {
+            Action::Begin(info) => {
+                let decoder = Decoder::new(info.codec, info.width as usize, info.height as usize)?;
+                println!(
+                    "Stream {}: {:?} {}x{} {:?} via {}",
+                    info.stream_id, info.codec, info.width, info.height, info.mode, decoder.name
+                );
+                playback = Some(Playback { info, decoder, clock: None });
+            }
+            Action::Decode(frame) => {
+                let playback = playback.as_mut().expect("session is streaming");
+                for picture in playback.decoder.decode(&frame.payload, frame.time_us)? {
+                    let timing = match playback.info.mode {
+                        Mode::Live => Timing::Live {
+                            capture_us: picture.time_us,
+                            received_us,
+                            decoded_us: unix_micros(),
+                        },
+                        Mode::Paced => {
+                            let clock = *playback.clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros()));
+                            Timing::Paced { late_us: wait_until(clock.due_us(picture.time_us)) }
+                        }
+                    };
+                    mailbox.put(ShownFrame { picture, timing });
+                }
+            }
+            Action::End => {
+                println!("Stream ended");
+                playback = None;
+            }
+        }
+    }
+    Ok(())
+}
 
-        let Some(yuv) = decoder.decode(&payload).context("decoding frame")? else {
-            continue;
-        };
-        let (width, height) = yuv.dimensions();
-        rgba.resize(width * height * 4, 0);
-        yuv.write_rgba8(&mut rgba);
-        let pixels = rgba
-            .chunks_exact(4)
-            .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))
-            .collect();
-
-        mailbox.put(DecodedFrame {
-            pixels,
-            width,
-            height,
-            capture_us: frame.capture_us,
-            received_us,
-            decoded_us: unix_micros(),
-        });
+/// Sleeps until `due_us`; returns how late we already were if it had passed.
+fn wait_until(due_us: u64) -> u64 {
+    let now = unix_micros();
+    match due_us.checked_sub(now) {
+        Some(ahead) => {
+            thread::sleep(Duration::from_micros(ahead));
+            0
+        }
+        None => now - due_us,
     }
 }
 
@@ -156,32 +174,31 @@ fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
     let mut stats_since = Instant::now();
 
     loop {
-        let (frame, replaced, ended) = mailbox.take();
-        if let Some(result) = ended {
-            println!("Stream ended");
-            return result;
-        }
+        let (frame, replaced) = mailbox.take();
         stats = stats.replaced(replaced);
 
         match frame {
-            Some(mut frame) => {
+            Some(ShownFrame { mut picture, timing }) => {
                 if let Some(font) = font {
-                    if !overlay.as_ref().is_some_and(|o| o.fits(frame.width, frame.height)) {
-                        overlay = Some(Overlay::build(font, frame.width, frame.height));
+                    if !overlay.as_ref().is_some_and(|o| o.fits(picture.width, picture.height)) {
+                        overlay = Some(Overlay::build(font, picture.width, picture.height));
                     }
-                    overlay.as_ref().expect("overlay built").composite_onto(&mut frame.pixels);
+                    overlay.as_ref().expect("overlay built").composite_onto(&mut picture.pixels);
                 }
                 let win = match window.as_mut() {
                     Some(win) => win,
-                    None => window.insert(open_window(frame.width, frame.height)?),
+                    None => window.insert(open_window(picture.width, picture.height)?),
                 };
-                win.update_with_buffer(&frame.pixels, frame.width, frame.height)?;
-                stats = stats.record(FrameTimes {
-                    capture_us: frame.capture_us,
-                    received_us: frame.received_us,
-                    decoded_us: frame.decoded_us,
-                    displayed_us: unix_micros(),
-                });
+                win.update_with_buffer(&picture.pixels, picture.width, picture.height)?;
+                stats = match timing {
+                    Timing::Live { capture_us, received_us, decoded_us } => stats.record(FrameTimes {
+                        capture_us,
+                        received_us,
+                        decoded_us,
+                        displayed_us: unix_micros(),
+                    }),
+                    Timing::Paced { late_us } => stats.record_paced(late_us),
+                };
             }
             None => {
                 if let Some(win) = window.as_mut() {
@@ -196,9 +213,10 @@ fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
                 return Ok(());
             }
             if stats_since.elapsed() >= STATS_INTERVAL {
-                let summary = stats.summary(stats_since.elapsed().as_secs_f64());
-                println!("recv: {summary}");
-                win.set_title(&format!("glassdeck-receiver | {summary}"));
+                if let Some(summary) = stats.summary(stats_since.elapsed().as_secs_f64()) {
+                    println!("recv: {summary}");
+                    win.set_title(&format!("glassdeck-receiver | {summary}"));
+                }
                 stats = LatencyStats::default();
                 stats_since = Instant::now();
             }

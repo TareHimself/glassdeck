@@ -4,6 +4,7 @@ mod monitors;
 mod record;
 mod software;
 mod stream;
+mod transport;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

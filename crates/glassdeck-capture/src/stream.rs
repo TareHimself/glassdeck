@@ -1,15 +1,14 @@
 use std::fmt;
-use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::ValueEnum;
-use glassdeck_proto::{FrameHeader, HEADER_LEN, unix_micros};
+use glassdeck_proto::{Codec, Frame, Message, Mode, StreamInfo, unix_micros};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
-use windows_capture::frame::Frame;
+use windows_capture::frame::Frame as CapturedFrame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -17,7 +16,7 @@ use windows_capture::settings::{
 };
 
 use crate::gpu::GpuEncoder;
-use crate::link::SimulatedLink;
+use crate::transport::{Transport, new_stream_id};
 use crate::monitors::FoundMonitor;
 use crate::software::SoftwareEncoder;
 
@@ -110,7 +109,7 @@ impl GraphicsCaptureApiHandler for Streamer {
 
     fn on_frame_arrived(
         &mut self,
-        frame: &mut Frame,
+        frame: &mut CapturedFrame,
         control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         if (frame.width(), frame.height()) != self.size {
@@ -129,13 +128,17 @@ impl GraphicsCaptureApiHandler for Streamer {
 }
 
 pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
-    let socket = TcpStream::connect(options.to)
-        .with_context(|| format!("connecting to receiver at {}", options.to))?;
-    socket.set_nodelay(true)?;
+    let transport = Transport::connect(options.to, options.link_bytes_per_sec)?;
+    let info = StreamInfo {
+        stream_id: new_stream_id(),
+        codec: Codec::H264,
+        mode: Mode::Live,
+        width: u16::try_from(found.info.width).context("monitor too wide")?,
+        height: u16::try_from(found.info.height).context("monitor too tall")?,
+    };
 
     let (tx, rx) = mpsc::sync_channel(QUEUED_FRAMES);
-    let link = options.link_bytes_per_sec;
-    let network = thread::spawn(move || send_loop(socket, rx, link));
+    let network = thread::spawn(move || send_loop(transport, info, rx));
 
     let flags = Flags {
         tx,
@@ -167,39 +170,36 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
     capture.map_err(|e| anyhow!("capture failed: {e}"))
 }
 
-fn send_loop(mut socket: TcpStream, rx: Receiver<EncodedFrame>, link_rate: Option<u64>) -> Result<()> {
-    let mut link = link_rate.map(|rate| SimulatedLink::new(rate, Instant::now()));
+fn send_loop(mut transport: Transport, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
+    transport.send(&Message::StreamStart(info))?;
     let mut stats = SendStats::new(Instant::now());
 
     for frame in rx {
-        let link_wait = match link {
-            Some(current) => {
-                let (next, done) = current.transfer(HEADER_LEN + frame.data.len(), Instant::now());
-                link = Some(next);
-                let wait = done.saturating_duration_since(Instant::now());
-                thread::sleep(wait);
-                wait
-            }
-            None => Duration::ZERO,
-        };
-
-        let header = FrameHeader {
+        let sent = SentFrame { bytes: frame.data.len(), keyframe: frame.keyframe, encode_time: frame.encode_time };
+        let link_wait = transport.send(&Message::Frame(Frame {
+            stream_id: info.stream_id,
             seq: frame.seq,
-            capture_us: frame.capture_us,
+            time_us: frame.capture_us,
             keyframe: frame.keyframe,
-            payload_len: frame.data.len() as u32,
-        };
-        socket.write_all(&header.encode())?;
-        socket.write_all(&frame.data)?;
+            payload: frame.data,
+        }))?;
 
-        stats = stats.record(&frame, link_wait);
+        stats = stats.record(sent, link_wait);
         let now = Instant::now();
         if now - stats.since >= STATS_INTERVAL {
             println!("{stats}");
             stats = SendStats::new(now);
         }
     }
+    transport.send(&Message::StreamEnd { stream_id: info.stream_id })?;
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SentFrame {
+    bytes: usize,
+    keyframe: bool,
+    encode_time: Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -226,13 +226,13 @@ impl SendStats {
         }
     }
 
-    fn record(self, frame: &EncodedFrame, link_wait: Duration) -> Self {
+    fn record(self, sent: SentFrame, link_wait: Duration) -> Self {
         Self {
             frames: self.frames + 1,
-            keyframes: self.keyframes + frame.keyframe as u32,
-            bytes: self.bytes + frame.data.len() as u64,
-            largest_frame: self.largest_frame.max(frame.data.len()),
-            encode_total: self.encode_total + frame.encode_time,
+            keyframes: self.keyframes + sent.keyframe as u32,
+            bytes: self.bytes + sent.bytes as u64,
+            largest_frame: self.largest_frame.max(sent.bytes),
+            encode_total: self.encode_total + sent.encode_time,
             link_total: self.link_total + link_wait,
             ..self
         }

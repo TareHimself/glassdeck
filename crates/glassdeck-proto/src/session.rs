@@ -1,0 +1,115 @@
+use std::fmt;
+
+use crate::{Frame, Message, StreamInfo};
+
+/// Where a receiver is in a connection's sequence of streams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    Idle,
+    Streaming(StreamInfo),
+}
+
+/// What the receiver must do in response to a message.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Action<'a> {
+    /// Reset the decoder for a new stream (first stream, or a source switch).
+    Begin(StreamInfo),
+    Decode(&'a Frame),
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionError {
+    FrameWithoutStream,
+    EndWithoutStream,
+    WrongStream { current: u32, got: u32 },
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FrameWithoutStream => write!(f, "frame received before StreamStart"),
+            Self::EndWithoutStream => write!(f, "StreamEnd received with no stream open"),
+            Self::WrongStream { current, got } => write!(f, "message for stream {got} while stream {current} is open"),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+/// Every move between session states goes through here; the test walks the full table.
+pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionState, Action<'a>), SessionError> {
+    match (state, message) {
+        (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
+        (SessionState::Idle, Message::Frame(_)) => Err(SessionError::FrameWithoutStream),
+        (SessionState::Idle, Message::StreamEnd { .. }) => Err(SessionError::EndWithoutStream),
+        (SessionState::Streaming(info), Message::Frame(frame)) => {
+            check_stream(info, frame.stream_id)?;
+            Ok((state, Action::Decode(frame)))
+        }
+        (SessionState::Streaming(info), Message::StreamEnd { stream_id }) => {
+            check_stream(info, *stream_id)?;
+            Ok((SessionState::Idle, Action::End))
+        }
+    }
+}
+
+fn check_stream(info: StreamInfo, got: u32) -> Result<(), SessionError> {
+    match info.stream_id == got {
+        true => Ok(()),
+        false => Err(SessionError::WrongStream { current: info.stream_id, got }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Codec, Mode};
+
+    fn info(stream_id: u32) -> StreamInfo {
+        StreamInfo { stream_id, codec: Codec::H264, mode: Mode::Live, width: 2, height: 2 }
+    }
+
+    fn frame(stream_id: u32) -> Message {
+        Message::Frame(Frame { stream_id, seq: 0, time_us: 0, keyframe: false, payload: vec![] })
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Expect {
+        Moves(SessionState, &'static str),
+        Refused(SessionError),
+    }
+
+    fn outcome(state: SessionState, message: &Message) -> Expect {
+        match step(state, message) {
+            Ok((next, Action::Begin(_))) => Expect::Moves(next, "begin"),
+            Ok((next, Action::Decode(_))) => Expect::Moves(next, "decode"),
+            Ok((next, Action::End)) => Expect::Moves(next, "end"),
+            Err(e) => Expect::Refused(e),
+        }
+    }
+
+    #[test]
+    fn walks_the_whole_transition_table() {
+        use SessionState::{Idle, Streaming};
+        let a = info(1);
+        let b = info(2);
+        let table = [
+            (Idle, Message::StreamStart(b), Expect::Moves(Streaming(b), "begin")),
+            (Idle, frame(1), Expect::Refused(SessionError::FrameWithoutStream)),
+            (Idle, Message::StreamEnd { stream_id: 1 }, Expect::Refused(SessionError::EndWithoutStream)),
+            (Streaming(a), Message::StreamStart(b), Expect::Moves(Streaming(b), "begin")),
+            (Streaming(a), frame(1), Expect::Moves(Streaming(a), "decode")),
+            (Streaming(a), frame(2), Expect::Refused(SessionError::WrongStream { current: 1, got: 2 })),
+            (Streaming(a), Message::StreamEnd { stream_id: 1 }, Expect::Moves(Idle, "end")),
+            (
+                Streaming(a),
+                Message::StreamEnd { stream_id: 2 },
+                Expect::Refused(SessionError::WrongStream { current: 1, got: 2 }),
+            ),
+        ];
+        for (from, message, expected) in table {
+            assert_eq!(outcome(from, &message), expected, "from {from:?} on {message:?}");
+        }
+    }
+}

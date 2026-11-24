@@ -385,7 +385,7 @@ dependencies = [
  "fontdue",
  "glassdeck-proto",
  "minifb",
- "openh264",
+ "windows",
 ]
 
 [[package]]

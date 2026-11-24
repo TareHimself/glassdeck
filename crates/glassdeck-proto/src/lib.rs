@@ -1,69 +1,224 @@
-//! Each frame on the wire is a fixed header followed by one H.264 access unit.
+//! Glassdeck wire protocol: an 8-byte header per message; a later `StreamStart` switches source.
+
+mod session;
 
 use std::fmt;
+use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const VERSION: u8 = 1;
-pub const HEADER_LEN: usize = 20;
-pub const MAX_PAYLOAD_LEN: u32 = 8 * 1024 * 1024;
+pub use session::{Action, SessionError, SessionState, step};
 
+pub const VERSION: u8 = 2;
+pub const HEADER_LEN: usize = 8;
+pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
+
+const KIND_STREAM_START: u8 = 1;
+const KIND_FRAME: u8 = 2;
+const KIND_STREAM_END: u8 = 3;
+const STREAM_START_LEN: usize = 12;
+const FRAME_FIXED_LEN: usize = 20;
+const STREAM_END_LEN: usize = 4;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrameHeader {
-    pub seq: u32,
-    pub capture_us: u64,
-    pub keyframe: bool,
-    pub payload_len: u32,
+pub enum Codec {
+    H264,
+    Hevc,
+}
+
+/// How the receiver times frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Show each frame on arrival and drop stale ones. `time_us` is the sender's wall-clock capture time.
+    Live,
+    /// Show each frame at its presentation time. `time_us` is microseconds from the start of the stream.
+    Paced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HeaderError {
-    UnsupportedVersion(u8),
-    PayloadTooLarge(u32),
+pub struct StreamInfo {
+    pub stream_id: u32,
+    pub codec: Codec,
+    pub mode: Mode,
+    pub width: u16,
+    pub height: u16,
 }
 
-impl fmt::Display for HeaderError {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub stream_id: u32,
+    pub seq: u32,
+    pub time_us: u64,
+    pub keyframe: bool,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Message {
+    StreamStart(StreamInfo),
+    Frame(Frame),
+    StreamEnd { stream_id: u32 },
+}
+
+#[derive(Debug)]
+pub enum ProtoError {
+    UnsupportedVersion(u8),
+    UnknownKind(u8),
+    BodyTooLarge(u32),
+    BadBodyLength { kind: u8, len: usize },
+    UnknownCodec(u8),
+    UnknownMode(u8),
+    Io(io::Error),
+}
+
+impl fmt::Display for ProtoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedVersion(v) => write!(f, "unsupported protocol version {v}"),
-            Self::PayloadTooLarge(len) => write!(f, "payload of {len} bytes exceeds {MAX_PAYLOAD_LEN}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported protocol version {v} (expected {VERSION})"),
+            Self::UnknownKind(k) => write!(f, "unknown message kind {k}"),
+            Self::BodyTooLarge(len) => write!(f, "message body of {len} bytes exceeds {MAX_BODY_LEN}"),
+            Self::BadBodyLength { kind, len } => write!(f, "message kind {kind} has invalid body length {len}"),
+            Self::UnknownCodec(c) => write!(f, "unknown codec {c}"),
+            Self::UnknownMode(m) => write!(f, "unknown mode {m}"),
+            Self::Io(e) => write!(f, "{e}"),
         }
     }
 }
 
-impl std::error::Error for HeaderError {}
+impl std::error::Error for ProtoError {}
 
-impl FrameHeader {
-    pub fn encode(&self) -> [u8; HEADER_LEN] {
-        let mut out = [0u8; HEADER_LEN];
-        out[0] = VERSION;
-        out[1] = if self.keyframe { FLAG_KEYFRAME } else { 0 };
-        out[4..8].copy_from_slice(&self.seq.to_le_bytes());
-        out[8..16].copy_from_slice(&self.capture_us.to_le_bytes());
-        out[16..20].copy_from_slice(&self.payload_len.to_le_bytes());
+impl From<io::Error> for ProtoError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl Codec {
+    const fn to_wire(self) -> u8 {
+        match self {
+            Self::H264 => 1,
+            Self::Hevc => 2,
+        }
+    }
+
+    const fn from_wire(v: u8) -> Result<Self, ProtoError> {
+        match v {
+            1 => Ok(Self::H264),
+            2 => Ok(Self::Hevc),
+            other => Err(ProtoError::UnknownCodec(other)),
+        }
+    }
+}
+
+impl Mode {
+    const fn to_wire(self) -> u8 {
+        match self {
+            Self::Live => 1,
+            Self::Paced => 2,
+        }
+    }
+
+    const fn from_wire(v: u8) -> Result<Self, ProtoError> {
+        match v {
+            1 => Ok(Self::Live),
+            2 => Ok(Self::Paced),
+            other => Err(ProtoError::UnknownMode(other)),
+        }
+    }
+}
+
+impl Message {
+    pub fn encode(&self) -> Vec<u8> {
+        let (kind, body) = match self {
+            Self::StreamStart(info) => {
+                let mut body = Vec::with_capacity(STREAM_START_LEN);
+                body.extend_from_slice(&info.stream_id.to_le_bytes());
+                body.push(info.codec.to_wire());
+                body.push(info.mode.to_wire());
+                body.extend_from_slice(&[0, 0]);
+                body.extend_from_slice(&info.width.to_le_bytes());
+                body.extend_from_slice(&info.height.to_le_bytes());
+                (KIND_STREAM_START, body)
+            }
+            Self::Frame(frame) => {
+                let mut body = Vec::with_capacity(FRAME_FIXED_LEN + frame.payload.len());
+                body.extend_from_slice(&frame.stream_id.to_le_bytes());
+                body.extend_from_slice(&frame.seq.to_le_bytes());
+                body.extend_from_slice(&frame.time_us.to_le_bytes());
+                body.push(if frame.keyframe { FLAG_KEYFRAME } else { 0 });
+                body.extend_from_slice(&[0, 0, 0]);
+                body.extend_from_slice(&frame.payload);
+                (KIND_FRAME, body)
+            }
+            Self::StreamEnd { stream_id } => (KIND_STREAM_END, stream_id.to_le_bytes().to_vec()),
+        };
+        let mut out = Vec::with_capacity(HEADER_LEN + body.len());
+        out.push(VERSION);
+        out.push(kind);
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
         out
     }
 
-    pub fn decode(bytes: &[u8; HEADER_LEN]) -> Result<Self, HeaderError> {
-        if bytes[0] != VERSION {
-            return Err(HeaderError::UnsupportedVersion(bytes[0]));
+    /// Reads one message. Returns `Ok(None)` on a clean end of stream between messages.
+    pub fn read_from(reader: &mut impl Read) -> Result<Option<Self>, ProtoError> {
+        let mut header = [0u8; HEADER_LEN];
+        match reader.read_exact(&mut header) {
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            other => other?,
         }
-        let payload_len = u32::from_le_bytes(bytes[16..20].try_into().expect("4 bytes"));
-        if payload_len > MAX_PAYLOAD_LEN {
-            return Err(HeaderError::PayloadTooLarge(payload_len));
+        let (kind, len) = parse_header(&header)?;
+        let mut body = vec![0u8; len as usize];
+        reader.read_exact(&mut body)?;
+        Self::parse_body(kind, body).map(Some)
+    }
+
+    fn parse_body(kind: u8, body: Vec<u8>) -> Result<Self, ProtoError> {
+        let bad_length = || ProtoError::BadBodyLength { kind, len: body.len() };
+        match kind {
+            KIND_STREAM_START if body.len() == STREAM_START_LEN => Ok(Self::StreamStart(StreamInfo {
+                stream_id: u32_at(&body, 0),
+                codec: Codec::from_wire(body[4])?,
+                mode: Mode::from_wire(body[5])?,
+                width: u16::from_le_bytes([body[8], body[9]]),
+                height: u16::from_le_bytes([body[10], body[11]]),
+            })),
+            KIND_FRAME if body.len() >= FRAME_FIXED_LEN => {
+                let mut body = body;
+                let payload = body.split_off(FRAME_FIXED_LEN);
+                Ok(Self::Frame(Frame {
+                    stream_id: u32_at(&body, 0),
+                    seq: u32_at(&body, 4),
+                    time_us: u64::from_le_bytes(body[8..16].try_into().expect("8 bytes")),
+                    keyframe: body[16] & FLAG_KEYFRAME != 0,
+                    payload,
+                }))
+            }
+            KIND_STREAM_END if body.len() == STREAM_END_LEN => Ok(Self::StreamEnd { stream_id: u32_at(&body, 0) }),
+            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END => Err(bad_length()),
+            other => Err(ProtoError::UnknownKind(other)),
         }
-        Ok(Self {
-            seq: u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes")),
-            capture_us: u64::from_le_bytes(bytes[8..16].try_into().expect("8 bytes")),
-            keyframe: bytes[1] & FLAG_KEYFRAME != 0,
-            payload_len,
-        })
     }
 }
 
-/// Wall-clock microseconds. Sender and receiver compare these, so latency figures
-/// are only meaningful while both run on the same machine.
+fn parse_header(header: &[u8; HEADER_LEN]) -> Result<(u8, u32), ProtoError> {
+    if header[0] != VERSION {
+        return Err(ProtoError::UnsupportedVersion(header[0]));
+    }
+    let len = u32_at(header, 4);
+    if len > MAX_BODY_LEN {
+        return Err(ProtoError::BodyTooLarge(len));
+    }
+    Ok((header[1], len))
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
+}
+
+/// Wall-clock microseconds. Live-mode latency figures compare sender and receiver clocks,
+/// so they are only meaningful while both run on the same machine.
 pub fn unix_micros() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -75,25 +230,73 @@ pub fn unix_micros() -> u64 {
 mod tests {
     use super::*;
 
+    fn round_trip(message: Message) {
+        let bytes = message.encode();
+        let decoded = Message::read_from(&mut bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded, message);
+    }
+
     #[test]
-    fn header_round_trips() {
-        let header = FrameHeader { seq: 7, capture_us: 1_234_567, keyframe: true, payload_len: 4096 };
-        assert_eq!(FrameHeader::decode(&header.encode()), Ok(header));
+    fn every_message_round_trips() {
+        round_trip(Message::StreamStart(StreamInfo {
+            stream_id: 3,
+            codec: Codec::Hevc,
+            mode: Mode::Paced,
+            width: 1920,
+            height: 1080,
+        }));
+        round_trip(Message::Frame(Frame {
+            stream_id: 3,
+            seq: 9,
+            time_us: 1_234_567,
+            keyframe: true,
+            payload: vec![0, 0, 0, 1, 0x65],
+        }));
+        round_trip(Message::StreamEnd { stream_id: 3 });
+    }
+
+    #[test]
+    fn clean_eof_between_messages_is_not_an_error() {
+        assert!(Message::read_from(&mut [].as_slice()).unwrap().is_none());
     }
 
     #[test]
     fn refuses_other_versions() {
-        let mut bytes = FrameHeader { seq: 0, capture_us: 0, keyframe: false, payload_len: 0 }.encode();
-        bytes[0] = 9;
-        assert_eq!(FrameHeader::decode(&bytes), Err(HeaderError::UnsupportedVersion(9)));
+        let mut bytes = Message::StreamEnd { stream_id: 1 }.encode();
+        bytes[0] = 1;
+        assert!(matches!(Message::read_from(&mut bytes.as_slice()), Err(ProtoError::UnsupportedVersion(1))));
     }
 
     #[test]
-    fn refuses_oversized_payloads() {
-        let header = FrameHeader { seq: 0, capture_us: 0, keyframe: false, payload_len: MAX_PAYLOAD_LEN + 1 };
-        assert_eq!(
-            FrameHeader::decode(&header.encode()),
-            Err(HeaderError::PayloadTooLarge(MAX_PAYLOAD_LEN + 1))
-        );
+    fn refuses_unknown_kinds_codecs_and_bad_lengths() {
+        let mut unknown = Message::StreamEnd { stream_id: 1 }.encode();
+        unknown[1] = 77;
+        assert!(matches!(Message::read_from(&mut unknown.as_slice()), Err(ProtoError::UnknownKind(77))));
+
+        let mut start = Message::StreamStart(StreamInfo {
+            stream_id: 1,
+            codec: Codec::H264,
+            mode: Mode::Live,
+            width: 2,
+            height: 2,
+        })
+        .encode();
+        start[HEADER_LEN + 4] = 9;
+        assert!(matches!(Message::read_from(&mut start.as_slice()), Err(ProtoError::UnknownCodec(9))));
+
+        let mut short = Message::StreamEnd { stream_id: 1 }.encode();
+        short[4] = 2;
+        short.truncate(HEADER_LEN + 2);
+        assert!(matches!(
+            Message::read_from(&mut short.as_slice()),
+            Err(ProtoError::BadBodyLength { kind: KIND_STREAM_END, len: 2 })
+        ));
+    }
+
+    #[test]
+    fn refuses_oversized_bodies() {
+        let mut bytes = Message::StreamEnd { stream_id: 1 }.encode();
+        bytes[4..8].copy_from_slice(&(MAX_BODY_LEN + 1).to_le_bytes());
+        assert!(matches!(Message::read_from(&mut bytes.as_slice()), Err(ProtoError::BodyTooLarge(_))));
     }
 }

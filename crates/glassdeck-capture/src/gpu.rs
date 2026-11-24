@@ -34,7 +34,7 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
     MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264, MFVideoFormat_NV12,
-    MFVideoInterlace_Progressive, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_Base,
+    MFVideoInterlace_Progressive, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE};
@@ -45,8 +45,7 @@ use crate::stream::{EncodedFrame, EncoderSettings};
 
 const QUEUED_FRAMES: usize = 2;
 const HUNDRED_NS_PER_US: u64 = 10;
-/// The PC stand-in receiver decodes with openh264, which only supports Constrained Baseline.
-const PROFILE_FOR_OPENH264_RECEIVER: u32 = eAVEncH264VProfile_Base.0 as u32;
+const H264_PROFILE: u32 = eAVEncH264VProfile_High.0 as u32;
 
 struct GpuFrame {
     texture: ID3D11Texture2D,
@@ -477,7 +476,7 @@ unsafe fn output_type(config: EncoderSettings) -> Result<IMFMediaType> {
         t.SetUINT64(&MF_MT_FRAME_RATE, pack(config.fps, 1))?;
         t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))?;
         t.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-        t.SetUINT32(&MF_MT_MPEG2_PROFILE, PROFILE_FOR_OPENH264_RECEIVER)?;
+        t.SetUINT32(&MF_MT_MPEG2_PROFILE, H264_PROFILE)?;
         Ok(t)
     }
 }
