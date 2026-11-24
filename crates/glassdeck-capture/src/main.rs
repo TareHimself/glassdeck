@@ -1,6 +1,7 @@
 mod gpu;
 mod link;
 mod monitors;
+mod play;
 mod record;
 mod software;
 mod stream;
@@ -14,6 +15,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use monitors::MonitorQuery;
+use play::PlayOptions;
 use record::RecordOptions;
 use stream::{EncoderKind, StreamOptions};
 
@@ -43,6 +45,21 @@ enum Command {
         mbps: u32,
         #[arg(long, default_value_t = 60)]
         fps: u32,
+    },
+    /// Send an H.264 or HEVC video file to a receiver, paced by its timestamps, without re-encoding
+    Play {
+        file: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:7878")]
+        to: SocketAddr,
+        /// Start over at the end, for wallpapers
+        #[arg(long = "loop")]
+        looping: bool,
+        /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
+        #[arg(long, default_value_t = USB2_PRACTICAL_MBYTES_PER_SEC, conflicts_with = "unlimited_link")]
+        link_mbytes: u64,
+        /// Send as fast as localhost allows
+        #[arg(long)]
+        unlimited_link: bool,
     },
     /// Stream a monitor as raw H.264 frames to a receiver
     Stream {
@@ -95,6 +112,14 @@ fn main() -> Result<()> {
                 },
             )
         }
+        Command::Play { file, to, looping, link_mbytes, unlimited_link } => play::run(
+            &file,
+            PlayOptions {
+                to,
+                looping,
+                link_bytes_per_sec: (!unlimited_link).then_some(link_mbytes * 1_000_000),
+            },
+        ),
         Command::Stream {
             monitor,
             to,

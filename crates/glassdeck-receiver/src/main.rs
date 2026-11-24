@@ -122,7 +122,7 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
         state = next;
         match action {
             Action::Begin(info) => {
-                let decoder = Decoder::new(info.codec, info.width as usize, info.height as usize)?;
+                let decoder = Decoder::new(info.codec, info.mode, info.width as usize, info.height as usize)?;
                 println!(
                     "Stream {}: {:?} {}x{} {:?} via {}",
                     info.stream_id, info.codec, info.width, info.height, info.mode, decoder.name

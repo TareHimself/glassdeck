@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, anyhow, bail};
-use glassdeck_proto::Codec;
+use glassdeck_proto::{Codec, Mode};
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFMediaType, IMFTransform,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE,
@@ -54,14 +54,17 @@ pub fn init_media_foundation() -> Result<()> {
 }
 
 impl Decoder {
-    pub fn new(codec: Codec, width: usize, height: usize) -> Result<Self> {
+    pub fn new(codec: Codec, mode: Mode, width: usize, height: usize) -> Result<Self> {
         unsafe {
             let (activate, name) = find_decoder(codec)?;
             let transform: IMFTransform = activate.ActivateObject()?;
-            transform
-                .cast::<ICodecAPI>()?
-                .SetValue(&CODECAPI_AVLowLatencyMode, &variant_u32(1))
-                .context("decoder refused low-latency mode")?;
+            // Low-latency mode skips B-frame reordering, which paced files need.
+            if mode == Mode::Live {
+                transform
+                    .cast::<ICodecAPI>()?
+                    .SetValue(&CODECAPI_AVLowLatencyMode, &variant_u32(1))
+                    .context("decoder refused low-latency mode")?;
+            }
 
             let input = MFCreateMediaType()?;
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
