@@ -1,0 +1,13 @@
+[package]
+name = "flux-receiver"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+flux-proto.workspace = true
+fontdue.workspace = true
+minifb.workspace = true
+openh264.workspace = true
