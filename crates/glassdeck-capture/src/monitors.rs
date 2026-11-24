@@ -99,13 +99,13 @@ mod tests {
     #[test]
     fn numeric_query_is_an_index() {
         assert_eq!("2".parse::<MonitorQuery>().unwrap(), MonitorQuery::Index(2));
-        assert_eq!("Flux".parse::<MonitorQuery>().unwrap(), MonitorQuery::Name("Flux".into()));
+        assert_eq!("Glassdeck".parse::<MonitorQuery>().unwrap(), MonitorQuery::Name("Glassdeck".into()));
     }
 
     #[test]
     fn selects_by_name_ignoring_case() {
-        let monitors = [info(1, "DELL U2720Q"), info(2, "Flux")];
-        let query = MonitorQuery::Name("flux".into());
+        let monitors = [info(1, "DELL U2720Q"), info(2, "Glassdeck")];
+        let query = MonitorQuery::Name("glassdeck".into());
         assert_eq!(select(&query, &monitors).unwrap().index, 2);
     }
 
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn refuses_missing_and_ambiguous_names() {
         let monitors = [info(1, "Generic"), info(2, "Generic")];
-        assert!(select(&MonitorQuery::Name("Flux".into()), &monitors).is_err());
+        assert!(select(&MonitorQuery::Name("Glassdeck".into()), &monitors).is_err());
         assert!(select(&MonitorQuery::Name("Generic".into()), &monitors).is_err());
     }
 }

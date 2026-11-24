@@ -246,34 +246,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
-name = "flux-capture"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "flux-proto",
- "openh264",
- "windows",
- "windows-capture",
-]
-
-[[package]]
-name = "flux-proto"
-version = "0.1.0"
-
-[[package]]
-name = "flux-receiver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "flux-proto",
- "fontdue",
- "minifb",
- "openh264",
-]
-
-[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -386,6 +358,34 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
+]
+
+[[package]]
+name = "glassdeck-capture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "glassdeck-proto",
+ "openh264",
+ "windows",
+ "windows-capture",
+]
+
+[[package]]
+name = "glassdeck-proto"
+version = "0.1.0"
+
+[[package]]
+name = "glassdeck-receiver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fontdue",
+ "glassdeck-proto",
+ "minifb",
+ "openh264",
 ]
 
 [[package]]

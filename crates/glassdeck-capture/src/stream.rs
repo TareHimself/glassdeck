@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::ValueEnum;
-use flux_proto::{FrameHeader, HEADER_LEN, unix_micros};
+use glassdeck_proto::{FrameHeader, HEADER_LEN, unix_micros};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;

@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
-flux-proto = { path = "crates/flux-proto" }
+glassdeck-proto = { path = "crates/glassdeck-proto" }
 fontdue = "0.9.5"
 minifb = "0.29.0"
 openh264 = "0.9.10"

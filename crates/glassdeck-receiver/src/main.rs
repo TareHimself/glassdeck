@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use flux_proto::{FrameHeader, HEADER_LEN, unix_micros};
+use glassdeck_proto::{FrameHeader, HEADER_LEN, unix_micros};
 use fontdue::{Font, FontSettings};
 use minifb::{Key, Window, WindowOptions};
 use openh264::decoder::Decoder;
@@ -198,7 +198,7 @@ fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
             if stats_since.elapsed() >= STATS_INTERVAL {
                 let summary = stats.summary(stats_since.elapsed().as_secs_f64());
                 println!("recv: {summary}");
-                win.set_title(&format!("flux-receiver | {summary}"));
+                win.set_title(&format!("glassdeck-receiver | {summary}"));
                 stats = LatencyStats::default();
                 stats_since = Instant::now();
             }
@@ -207,7 +207,7 @@ fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
 }
 
 fn open_window(width: usize, height: usize) -> Result<Window> {
-    let mut window = Window::new("flux-receiver", width, height, WindowOptions::default())?;
+    let mut window = Window::new("glassdeck-receiver", width, height, WindowOptions::default())?;
     window.set_target_fps(UNTHROTTLED);
     Ok(window)
 }

@@ -4,7 +4,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use flux_proto::unix_micros;
+use glassdeck_proto::unix_micros;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
@@ -414,10 +414,12 @@ unsafe fn configure_codec(codec: &ICodecAPI, config: EncoderSettings) -> Result<
         codec
             .SetValue(&CODECAPI_AVLowLatencyMode, &variant_bool(true))
             .context("encoder refused low-latency mode")?;
-        let tuning: [(&GUID, u32, &str); 3] = [
+        codec
+            .SetValue(&CODECAPI_AVEncMPVGOPSize, &variant_u32(config.keyframe_every))
+            .context("encoder refused the keyframe interval")?;
+        let tuning: [(&GUID, u32, &str); 2] = [
             (&CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32, "CBR"),
             (&CODECAPI_AVEncCommonMeanBitRate, config.bitrate, "bitrate"),
-            (&CODECAPI_AVEncMPVGOPSize, config.keyframe_every, "keyframe interval"),
         ];
         for (key, value, what) in tuning {
             if let Err(e) = codec.SetValue(key, &variant_u32(value)) {
