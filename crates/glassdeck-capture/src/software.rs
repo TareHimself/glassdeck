@@ -1,7 +1,7 @@
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use openh264::OpenH264API;
 use openh264::encoder::{
     BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod,
@@ -23,6 +23,9 @@ pub struct SoftwareEncoder {
 
 impl SoftwareEncoder {
     pub fn new(settings: EncoderSettings, output: SyncSender<EncodedFrame>) -> Result<Self> {
+        if settings.vbv_frames.is_some() {
+            bail!("--vbv-frames needs the GPU encoder");
+        }
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)

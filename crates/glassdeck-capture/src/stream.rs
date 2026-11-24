@@ -39,6 +39,7 @@ pub struct StreamOptions {
     pub bitrate: u32,
     pub fps: u32,
     pub keyframe_every: u32,
+    pub vbv_frames: Option<u32>,
     pub link_bytes_per_sec: Option<u64>,
 }
 
@@ -49,6 +50,8 @@ pub struct EncoderSettings {
     pub fps: u32,
     pub bitrate: u32,
     pub keyframe_every: u32,
+    /// Rate-control buffer in frames of average size; small values keep keyframes small.
+    pub vbv_frames: Option<u32>,
 }
 
 pub struct EncodedFrame {
@@ -143,6 +146,7 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
             fps: options.fps,
             bitrate: options.bitrate,
             keyframe_every: options.keyframe_every,
+            vbv_frames: options.vbv_frames,
         },
         duration: options.duration,
     };

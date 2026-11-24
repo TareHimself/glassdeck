@@ -61,6 +61,9 @@ enum Command {
         fps: u32,
         #[arg(long, default_value_t = 120)]
         keyframe_every: u32,
+        /// Cap the encoder's rate-control buffer to N average frames, shrinking keyframes (GPU only)
+        #[arg(long)]
+        vbv_frames: Option<u32>,
         /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
         #[arg(long, default_value_t = USB2_PRACTICAL_MBYTES_PER_SEC, conflicts_with = "unlimited_link")]
         link_mbytes: u64,
@@ -99,6 +102,7 @@ fn main() -> Result<()> {
             mbps,
             fps,
             keyframe_every,
+            vbv_frames,
             link_mbytes,
             unlimited_link,
         } => {
@@ -114,6 +118,7 @@ fn main() -> Result<()> {
                     bitrate: mbps * 1_000_000,
                     fps,
                     keyframe_every,
+                    vbv_frames,
                     link_bytes_per_sec,
                 },
             )

@@ -18,7 +18,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
+    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonRateControlMode,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMF2DBuffer, IMFActivate, IMFAttributes, IMFDXGIDeviceManager,
     IMFMediaEventGenerator, IMFMediaType, IMFTransform, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
@@ -417,6 +418,11 @@ unsafe fn configure_codec(codec: &ICodecAPI, config: EncoderSettings) -> Result<
         codec
             .SetValue(&CODECAPI_AVEncMPVGOPSize, &variant_u32(config.keyframe_every))
             .context("encoder refused the keyframe interval")?;
+        if let Some(frames) = config.vbv_frames {
+            codec
+                .SetValue(&CODECAPI_AVEncCommonBufferSize, &variant_u32(vbv_bits(config, frames)))
+                .context("encoder refused the rate-control buffer size")?;
+        }
         let tuning: [(&GUID, u32, &str); 2] = [
             (&CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32, "CBR"),
             (&CODECAPI_AVEncCommonMeanBitRate, config.bitrate, "bitrate"),
@@ -428,6 +434,10 @@ unsafe fn configure_codec(codec: &ICodecAPI, config: EncoderSettings) -> Result<
         }
     }
     Ok(())
+}
+
+fn vbv_bits(config: EncoderSettings, frames: u32) -> u32 {
+    (config.bitrate as u64 * frames as u64 / config.fps.max(1) as u64) as u32
 }
 
 fn variant(vt: VARENUM, value: VARIANT_0_0_0) -> VARIANT {
@@ -492,5 +502,19 @@ mod tests {
     #[test]
     fn packs_size_as_high_and_low_words() {
         assert_eq!(pack(1920, 1080), 0x0000_0780_0000_0438);
+    }
+
+    #[test]
+    fn vbv_of_one_frame_is_one_average_frame_of_bits() {
+        let config = EncoderSettings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate: 15_000_000,
+            keyframe_every: 120,
+            vbv_frames: Some(1),
+        };
+        assert_eq!(vbv_bits(config, 1), 250_000);
+        assert_eq!(vbv_bits(config, 4), 1_000_000);
     }
 }
