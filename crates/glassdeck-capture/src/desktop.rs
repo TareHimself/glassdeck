@@ -1,12 +1,9 @@
-use std::fmt;
-use std::net::SocketAddr;
-use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::thread;
+use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::ValueEnum;
-use glassdeck_proto::{Codec, Frame, Message, Mode, StreamInfo, unix_micros};
+use glassdeck_proto::unix_micros;
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame as CapturedFrame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
@@ -16,12 +13,9 @@ use windows_capture::settings::{
 };
 
 use crate::gpu::GpuEncoder;
-use crate::link::{Link, new_stream_id};
 use crate::monitors::FoundMonitor;
+use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
 use crate::software::SoftwareEncoder;
-
-const STATS_INTERVAL: Duration = Duration::from_secs(1);
-pub const QUEUED_FRAMES: usize = 4;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum EncoderKind {
@@ -31,53 +25,49 @@ pub enum EncoderKind {
     Software,
 }
 
-/// Codec choice on the command line.
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum VideoCodec {
-    /// Fewer bits for the same picture, and the RK3566 decodes it faster
-    Hevc,
-    H264,
+/// A monitor captured with Windows.Graphics.Capture: the live mirroring source.
+pub struct DesktopSource {
+    monitor: FoundMonitor,
+    format: VideoFormat,
+    encoder: EncoderKind,
+    settings: EncoderSettings,
+    duration: Option<Duration>,
 }
 
-impl From<VideoCodec> for Codec {
-    fn from(codec: VideoCodec) -> Self {
-        match codec {
-            VideoCodec::Hevc => Codec::Hevc,
-            VideoCodec::H264 => Codec::H264,
-        }
+impl DesktopSource {
+    pub fn new(monitor: FoundMonitor, encoder: EncoderKind, settings: EncoderSettings, duration: Option<Duration>) -> Result<Self> {
+        let format = VideoFormat {
+            codec: settings.codec,
+            width: u16::try_from(settings.width).context("monitor too wide")?,
+            height: u16::try_from(settings.height).context("monitor too tall")?,
+        };
+        Ok(Self { monitor, format, encoder, settings, duration })
     }
 }
 
-pub struct StreamOptions {
-    pub to: SocketAddr,
-    pub duration: Option<Duration>,
-    pub encoder: EncoderKind,
-    pub codec: Codec,
-    pub bitrate: u32,
-    pub fps: u32,
-    pub keyframe_every: u32,
-    pub vbv_frames: Option<u32>,
-    pub link_bytes_per_sec: Option<u64>,
-}
+impl FrameSource for DesktopSource {
+    fn format(&self) -> VideoFormat {
+        self.format
+    }
 
-#[derive(Clone, Copy)]
-pub struct EncoderSettings {
-    pub width: u32,
-    pub height: u32,
-    pub codec: Codec,
-    pub fps: u32,
-    pub bitrate: u32,
-    pub keyframe_every: u32,
-    /// Rate-control buffer in frames of average size; small values keep keyframes small.
-    pub vbv_frames: Option<u32>,
-}
+    fn timing(&self) -> Timing {
+        Timing::Live
+    }
 
-pub struct EncodedFrame {
-    pub seq: u32,
-    pub capture_us: u64,
-    pub keyframe: bool,
-    pub data: Vec<u8>,
-    pub encode_time: Duration,
+    fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
+        let flags = Flags { tx: out, kind: self.encoder, settings: self.settings, duration: self.duration };
+        let settings = Settings::new(
+            self.monitor.monitor,
+            CursorCaptureSettings::WithoutCursor,
+            DrawBorderSettings::WithoutBorder,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            flags,
+        );
+        Capture::start(settings).map_err(|e| anyhow!("capture failed: {e}"))
+    }
 }
 
 struct Flags {
@@ -92,7 +82,7 @@ enum Backend {
     Software(SoftwareEncoder),
 }
 
-struct DesktopSource {
+struct Capture {
     backend: Backend,
     size: (u32, u32),
     duration: Option<Duration>,
@@ -101,7 +91,7 @@ struct DesktopSource {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-impl GraphicsCaptureApiHandler for DesktopSource {
+impl GraphicsCaptureApiHandler for Capture {
     type Flags = Flags;
     type Error = BoxError;
 
@@ -143,167 +133,5 @@ impl GraphicsCaptureApiHandler for DesktopSource {
             control.stop();
         }
         Ok(())
-    }
-}
-
-pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
-    let mut link = Link::connect(options.to, options.link_bytes_per_sec)?;
-    let clock = link.sync_clock()?;
-    println!(
-        "Receiver clock is {:+.1} ms from ours (probe round trip {:.1} ms)",
-        clock.offset_us() as f64 / 1000.0,
-        clock.round_trip_us() as f64 / 1000.0
-    );
-    let info = StreamInfo {
-        stream_id: new_stream_id(),
-        codec: options.codec,
-        mode: Mode::Live { clock_offset_us: clock.offset_us() },
-        width: u16::try_from(found.info.width).context("monitor too wide")?,
-        height: u16::try_from(found.info.height).context("monitor too tall")?,
-    };
-
-    let (tx, rx) = mpsc::sync_channel(QUEUED_FRAMES);
-    let network = thread::spawn(move || send_loop(link, info, rx));
-
-    let flags = Flags {
-        tx,
-        kind: options.encoder,
-        settings: EncoderSettings {
-            width: found.info.width,
-            height: found.info.height,
-            codec: options.codec,
-            fps: options.fps,
-            bitrate: options.bitrate,
-            keyframe_every: options.keyframe_every,
-            vbv_frames: options.vbv_frames,
-        },
-        duration: options.duration,
-    };
-    let settings = Settings::new(
-        found.monitor,
-        CursorCaptureSettings::WithoutCursor,
-        DrawBorderSettings::WithoutBorder,
-        SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
-        DirtyRegionSettings::Default,
-        ColorFormat::Bgra8,
-        flags,
-    );
-
-    let capture = DesktopSource::start(settings);
-    let network = network.join().expect("network thread panicked");
-    network.context("sending to receiver")?;
-    capture.map_err(|e| anyhow!("capture failed: {e}"))
-}
-
-pub fn send_loop(mut link: Link, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
-    link.send(&Message::StreamStart(info))?;
-    let mut stats = SendStats::new(Instant::now());
-    let mut first_capture_us = None;
-
-    for frame in rx {
-        let first = *first_capture_us.get_or_insert(frame.capture_us);
-        let sent = SentFrame { bytes: frame.data.len(), keyframe: frame.keyframe, encode_time: frame.encode_time };
-        let link_wait = link.send(&Message::Frame(Frame {
-            stream_id: info.stream_id,
-            seq: frame.seq,
-            time_us: stream_time_us(info.mode, first, frame.capture_us),
-            keyframe: frame.keyframe,
-            payload: frame.data,
-        }))?;
-
-        stats = stats.record(sent, link_wait);
-        let now = Instant::now();
-        if now - stats.since >= STATS_INTERVAL {
-            println!("{stats}");
-            stats = SendStats::new(now);
-        }
-    }
-    link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
-    Ok(())
-}
-
-/// Live frames carry their wall-clock capture time; paced frames count from the stream's first frame.
-fn stream_time_us(mode: Mode, first_capture_us: u64, capture_us: u64) -> u64 {
-    match mode {
-        Mode::Live { .. } => capture_us,
-        Mode::Paced => capture_us.saturating_sub(first_capture_us),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct SentFrame {
-    bytes: usize,
-    keyframe: bool,
-    encode_time: Duration,
-}
-
-#[derive(Clone, Copy)]
-struct SendStats {
-    since: Instant,
-    frames: u32,
-    keyframes: u32,
-    bytes: u64,
-    largest_frame: usize,
-    encode_total: Duration,
-    link_total: Duration,
-}
-
-impl SendStats {
-    fn new(since: Instant) -> Self {
-        Self {
-            since,
-            frames: 0,
-            keyframes: 0,
-            bytes: 0,
-            largest_frame: 0,
-            encode_total: Duration::ZERO,
-            link_total: Duration::ZERO,
-        }
-    }
-
-    fn record(self, sent: SentFrame, link_wait: Duration) -> Self {
-        Self {
-            frames: self.frames + 1,
-            keyframes: self.keyframes + sent.keyframe as u32,
-            bytes: self.bytes + sent.bytes as u64,
-            largest_frame: self.largest_frame.max(sent.bytes),
-            encode_total: self.encode_total + sent.encode_time,
-            link_total: self.link_total + link_wait,
-            ..self
-        }
-    }
-}
-
-impl fmt::Display for SendStats {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let secs = self.since.elapsed().as_secs_f64();
-        let per_frame = |total: Duration| total.as_secs_f64() * 1000.0 / self.frames.max(1) as f64;
-        write!(
-            f,
-            "send: {:5.1} fps | {:5.1} Mbps | encode {:5.2} ms | link {:5.2} ms | largest {:4} KB | keyframes {}",
-            self.frames as f64 / secs,
-            self.bytes as f64 * 8.0 / secs / 1e6,
-            per_frame(self.encode_total),
-            per_frame(self.link_total),
-            self.largest_frame / 1024,
-            self.keyframes,
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn live_frames_keep_their_capture_time() {
-        assert_eq!(stream_time_us(Mode::Live { clock_offset_us: 0 }, 1_000, 5_000), 5_000);
-    }
-
-    #[test]
-    fn paced_frames_count_from_the_first_frame() {
-        assert_eq!(stream_time_us(Mode::Paced, 1_000, 1_000), 0);
-        assert_eq!(stream_time_us(Mode::Paced, 1_000, 17_667), 16_667);
     }
 }

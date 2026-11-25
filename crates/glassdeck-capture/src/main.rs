@@ -3,6 +3,7 @@ mod desktop;
 mod gpu;
 mod link;
 mod monitors;
+mod pipeline;
 mod play;
 mod record;
 mod software;
@@ -15,11 +16,12 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use desktop::{DesktopSource, EncoderKind};
 use monitors::MonitorQuery;
-use play::PlayOptions;
+use pipeline::{EncoderSettings, LinkOptions, Source, VideoCodec};
+use play::FileSource;
 use record::RecordOptions;
-use desktop::{EncoderKind, StreamOptions, VideoCodec};
-use web::WebOptions;
+use web::WebSource;
 
 const USB2_PRACTICAL_MBYTES_PER_SEC: u64 = 35;
 
@@ -147,27 +149,22 @@ fn main() -> Result<()> {
             )
         }
         Command::Web { url, to, width, height, seconds, codec, mbps, fps, keyframe_every, link_mbytes, unlimited_link } => {
-            web::run(WebOptions {
-                url,
-                to,
+            let settings = EncoderSettings {
                 width,
                 height,
                 codec: codec.into(),
                 fps,
                 bitrate: mbps * 1_000_000,
                 keyframe_every,
-                duration: seconds.map(Duration::from_secs),
-                link_bytes_per_sec: (!unlimited_link).then_some(link_mbytes * 1_000_000),
-            })
+                vbv_frames: None,
+            };
+            let source = WebSource::new(&url, settings, seconds.map(Duration::from_secs))?;
+            pipeline::run(Source::Frames(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
-        Command::Play { file, to, looping, link_mbytes, unlimited_link } => play::run(
-            &file,
-            PlayOptions {
-                to,
-                looping,
-                link_bytes_per_sec: (!unlimited_link).then_some(link_mbytes * 1_000_000),
-            },
-        ),
+        Command::Play { file, to, looping, link_mbytes, unlimited_link } => {
+            let source = FileSource::open(&file, looping)?;
+            pipeline::run(Source::Encoded(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
+        }
         Command::Stream {
             monitor,
             to,
@@ -182,22 +179,22 @@ fn main() -> Result<()> {
             unlimited_link,
         } => {
             let found = monitors::find(&monitor)?;
-            let link_bytes_per_sec = (!unlimited_link).then_some(link_mbytes * 1_000_000);
             println!("Streaming {} to {to}", found.info);
-            desktop::run(
-                found,
-                StreamOptions {
-                    to,
-                    duration: seconds.map(Duration::from_secs),
-                    encoder,
-                    codec: codec.into(),
-                    bitrate: mbps * 1_000_000,
-                    fps,
-                    keyframe_every,
-                    vbv_frames,
-                    link_bytes_per_sec,
-                },
-            )
+            let settings = EncoderSettings {
+                width: found.info.width,
+                height: found.info.height,
+                codec: codec.into(),
+                fps,
+                bitrate: mbps * 1_000_000,
+                keyframe_every,
+                vbv_frames,
+            };
+            let source = DesktopSource::new(found, encoder, settings, seconds.map(Duration::from_secs))?;
+            pipeline::run(Source::Frames(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
     }
+}
+
+fn link_options(to: SocketAddr, link_mbytes: u64, unlimited_link: bool) -> LinkOptions {
+    LinkOptions { to, link_bytes_per_sec: (!unlimited_link).then_some(link_mbytes * 1_000_000) }
 }

@@ -1,10 +1,8 @@
-use std::net::SocketAddr;
-use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use glassdeck_proto::{Codec, Frame, Message, Mode, StreamInfo};
+use glassdeck_proto::Codec;
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, IMFSourceReader, MF_E_ATTRIBUTENOTFOUND, MF_MT_FRAME_SIZE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
     MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
@@ -14,19 +12,11 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::HSTRING;
 
-use crate::link::{Link, new_stream_id};
+use crate::pipeline::{EncodedFrame, EncodedSource, VideoFormat};
 
-/// Frames go out this far ahead of their presentation time, inside the receiver's playout delay.
-const SEND_AHEAD: Duration = Duration::from_millis(100);
 const HUNDRED_NS_PER_US: i64 = 10;
 const PANEL: (u32, u32) = (1920, 1080);
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
-
-pub struct PlayOptions {
-    pub to: SocketAddr,
-    pub looping: bool,
-    pub link_bytes_per_sec: Option<u64>,
-}
 
 struct VideoFile {
     reader: IMFSourceReader,
@@ -42,62 +32,60 @@ struct Sample {
     data: Vec<u8>,
 }
 
-pub fn run(path: &Path, options: PlayOptions) -> Result<()> {
-    unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-        MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
-    }
-    let mut file = VideoFile::open(path)?;
-    if (file.width, file.height) != PANEL {
-        bail!(
-            "{}x{} needs re-encoding to {}x{}, which play does not do yet",
-            file.width, file.height, PANEL.0, PANEL.1
-        );
-    }
-    let info = StreamInfo {
-        stream_id: new_stream_id(),
-        codec: file.codec,
-        mode: Mode::Paced,
-        width: file.width as u16,
-        height: file.height as u16,
-    };
-    println!("Playing {} ({:?} {}x{}) without re-encoding", path.display(), file.codec, file.width, file.height);
+/// A video file sent as it is, never re-encoded: a paced, encoded source.
+pub struct FileSource {
+    path: PathBuf,
+    looping: bool,
+    file: VideoFile,
+    format: VideoFormat,
+    seq: u32,
+    loop_offset_us: u64,
+    last_pts_us: u64,
+}
 
-    let mut link = Link::connect(options.to, options.link_bytes_per_sec)?;
-    link.send(&Message::StreamStart(info))?;
+impl FileSource {
+    pub fn open(path: &Path, looping: bool) -> Result<Self> {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+            MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
+        }
+        let file = VideoFile::open(path)?;
+        if (file.width, file.height) != PANEL {
+            bail!(
+                "{}x{} needs re-encoding to {}x{}, which play does not do yet",
+                file.width, file.height, PANEL.0, PANEL.1
+            );
+        }
+        let format = VideoFormat { codec: file.codec, width: file.width as u16, height: file.height as u16 };
+        println!("Playing {} ({:?} {}x{}) without re-encoding", path.display(), file.codec, file.width, file.height);
+        Ok(Self { path: path.to_path_buf(), looping, file, format, seq: 0, loop_offset_us: 0, last_pts_us: 0 })
+    }
+}
 
-    let started = Instant::now();
-    let mut seq = 0;
-    let mut loop_offset_us = 0;
-    let mut last_pts_us = 0;
-    let mut first_pts_us = None;
-    loop {
-        let Some(sample) = file.next_sample()? else {
-            if !options.looping {
-                break;
+impl EncodedSource for FileSource {
+    fn format(&self) -> VideoFormat {
+        self.format
+    }
+
+    fn next_frame(&mut self) -> Result<Option<EncodedFrame>> {
+        let sample = match self.file.next_sample()? {
+            Some(sample) => sample,
+            None if self.looping => {
+                self.file = VideoFile::open(&self.path)?;
+                self.loop_offset_us = self.last_pts_us + 1;
+                match self.file.next_sample()? {
+                    Some(sample) => sample,
+                    None => bail!("{} has no frames", self.path.display()),
+                }
             }
-            file = VideoFile::open(path)?;
-            loop_offset_us = last_pts_us + 1;
-            continue;
+            None => return Ok(None),
         };
-        let pts_us = sample.pts_us + loop_offset_us;
-        last_pts_us = last_pts_us.max(pts_us);
-        let first = *first_pts_us.get_or_insert(pts_us);
-        let send_at = started + Duration::from_micros(pts_us.saturating_sub(first));
-        thread::sleep(send_at.saturating_duration_since(Instant::now() + SEND_AHEAD));
-
-        link.send(&Message::Frame(Frame {
-            stream_id: info.stream_id,
-            seq,
-            time_us: pts_us,
-            keyframe: sample.keyframe,
-            payload: sample.data,
-        }))?;
-        seq += 1;
+        let time_us = sample.pts_us + self.loop_offset_us;
+        self.last_pts_us = self.last_pts_us.max(time_us);
+        let seq = self.seq;
+        self.seq += 1;
+        Ok(Some(EncodedFrame { seq, time_us, keyframe: sample.keyframe, data: sample.data, encode_time: Duration::ZERO }))
     }
-    link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
-    println!("Sent {seq} frames");
-    Ok(())
 }
 
 impl VideoFile {

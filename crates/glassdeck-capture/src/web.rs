@@ -1,12 +1,11 @@
 use std::ffi::{CString, c_void};
-use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::sync::mpsc;
+use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use glassdeck_proto::{Codec, Mode, StreamInfo, unix_micros};
+use glassdeck_proto::unix_micros;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -18,9 +17,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::core::Interface;
 
-use crate::desktop::{EncoderSettings, QUEUED_FRAMES, send_loop};
 use crate::gpu::GpuEncoder;
-use crate::link::{Link, new_stream_id};
+use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
 
 const POLL: Duration = Duration::from_millis(50);
 
@@ -32,74 +30,73 @@ unsafe extern "C" {
     fn gd_web_stop();
 }
 
-pub struct WebOptions {
-    pub url: String,
-    pub to: SocketAddr,
-    pub width: u32,
-    pub height: u32,
-    pub codec: Codec,
-    pub fps: u32,
-    pub bitrate: u32,
-    pub keyframe_every: u32,
-    pub duration: Option<Duration>,
-    pub link_bytes_per_sec: Option<u64>,
-}
-
 /// Chromium relaunches our executable for its renderer and GPU processes, marked by a `--type=` switch.
 pub fn helper_process_exit_code() -> Option<i32> {
     std::env::args().any(|a| a.starts_with("--type=")).then(|| unsafe { gd_web_subprocess() })
 }
 
 /// A web page as a raw-frame source: CEF renders offscreen into shared GPU textures, which go to the encoder.
-pub fn run(options: WebOptions) -> Result<()> {
-    let (device, context) = create_device()?;
-    let link = Link::connect(options.to, options.link_bytes_per_sec)?;
-    let info = StreamInfo {
-        stream_id: new_stream_id(),
-        codec: options.codec,
-        mode: Mode::Paced,
-        width: u16::try_from(options.width).context("page too wide")?,
-        height: u16::try_from(options.height).context("page too tall")?,
-    };
-    let (tx, rx) = mpsc::sync_channel(QUEUED_FRAMES);
-    let network = thread::spawn(move || send_loop(link, info, rx));
+/// Wallpapers are paced.
+pub struct WebSource {
+    url: CString,
+    format: VideoFormat,
+    settings: EncoderSettings,
+    duration: Option<Duration>,
+}
 
-    let settings = EncoderSettings {
-        width: options.width,
-        height: options.height,
-        codec: options.codec,
-        fps: options.fps,
-        bitrate: options.bitrate,
-        keyframe_every: options.keyframe_every,
-        vbv_frames: None,
-    };
-    let encoder = GpuEncoder::start(&device, &context, settings, tx)?;
-    println!("Encoder: {}", encoder.name);
-    let sink = Box::new(Mutex::new(FrameSink::new(&device, context, encoder, (options.width, options.height))?));
+impl WebSource {
+    pub fn new(url: &str, settings: EncoderSettings, duration: Option<Duration>) -> Result<Self> {
+        Ok(Self {
+            url: CString::new(url).context("URL contains a NUL byte")?,
+            format: VideoFormat {
+                codec: settings.codec,
+                width: u16::try_from(settings.width).context("page too wide")?,
+                height: u16::try_from(settings.height).context("page too tall")?,
+            },
+            settings,
+            duration,
+        })
+    }
+}
 
-    let url = CString::new(options.url.as_str()).context("URL contains a NUL byte")?;
-    let cache = CString::new(std::env::temp_dir().join("glassdeck-cef").to_string_lossy().as_bytes())?;
-    let user = (&*sink as *const Mutex<FrameSink>).cast_mut().cast();
-    let started = unsafe { gd_web_start(url.as_ptr(), options.width, options.height, options.fps, cache.as_ptr(), on_frame, user) };
-    ensure!(started == 0, "CEF failed to start (step {started})");
-    println!("Rendering {} at {}x{}@{}", options.url, options.width, options.height, options.fps);
+impl FrameSource for WebSource {
+    fn format(&self) -> VideoFormat {
+        self.format
+    }
 
-    let begun = Instant::now();
-    let failure = loop {
-        thread::sleep(POLL);
-        if let Some(e) = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.failure.take() {
-            break Some(e);
-        }
-        if options.duration.is_some_and(|d| begun.elapsed() >= d) {
-            break None;
-        }
-    };
-    unsafe { gd_web_stop() };
-    let frames = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.frames;
-    drop(sink);
-    network.join().map_err(|_| anyhow!("network thread panicked"))??;
-    println!("Rendered {frames} frames");
-    failure.map_or(Ok(()), Err)
+    fn timing(&self) -> Timing {
+        Timing::Paced
+    }
+
+    fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
+        let (device, context) = create_device()?;
+        let encoder = GpuEncoder::start(&device, &context, self.settings, out)?;
+        println!("Encoder: {}", encoder.name);
+        let (width, height) = (self.settings.width, self.settings.height);
+        let sink = Box::new(Mutex::new(FrameSink::new(&device, context, encoder, (width, height))?));
+
+        let cache = CString::new(std::env::temp_dir().join("glassdeck-cef").to_string_lossy().as_bytes())?;
+        let user = (&*sink as *const Mutex<FrameSink>).cast_mut().cast();
+        let started =
+            unsafe { gd_web_start(self.url.as_ptr(), width, height, self.settings.fps, cache.as_ptr(), on_frame, user) };
+        ensure!(started == 0, "CEF failed to start (step {started})");
+        println!("Rendering {} at {width}x{height}@{}", self.url.to_string_lossy(), self.settings.fps);
+
+        let begun = Instant::now();
+        let failure = loop {
+            thread::sleep(POLL);
+            if let Some(e) = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.failure.take() {
+                break Some(e);
+            }
+            if self.duration.is_some_and(|d| begun.elapsed() >= d) {
+                break None;
+            }
+        };
+        unsafe { gd_web_stop() };
+        let frames = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.frames;
+        println!("Rendered {frames} frames");
+        failure.map_or(Ok(()), Err)
+    }
 }
 
 /// Receives CEF's frames on its UI thread. The shared texture is only valid during the callback,

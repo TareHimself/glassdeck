@@ -12,7 +12,7 @@ use windows_capture::frame::Frame;
 
 use glassdeck_proto::Codec;
 
-use crate::desktop::{EncodedFrame, EncoderSettings};
+use crate::pipeline::{EncodedFrame, EncoderSettings};
 
 pub struct SoftwareEncoder {
     output: SyncSender<EncodedFrame>,
@@ -62,7 +62,7 @@ impl SoftwareEncoder {
             return Ok(());
         }
 
-        let encoded = EncodedFrame { seq: self.seq, capture_us, keyframe, data, encode_time: started.elapsed() };
+        let encoded = EncodedFrame { seq: self.seq, time_us: capture_us, keyframe, data, encode_time: started.elapsed() };
         self.output.send(encoded).map_err(|_| anyhow!("network thread stopped"))?;
         self.seq += 1;
         Ok(())
