@@ -5,6 +5,7 @@ pub mod library;
 pub mod project;
 pub mod steam;
 pub mod video;
+pub mod web_media;
 
 use std::path::{Path, PathBuf};
 
@@ -65,19 +66,52 @@ pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, set
 }
 
 /// The item's whole folder goes under `web/`, so its relative URLs keep working from `deck://`.
+/// Videos that are not VP8 or VP9 are re-encoded to VP9 under the same name first.
 pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Result<Deck> {
     let files = folder_files(&item.dir)?;
     let content = Content::Web {
         entry: format!("{WEB_ROOT}/{}", file.replace('\\', "/")),
         properties: project::user_properties(&project.properties),
     };
+    let converted_dir = out.with_extension("media");
+    let sources = web_sources(item, &files, &converted_dir)?;
     println!("Packing {} files from {}", files.len(), item.dir.display());
-    write_deck(item, project, content, out, |w| {
-        for relative in &files {
-            w.add_file(&format!("{WEB_ROOT}/{relative}"), &item.dir.join(relative))?;
+    let deck = write_deck(item, project, content, out, |w| {
+        for (relative, source) in files.iter().zip(&sources) {
+            w.add_file(&format!("{WEB_ROOT}/{relative}"), source)?;
         }
         Ok(())
-    })
+    });
+    if converted_dir.exists() {
+        std::fs::remove_dir_all(&converted_dir).with_context(|| format!("removing {}", converted_dir.display()))?;
+    }
+    deck
+}
+
+/// Where each file's bytes come from: the item folder, or a re-encoded copy under `converted_dir`.
+fn web_sources(item: &Item, files: &[String], converted_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut sources = Vec::with_capacity(files.len());
+    for relative in files {
+        let original = item.dir.join(relative);
+        if !web_media::is_video_file(relative) {
+            sources.push(original);
+            continue;
+        }
+        let probe = web_media::probe(&original)?;
+        match web_media::plan(&probe) {
+            web_media::Plan::Keep => sources.push(original),
+            web_media::Plan::Convert { video, audio } => {
+                println!("Re-encoding {relative} ({video:?} video, {audio:?} audio) so both browsers decode it in hardware");
+                let converted = converted_dir.join(relative);
+                if let Some(parent) = converted.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+                }
+                web_media::convert(&original, &converted, video, audio)?;
+                sources.push(converted);
+            }
+        }
+    }
+    Ok(sources)
 }
 
 fn write_deck(
