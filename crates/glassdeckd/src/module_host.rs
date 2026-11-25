@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use glassdeck_luau::profile::{Profile, WidgetArea};
 use glassdeck_luau::{LuaResultExt, Vm, encode};
-use glassdeck_package::{ModulePackage, is_module};
+use glassdeck_package::{ModulePackage, ResourceKind, is_module};
 use mlua::{Lua, Table, Value};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
@@ -106,14 +106,15 @@ impl Host {
             println!("Module host: no profile at {}, so no widgets", self.profile.display());
             return Ok(Vec::new());
         }
-        let packages = installed(&self.modules)?;
+        let packages: HashMap<String, Rc<ModulePackage>> = installed(&self.modules)?.into_iter().map(|(id, p)| (id, Rc::new(p))).collect();
         let profile = Profile::read(&self.profile, WidgetArea::of_panel().size, |id| packages.get(id).map(|p| p.manifest().clone()))?;
         let mut instances = Vec::new();
         for (index, widget) in profile.widgets.iter().enumerate() {
-            if let Some(script) = packages[&widget.module].host_script()? {
+            let package = &packages[&widget.module];
+            if let Some(script) = package.host_script()? {
                 let label = format!("widget {index} ({})", widget.module);
                 let number = u16::try_from(index).expect("profiles hold at most u16::MAX widgets");
-                match HostInstance::start(label.clone(), number, &script, &self.system) {
+                match HostInstance::start(label.clone(), number, &script, package, &self.system) {
                     Ok(instance) => instances.push(instance),
                     Err(e) => eprintln!("error: {label}: {e:#}"),
                 }
@@ -124,7 +125,7 @@ impl Host {
 }
 
 impl HostInstance {
-    fn start(label: String, number: u16, script: &str, system: &Rc<RefCell<System>>) -> Result<Self> {
+    fn start(label: String, number: u16, script: &str, package: &Rc<ModulePackage>, system: &Rc<RefCell<System>>) -> Result<Self> {
         let vm = Vm::new()?;
         let slot: Slot = Rc::new(RefCell::new(None));
         let lua = vm.lua();
@@ -140,6 +141,8 @@ impl HostInstance {
             .lua_context("creating send")?;
         globals.set("send", send).lua_context("installing send")?;
         globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
+        let readable = Rc::clone(package);
+        vm.install_resources(&ResourceKind::ALL, Rc::new(move |resource| readable.resource(resource)))?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
         Ok(Self { label, number, slot, vm })

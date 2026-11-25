@@ -32,8 +32,8 @@ declare class Ui
     function rect(self, x: number, y: number, w: number, h: number, options: RectOptions?): ()
     function bar(self, fraction: number, options: BarOptions?): ()
     function graph(self, values: { number }, options: GraphOptions?): ()
-    -- an .svg or .png from assets/
-    function image(self, asset: string, options: AreaOptions?): ()
+    -- an .svg or .png: ui:image(keyboard.resource("icons/dot.svg"), ...)
+    function image(self, image: Resource, options: AreaOptions?): ()
     -- degrees, clockwise from 12 o'clock
     function arc(self, cx: number, cy: number, r: number, from: number, to: number, options: ArcOptions?): ()
 

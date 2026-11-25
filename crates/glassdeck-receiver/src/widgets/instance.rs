@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_package::ModulePackage;
+use glassdeck_package::{ModulePackage, ResourceKind};
 use glassdeck_luau::profile::{Placement, Widget};
 use glassdeck_luau::{LuaResultExt, Vm, decode, encode, from_json};
 use mlua::{Function, Table, Value};
@@ -172,7 +172,7 @@ impl Instance {
             let result = live.draw().and_then(|commands| {
                 let listed = started.elapsed();
                 let package = Rc::clone(&self.installed.package);
-                let tile = draw::render(&commands, size, font, &mut self.images, &|name| package.asset(name))?;
+                let tile = draw::render(&commands, size, font, &mut self.images, &|resource| package.resource(resource))?;
                 Ok((tile, listed))
             });
             match result {
@@ -208,12 +208,14 @@ impl Instance {
 }
 
 impl Live {
-    fn start(package: &ModulePackage, widget: &Widget, saved: Option<Vec<u8>>) -> Result<Self> {
+    fn start(package: &Rc<ModulePackage>, widget: &Widget, saved: Option<Vec<u8>>) -> Result<Self> {
         let source = package.keyboard_script()?;
         let vm = Vm::new()?;
         let ui = Ui::new(widget.placement.w, widget.placement.h, vm.every_function()?);
         let lua = vm.lua();
         lua.globals().set("ui", ui.clone()).lua_context("installing ui")?;
+        let readable = Rc::clone(package);
+        vm.install_resources(&[ResourceKind::Keyboard], Rc::new(move |resource| readable.resource(resource)))?;
         vm.seal()?;
         let hooks: Table = vm.load(&source, "keyboard.luau")?;
         hooks.get::<Function>("draw").lua_context("keyboard.luau must return a table with a draw function")?;
@@ -262,7 +264,7 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
         let text = line.iter().collect();
         commands.push(Command::Text { text, x: 8.0, y, size: ERROR_TEXT_SIZE, color: color(ERROR_STROKE), align: Align::Left, width: Some(w - 16.0) });
     }
-    let no_assets = |name: &str| -> Result<Vec<u8>> { anyhow::bail!("the error tile has no asset {name}") };
+    let no_assets = |resource: &glassdeck_package::Resource| -> Result<Vec<u8>> { anyhow::bail!("the error tile has no {resource}") };
     let tile = draw::render(&commands, (w as u32, h as u32), font, &mut Images::new(), &no_assets).expect("the error tile draws");
     DrawnTile { pixels: draw::to_argb(&tile) }
 }
@@ -289,10 +291,20 @@ mod tests {
     }
 
     fn module(name: &str, script: &str) -> (Scratch, Installed) {
+        module_with(name, script, &[])
+    }
+
+    /// A packed module whose folder also has `files`, as (path under assets/, contents).
+    fn module_with(name: &str, script: &str, files: &[(&str, &str)]) -> (Scratch, Installed) {
         let dir = std::env::temp_dir().join(format!("glassdeck-widget-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(dir.join("src/module.json"), r#"{ "format": 2, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#).unwrap();
+        for (path, contents) in files {
+            let path = dir.join("src/assets").join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        fs::write(dir.join("src/module.json"), r#"{ "format": 3, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#).unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
         let package = pack_folder(&dir.join("src"), &dir.join("widget.deckmod")).unwrap();
         let modified = fs::metadata(package.path()).unwrap().modified().unwrap();
@@ -328,6 +340,20 @@ mod tests {
 
         instance.on_data(&rmpv_map_n(5));
         assert!(instance.draw(&font()).is_some());
+    }
+
+    #[test]
+    fn draws_an_image_from_a_keyboard_resource() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#00ff00"/></svg>"##;
+        let script = r##"
+            local dot = keyboard.resource("icons/dot.svg")
+            return { draw = function(state, ui) ui:image(dot, { x = 0, y = 0, w = 16, h = 16 }) end }
+        "##;
+        let (_scratch, installed) = module_with("image", script, &[("keyboard/icons/dot.svg", svg)]);
+        let mut instance = Instance::start(0, &widget(), installed, None);
+        let tile = instance.draw(&font()).expect("the first draw");
+        assert!(matches!(instance.run, Run::Running(_)));
+        assert_eq!(opaque_pixels(&tile), 16 * 16);
     }
 
     #[test]

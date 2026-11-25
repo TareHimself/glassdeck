@@ -9,3 +9,6 @@ declare system: {
     cpu_percent: () -> number,
     memory_percent: () -> number,
 }
+
+-- assets/host/<name>: stays on the host, so only host.luau has this table
+declare host: { resource: (name: string) -> Resource }

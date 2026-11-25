@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
 use crate::zip::{self, Entry};
+use crate::resource::{Resource, ResourceKind, ResourceName, literal_resources};
 use crate::{MANIFEST, read_exact_at, staging_path};
 
 pub const MODULE_EXTENSION: &str = "deckmod";
@@ -16,8 +17,8 @@ pub const MODULE_MANIFEST: &str = "module.json";
 pub const KEYBOARD_SCRIPT: &str = "keyboard.luau";
 pub const HOST_SCRIPT: &str = "host.luau";
 pub const ASSETS_FOLDER: &str = "assets";
-/// The module.json layout this build reads.
-pub const MODULE_FORMAT_VERSION: u32 = 2;
+/// The module layout this build reads: module.json and the package folders (format 3 split assets/ into keyboard/ and host/).
+pub const MODULE_FORMAT_VERSION: u32 = 3;
 const MAX_SCRIPT_LEN: u64 = 16 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -130,10 +131,9 @@ impl ModulePackage {
         self.manifest.host.then(|| self.script(HOST_SCRIPT)).transpose()
     }
 
-    /// A file from `assets/`, named without the folder.
-    pub fn asset(&self, name: &str) -> Result<Vec<u8>> {
-        let full = format!("{ASSETS_FOLDER}/{name}");
-        let entry = self.entries.get(&full).copied().with_context(|| format!("{} has no {full}", self.path.display()))?;
+    pub fn resource(&self, resource: &Resource) -> Result<Vec<u8>> {
+        let full = resource.entry();
+        let entry = self.entries.get(&full).copied().with_context(|| format!("{} has no {full}, which {resource} names", self.path.display()))?;
         let mut data = vec![0; usize::try_from(entry.len)?];
         read_exact_at(&self.file, entry.offset, &mut data).with_context(|| format!("reading {full}"))?;
         Ok(data)
@@ -198,27 +198,68 @@ impl ModuleWriter {
     }
 }
 
-/// Packs a module folder: `module.json`, the scripts and everything under `assets/`.
+/// Packs a module folder: `module.json`, the scripts, and `assets/keyboard/` and `assets/host/`.
+/// Every resource a script names as a literal must be in the folder, and on a side that script can use.
 pub fn pack_folder(folder: &Path, out: &Path) -> Result<ModulePackage> {
     let manifest_path = folder.join(MODULE_MANIFEST);
     let manifest = fs::read_to_string(&manifest_path).with_context(|| format!("reading {}", manifest_path.display()))?;
+    let resources = resource_files(&folder.join(ASSETS_FOLDER))?;
     let mut writer = ModuleWriter::create(out, &manifest)?;
     for script in [KEYBOARD_SCRIPT, HOST_SCRIPT] {
         let path = folder.join(script);
         if path.exists() {
+            let source = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+            check_literal_resources(script, &source, &resources)?;
             writer.add_file(script, &path)?;
         }
     }
-    let assets = folder.join(ASSETS_FOLDER);
-    if assets.is_dir() {
-        for entry in fs::read_dir(&assets).with_context(|| format!("reading {}", assets.display()))? {
-            let entry = entry?;
-            let name = entry.file_name().into_string().map_err(|n| anyhow::anyhow!("asset name {n:?} is not UTF-8"))?;
-            ensure!(entry.file_type()?.is_file(), "assets/{name} is a folder; assets/ holds files only");
-            writer.add_file(&format!("{ASSETS_FOLDER}/{name}"), &entry.path())?;
-        }
+    for (resource, path) in &resources {
+        writer.add_file(&resource.entry(), path)?;
     }
     writer.finish()
+}
+
+/// Every file under `assets/keyboard/` and `assets/host/`, each with a name a script can use.
+fn resource_files(assets: &Path) -> Result<Vec<(Resource, PathBuf)>> {
+    let mut found = Vec::new();
+    if !assets.is_dir() {
+        return Ok(found);
+    }
+    for entry in fs::read_dir(assets).with_context(|| format!("reading {}", assets.display()))? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = ResourceKind::ALL.into_iter().find(|k| k.folder() == name && entry.path().is_dir());
+        let kind = kind.with_context(|| format!("{ASSETS_FOLDER}/{name}: {ASSETS_FOLDER}/ holds only the keyboard/ and host/ folders"))?;
+        collect_files(&entry.path(), "", kind, &mut found)?;
+    }
+    found.sort_by_key(|(resource, _)| resource.entry());
+    Ok(found)
+}
+
+fn collect_files(folder: &Path, prefix: &str, kind: ResourceKind, found: &mut Vec<(Resource, PathBuf)>) -> Result<()> {
+    for entry in fs::read_dir(folder).with_context(|| format!("reading {}", folder.display()))? {
+        let entry = entry?;
+        let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+        if entry.file_type()?.is_dir() {
+            collect_files(&entry.path(), &format!("{name}/"), kind, found)?;
+        } else {
+            let name = ResourceName::parse(&name).with_context(|| format!("{ASSETS_FOLDER}/{}/{name}", kind.folder()))?;
+            found.push((Resource { kind, name }, entry.path()));
+        }
+    }
+    Ok(())
+}
+
+fn check_literal_resources(script: &str, source: &str, resources: &[(Resource, PathBuf)]) -> Result<()> {
+    for (kind, name) in literal_resources(source) {
+        let resource = Resource { kind, name: ResourceName::parse(&name).with_context(|| format!("{script} names {name:?}"))? };
+        ensure!(
+            !(script == KEYBOARD_SCRIPT && kind == ResourceKind::Host),
+            "{script} names {resource}, but host resources never reach the keyboard"
+        );
+        ensure!(resources.iter().any(|(r, _)| *r == resource), "{script} names {resource}, but {} isn't in the folder", resource.entry());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -227,7 +268,7 @@ mod tests {
     use crate::tests::{Scratch, web_manifest};
 
     const CLOCK: &str = r#"{
-        "format": 2,
+        "format": 3,
         "id": "dev.glassdeck.clock",
         "name": "Clock",
         "version": "1.0.0",
@@ -251,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_fixed_module_allows_only_its_size() {
-        let manifest = ModuleManifest::parse(r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
+        let manifest = ModuleManifest::parse(r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
         assert_eq!(manifest.resize, Resize::Fixed);
         assert!(manifest.resize.allows(manifest.size, Size { w: 8, h: 8 }));
         assert!(!manifest.resize.allows(manifest.size, Size { w: 16, h: 8 }));
@@ -260,31 +301,62 @@ mod tests {
     #[test]
     fn refuses_bad_manifests() {
         for bad in [
-            r#"{ "format": 2, "id": "clock", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "min": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 800, "h": 8 }, "min": { "w": 8, "h": 8 }, "max": { "w": 16, "h": 16 } }"#,
-            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "colour": 1 }"#,
+            r#"{ "format": 3, "id": "clock", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "min": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 800, "h": 8 }, "min": { "w": 8, "h": 8 }, "max": { "w": 16, "h": 16 } }"#,
+            r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "colour": 1 }"#,
             r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0", "size": { "w": 8, "h": 8 } }"#,
             r#"{ "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
         ] {
             assert!(ModuleManifest::parse(bad).is_err(), "{bad}");
         }
     }
 
+    fn resource(kind: ResourceKind, name: &str) -> Resource {
+        Resource { kind, name: ResourceName::parse(name).unwrap() }
+    }
+
+    /// A clock folder with `keyboard.luau` and the given resource files, as (path under assets/, contents).
+    fn clock_folder(scratch: &Scratch, script: &str, files: &[(&str, &str)]) -> PathBuf {
+        let folder = scratch.0.join("clock");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(MODULE_MANIFEST), CLOCK).unwrap();
+        fs::write(folder.join(KEYBOARD_SCRIPT), script).unwrap();
+        for (path, contents) in files {
+            let path = folder.join(ASSETS_FOLDER).join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        folder
+    }
+
     #[test]
     fn packs_and_opens_a_folder() {
         let scratch = Scratch::new("module-pack");
-        let folder = scratch.0.join("clock");
-        fs::create_dir_all(folder.join(ASSETS_FOLDER)).unwrap();
-        fs::write(folder.join(MODULE_MANIFEST), CLOCK).unwrap();
-        fs::write(folder.join(KEYBOARD_SCRIPT), "return {}").unwrap();
-        fs::write(folder.join(ASSETS_FOLDER).join("face.svg"), "<svg/>").unwrap();
+        let script = r#"local face = keyboard.resource("dial/face.svg") return {}"#;
+        let folder = clock_folder(&scratch, script, &[("keyboard/dial/face.svg", "<svg/>"), ("host/zones.json", "{}")]);
         let package = pack_folder(&folder, &scratch.0.join("clock.deckmod")).unwrap();
         assert_eq!(package.manifest().id, "dev.glassdeck.clock");
-        assert_eq!(package.keyboard_script().unwrap(), "return {}");
+        assert_eq!(package.keyboard_script().unwrap(), script);
         assert_eq!(package.host_script().unwrap(), None);
-        assert_eq!(package.asset("face.svg").unwrap(), b"<svg/>");
+        assert_eq!(package.resource(&resource(ResourceKind::Keyboard, "dial/face.svg")).unwrap(), b"<svg/>");
+        assert_eq!(package.resource(&resource(ResourceKind::Host, "zones.json")).unwrap(), b"{}");
+        assert!(package.resource(&resource(ResourceKind::Host, "dial/face.svg")).is_err());
+    }
+
+    #[test]
+    fn packing_refuses_misplaced_or_missing_resources() {
+        let refused = |name: &str, script: &str, files: &[(&str, &str)]| {
+            let scratch = Scratch::new(name);
+            let folder = clock_folder(&scratch, script, files);
+            format!("{:#}", pack_folder(&folder, &scratch.0.join("clock.deckmod")).err().expect("refused"))
+        };
+        assert!(refused("module-flat-asset", "return {}", &[("face.svg", "<svg/>")]).contains("holds only the keyboard/ and host/"));
+        assert!(refused("module-bad-name", "return {}", &[("keyboard/Face.svg", "<svg/>")]).contains("isn't a resource name"));
+        assert!(refused("module-missing", r#"keyboard.resource("face.svg")"#, &[]).contains("isn't in the folder"));
+        let host_on_keyboard = refused("module-host-on-kb", r#"host.resource("zones.json")"#, &[("host/zones.json", "{}")]);
+        assert!(host_on_keyboard.contains("never reach the keyboard"));
     }
 
     #[test]

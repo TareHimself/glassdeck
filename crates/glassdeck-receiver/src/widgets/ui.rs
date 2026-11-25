@@ -3,7 +3,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use mlua::{Function, Table, UserData, UserDataFields, UserDataMethods, Value};
+use glassdeck_luau::resource_of;
+use mlua::{AnyUserData, Function, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::draw::{Align, Area, Color, Command};
 
@@ -115,9 +116,9 @@ impl UserData for Ui {
             };
             ui.record("graph", command)
         });
-        methods.add_method("image", |_, ui, (asset, opts): (String, Option<Table>)| {
+        methods.add_method("image", |_, ui, (handle, opts): (AnyUserData, Option<Table>)| {
             let o = Opts::new("image", opts, &["x", "y", "w", "h"])?;
-            ui.record("image", Command::Image { asset, area: o.area(ui.size())? })
+            ui.record("image", Command::Image { resource: resource_of(&handle)?, area: o.area(ui.size())? })
         });
         methods.add_method("arc", |_, ui, (cx, cy, r, from, to, opts): (f32, f32, f32, f32, f32, Option<Table>)| {
             let o = Opts::new("arc", opts, &["width", "color"])?;

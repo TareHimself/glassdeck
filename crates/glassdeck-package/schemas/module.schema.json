@@ -6,7 +6,7 @@
   "required": ["format", "id", "name", "version", "size"],
   "properties": {
     "$schema": { "type": "string" },
-    "format": { "description": "The module.json layout; this schema describes format 2", "const": 2 },
+    "format": { "description": "The module.json layout; this schema describes format 3", "const": 3 },
     "id": {
       "description": "Unique, reverse-DNS, like dev.glassdeck.clock",
       "type": "string",

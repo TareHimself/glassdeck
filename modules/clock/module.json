@@ -1,6 +1,6 @@
 {
   "$schema": "../../crates/glassdeck-package/schemas/module.schema.json",
-  "format": 2,
+  "format": 3,
   "id": "dev.glassdeck.clock",
   "name": "Clock",
   "version": "1.0.0",

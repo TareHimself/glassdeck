@@ -3,6 +3,7 @@
 
 mod manifest;
 mod module;
+mod resource;
 mod zip;
 
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ pub use module::{
     ASSETS_FOLDER, KEYBOARD_SCRIPT, MODULE_EXTENSION, MODULE_FORMAT_VERSION, MODULE_MANIFEST, ModuleManifest, ModulePackage, ModuleWriter, HOST_SCRIPT, Resize,
     Size, is_module, pack_folder,
 };
+pub use resource::{Resource, ResourceKind, ResourceName, literal_resources};
 pub use zip::{ALIGNMENT, Entry, check_name};
 
 pub const EXTENSION: &str = "deckbg";

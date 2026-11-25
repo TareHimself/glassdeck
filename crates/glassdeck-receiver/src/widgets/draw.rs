@@ -5,6 +5,7 @@ use std::f32::consts::PI;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fontdue::Font;
+use glassdeck_package::Resource;
 use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use resvg::usvg;
 
@@ -80,7 +81,7 @@ pub enum Command {
     Rect { area: Area, fill: Option<Color>, stroke: Option<(Color, f32)>, radius: f32 },
     Bar { fraction: f32, area: Area, color: Color },
     Graph { values: Vec<f32>, area: Area, color: Color, min: Option<f32>, max: Option<f32> },
-    Image { asset: String, area: Area },
+    Image { resource: Resource, area: Area },
     /// Degrees, clockwise from 12 o'clock.
     Arc { cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, color: Color },
 }
@@ -90,9 +91,12 @@ enum Image {
     Vector(Box<usvg::Tree>),
 }
 
-/// A module's assets, decoded on first use.
+/// Reads a resource's bytes.
+pub type ReadResource<'a> = &'a dyn Fn(&Resource) -> Result<Vec<u8>>;
+
+/// A module's images, decoded on first use.
 pub struct Images {
-    decoded: HashMap<String, Image>,
+    decoded: HashMap<Resource, Image>,
 }
 
 impl Images {
@@ -100,17 +104,18 @@ impl Images {
         Self { decoded: HashMap::new() }
     }
 
-    fn get(&mut self, name: &str, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<&Image> {
-        if !self.decoded.contains_key(name) {
-            let bytes = read(name)?;
+    fn get(&mut self, resource: &Resource, read: ReadResource) -> Result<&Image> {
+        if !self.decoded.contains_key(resource) {
+            let bytes = read(resource)?;
+            let name = resource.name.as_str();
             let image = match name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
-                Some("png") => Image::Raster(Pixmap::decode_png(&bytes).map_err(|e| anyhow!("decoding {name}: {e}"))?),
-                Some("svg") => Image::Vector(Box::new(usvg::Tree::from_data(&bytes, &usvg::Options::default()).with_context(|| format!("parsing {name}"))?)),
-                _ => bail!("{name} is not a .png or .svg"),
+                Some("png") => Image::Raster(Pixmap::decode_png(&bytes).map_err(|e| anyhow!("decoding {resource}: {e}"))?),
+                Some("svg") => Image::Vector(Box::new(usvg::Tree::from_data(&bytes, &usvg::Options::default()).with_context(|| format!("parsing {resource}"))?)),
+                _ => bail!("{resource} is not a .png or .svg"),
             };
-            self.decoded.insert(name.to_owned(), image);
+            self.decoded.insert(resource.clone(), image);
         }
-        Ok(&self.decoded[name])
+        Ok(&self.decoded[resource])
     }
 }
 
@@ -120,7 +125,7 @@ pub fn render(
     size: (u32, u32),
     font: &Font,
     images: &mut Images,
-    read_asset: &dyn Fn(&str) -> Result<Vec<u8>>,
+    read_resource: ReadResource,
 ) -> Result<Pixmap> {
     let mut pixmap = Pixmap::new(size.0, size.1).context("a tile can't be empty")?;
     for command in commands {
@@ -155,7 +160,7 @@ pub fn render(
                     pixmap.stroke_path(&path, &color.paint(), &stroke, Transform::identity(), None);
                 }
             }
-            Command::Image { asset, area } => match images.get(asset, read_asset)? {
+            Command::Image { resource, area } => match images.get(resource, read_resource)? {
                 Image::Raster(image) => {
                     let scale = Transform::from_row(area.w / image.width() as f32, 0.0, 0.0, area.h / image.height() as f32, area.x, area.y);
                     let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
@@ -312,7 +317,7 @@ mod tests {
             stroke: None,
             radius: 0.0,
         }];
-        let no_assets = |name: &str| -> Result<Vec<u8>> { bail!("no {name}") };
+        let no_assets = |resource: &Resource| -> Result<Vec<u8>> { bail!("no {resource}") };
         let tile = render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).unwrap();
         let argb = to_argb(&tile);
         assert_eq!(argb[3 * 8 + 3], 0xFF_FF_00_00);
@@ -320,9 +325,10 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_asset_fails_loudly() {
-        let commands = [Command::Image { asset: "missing.png".into(), area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
-        let no_assets = |name: &str| -> Result<Vec<u8>> { bail!("no {name}") };
+    fn a_missing_resource_fails_loudly() {
+        let missing = Resource { kind: glassdeck_package::ResourceKind::Keyboard, name: glassdeck_package::ResourceName::parse("missing.png").unwrap() };
+        let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
+        let no_assets = |resource: &Resource| -> Result<Vec<u8>> { bail!("no {resource}") };
         assert!(render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).is_err());
     }
 

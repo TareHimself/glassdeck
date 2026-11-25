@@ -1,7 +1,10 @@
 //! The Luau core both module hosts share: VM setup, the hang guard, timers, and the plain-data
-//! encoding of `send()`, so a table sent on the PC arrives identical on the keyboard.
+//! encoding of `send()`, so a table sent on the host arrives identical on the keyboard.
 
 pub mod profile;
+mod resource;
+
+pub use resource::{ResourceReader, resource_of};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
