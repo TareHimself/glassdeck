@@ -18,6 +18,8 @@ pub enum Action<'a> {
     End,
     /// Reply to a clock probe at once with `ClockReply`, stamped with the probe's arrival time.
     AnswerProbe { probe_sent_us: u64 },
+    /// Make this the deck shown when no stream is open; the session itself doesn't change.
+    SelectDeck(&'a str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
     match (state, message) {
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
         (_, Message::ClockReply { .. }) => Err(SessionError::UnexpectedReply),
+        (_, Message::SelectDeck { name }) => Ok((state, Action::SelectDeck(name))),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
         (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
         (SessionState::Idle, Message::Frame(_)) => Err(SessionError::FrameWithoutStream),
@@ -95,6 +98,7 @@ mod tests {
             Ok((next, Action::Decode(_))) => Expect::Moves(next, "decode"),
             Ok((next, Action::End)) => Expect::Moves(next, "end"),
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
+            Ok((next, Action::SelectDeck(_))) => Expect::Moves(next, "select deck"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -106,7 +110,10 @@ mod tests {
         let b = info(2);
         let probe = Message::ClockProbe { sent_us: 5 };
         let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
+        let select = Message::SelectDeck { name: "a.deck".into() };
         let table = [
+            (Idle, select.clone(), Expect::Moves(Idle, "select deck")),
+            (Streaming(a), select, Expect::Moves(Streaming(a), "select deck")),
             (Idle, probe.clone(), Expect::Moves(Idle, "answer probe")),
             (Idle, reply.clone(), Expect::Refused(SessionError::UnexpectedReply)),
             (Streaming(a), probe, Expect::Refused(SessionError::ProbeWhileStreaming)),

@@ -1,5 +1,6 @@
 //! Glassdeck wire protocol: an 8-byte header per message; a later `StreamStart` switches source.
 
+pub mod compositor;
 mod session;
 
 use std::fmt;
@@ -8,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
@@ -23,6 +24,7 @@ const KIND_FRAME: u8 = 2;
 const KIND_STREAM_END: u8 = 3;
 const KIND_CLOCK_PROBE: u8 = 4;
 const KIND_CLOCK_REPLY: u8 = 5;
+const KIND_SELECT_DECK: u8 = 6;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
@@ -73,6 +75,9 @@ pub enum Message {
     ClockProbe { sent_us: u64 },
     /// Receiver to sender: the probe's `sent_us`, and the receiver's clock when the probe arrived.
     ClockReply { probe_sent_us: u64, received_us: u64 },
+    /// Sender to receiver: play this deck from the keyboard's deck folder whenever no stream is open,
+    /// and remember it across restarts.
+    SelectDeck { name: String },
 }
 
 #[derive(Debug)]
@@ -83,6 +88,7 @@ pub enum ProtoError {
     BadBodyLength { kind: u8, len: usize },
     UnknownCodec(u8),
     UnknownMode(u8),
+    DeckNameNotUtf8,
     Io(io::Error),
 }
 
@@ -95,6 +101,7 @@ impl fmt::Display for ProtoError {
             Self::BadBodyLength { kind, len } => write!(f, "message kind {kind} has invalid body length {len}"),
             Self::UnknownCodec(c) => write!(f, "unknown codec {c}"),
             Self::UnknownMode(m) => write!(f, "unknown mode {m}"),
+            Self::DeckNameNotUtf8 => write!(f, "deck name is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -172,6 +179,7 @@ impl Message {
             Self::ClockReply { probe_sent_us, received_us } => {
                 (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
             }
+            Self::SelectDeck { name } => (KIND_SELECT_DECK, name.as_bytes().to_vec()),
         };
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.push(VERSION);
@@ -220,6 +228,10 @@ impl Message {
             KIND_CLOCK_PROBE if body.len() == CLOCK_PROBE_LEN => Ok(Self::ClockProbe { sent_us: u64_at(&body, 0) }),
             KIND_CLOCK_REPLY if body.len() == CLOCK_REPLY_LEN => {
                 Ok(Self::ClockReply { probe_sent_us: u64_at(&body, 0), received_us: u64_at(&body, 8) })
+            }
+            KIND_SELECT_DECK => {
+                let name = String::from_utf8(body).map_err(|_| ProtoError::DeckNameNotUtf8)?;
+                Ok(Self::SelectDeck { name })
             }
             KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY => Err(bad_length()),
             other => Err(ProtoError::UnknownKind(other)),
@@ -290,6 +302,7 @@ mod tests {
         round_trip(Message::StreamEnd { stream_id: 3 });
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
+        round_trip(Message::SelectDeck { name: "late-night.deck".into() });
     }
 
     #[test]
