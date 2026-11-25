@@ -21,7 +21,7 @@ use crate::monitors::FoundMonitor;
 use crate::software::SoftwareEncoder;
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
-const QUEUED_FRAMES: usize = 4;
+pub const QUEUED_FRAMES: usize = 4;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum EncoderKind {
@@ -196,16 +196,18 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
     capture.map_err(|e| anyhow!("capture failed: {e}"))
 }
 
-fn send_loop(mut link: Link, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
+pub fn send_loop(mut link: Link, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
     link.send(&Message::StreamStart(info))?;
     let mut stats = SendStats::new(Instant::now());
+    let mut first_capture_us = None;
 
     for frame in rx {
+        let first = *first_capture_us.get_or_insert(frame.capture_us);
         let sent = SentFrame { bytes: frame.data.len(), keyframe: frame.keyframe, encode_time: frame.encode_time };
         let link_wait = link.send(&Message::Frame(Frame {
             stream_id: info.stream_id,
             seq: frame.seq,
-            time_us: frame.capture_us,
+            time_us: stream_time_us(info.mode, first, frame.capture_us),
             keyframe: frame.keyframe,
             payload: frame.data,
         }))?;
@@ -219,6 +221,14 @@ fn send_loop(mut link: Link, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Re
     }
     link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
     Ok(())
+}
+
+/// Live frames carry their wall-clock capture time; paced frames count from the stream's first frame.
+fn stream_time_us(mode: Mode, first_capture_us: u64, capture_us: u64) -> u64 {
+    match mode {
+        Mode::Live { .. } => capture_us,
+        Mode::Paced => capture_us.saturating_sub(first_capture_us),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -279,5 +289,21 @@ impl fmt::Display for SendStats {
             self.largest_frame / 1024,
             self.keyframes,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_frames_keep_their_capture_time() {
+        assert_eq!(stream_time_us(Mode::Live { clock_offset_us: 0 }, 1_000, 5_000), 5_000);
+    }
+
+    #[test]
+    fn paced_frames_count_from_the_first_frame() {
+        assert_eq!(stream_time_us(Mode::Paced, 1_000, 1_000), 0);
+        assert_eq!(stream_time_us(Mode::Paced, 1_000, 17_667), 16_667);
     }
 }

@@ -6,6 +6,7 @@ mod monitors;
 mod play;
 mod record;
 mod software;
+mod web;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -18,11 +19,12 @@ use monitors::MonitorQuery;
 use play::PlayOptions;
 use record::RecordOptions;
 use desktop::{EncoderKind, StreamOptions, VideoCodec};
+use web::WebOptions;
 
 const USB2_PRACTICAL_MBYTES_PER_SEC: u64 = 35;
 
 #[derive(Parser)]
-#[command(about = "Capture a monitor and encode it to H.264")]
+#[command(about = "Glassdeck sources: capture a monitor, render a web page or play a file, and send it to a receiver")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -54,6 +56,33 @@ enum Command {
         /// Start over at the end, for wallpapers
         #[arg(long = "loop")]
         looping: bool,
+        /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
+        #[arg(long, default_value_t = USB2_PRACTICAL_MBYTES_PER_SEC, conflicts_with = "unlimited_link")]
+        link_mbytes: u64,
+        /// Send as fast as localhost allows
+        #[arg(long)]
+        unlimited_link: bool,
+    },
+    /// Render a web page offscreen with CEF and stream it as a paced wallpaper
+    Web {
+        url: String,
+        #[arg(long, default_value = "127.0.0.1:7878")]
+        to: SocketAddr,
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+        /// Stop after this many seconds instead of running until closed
+        #[arg(long)]
+        seconds: Option<u64>,
+        #[arg(long, value_enum, default_value_t = VideoCodec::Hevc)]
+        codec: VideoCodec,
+        #[arg(long, default_value_t = 15)]
+        mbps: u32,
+        #[arg(long, default_value_t = 60)]
+        fps: u32,
+        #[arg(long, default_value_t = 120)]
+        keyframe_every: u32,
         /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
         #[arg(long, default_value_t = USB2_PRACTICAL_MBYTES_PER_SEC, conflicts_with = "unlimited_link")]
         link_mbytes: u64,
@@ -94,6 +123,9 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    if let Some(code) = web::helper_process_exit_code() {
+        std::process::exit(code);
+    }
     match Cli::parse().command {
         Command::List => {
             for info in monitors::enumerate()? {
@@ -113,6 +145,20 @@ fn main() -> Result<()> {
                     fps,
                 },
             )
+        }
+        Command::Web { url, to, width, height, seconds, codec, mbps, fps, keyframe_every, link_mbytes, unlimited_link } => {
+            web::run(WebOptions {
+                url,
+                to,
+                width,
+                height,
+                codec: codec.into(),
+                fps,
+                bitrate: mbps * 1_000_000,
+                keyframe_every,
+                duration: seconds.map(Duration::from_secs),
+                link_bytes_per_sec: (!unlimited_link).then_some(link_mbytes * 1_000_000),
+            })
         }
         Command::Play { file, to, looping, link_mbytes, unlimited_link } => play::run(
             &file,
