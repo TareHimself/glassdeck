@@ -22,9 +22,8 @@
 #define PANEL_HEIGHT 1080
 #define INSIDE_FLAG "--inside-sandbox"
 #define SANDBOXED_SELF "/app/glassdeck-web"
-#define GPU_DRIVER "panfrost"
-#define FIRST_RENDER_NODE 128
-#define LAST_RENDER_NODE 191
+#define DISPLAY_DRIVER "rockchip"
+#define MAX_CARDS 16
 
 static const char* const DEVICES[] = {"/dev/mpp_service", "/dev/dma_heap", "/dev/dri"};
 // MPP identifies the chip from the device tree (/proc/device-tree links here); libdrm finds GPUs through /sys.
@@ -167,8 +166,8 @@ static void stop_with_error(struct renderer* r, const char* message) {
 // WebKit renders into dma-bufs we allocate; this is what the receiver's compositor will put on a plane.
 static struct wpe_dmabuf_pool_entry* on_create_entry(void* data) {
   struct renderer* r = data;
-  struct gbm_bo* bo = gbm_bo_create(r->gbm, PANEL_WIDTH, PANEL_HEIGHT, GBM_FORMAT_ARGB8888,
-                                    GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+  struct gbm_bo* bo = gbm_bo_create(r->gbm, PANEL_WIDTH, PANEL_HEIGHT, GBM_FORMAT_XRGB8888,
+                                    GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
   if (!bo) {
     fprintf(stderr, "glassdeck-web: cannot allocate a frame buffer\n");
     return NULL;
@@ -275,17 +274,6 @@ static gboolean find_output(int fd, struct display* d) {
   return found;
 }
 
-static gboolean open_display(struct display* d) {
-  for (int minor = 0; minor < 16; minor++) {
-    g_autofree char* path = g_strdup_printf("/dev/dri/card%d", minor);
-    int fd = open(path, O_RDWR | O_CLOEXEC);
-    if (fd < 0) continue;
-    if (find_output(fd, d)) return TRUE;
-    close(fd);
-  }
-  return FALSE;
-}
-
 static void on_commit_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
   struct renderer* r = data;
   if (r->frames++ == 0) {
@@ -300,13 +288,15 @@ static void on_commit_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
   wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
 }
 
-static int open_gpu(void) {
-  for (int minor = FIRST_RENDER_NODE; minor <= LAST_RENDER_NODE; minor++) {
-    g_autofree char* path = g_strdup_printf("/dev/dri/renderD%d", minor);
+// Buffers come from the display controller's node: Mesa (kmsro) allocates them there and renders into them on the
+// Mali, so every frame is one the display can scan out.
+static int open_display_device(void) {
+  for (int minor = 0; minor < MAX_CARDS; minor++) {
+    g_autofree char* path = g_strdup_printf("/dev/dri/card%d", minor);
     int fd = open(path, O_RDWR | O_CLOEXEC);
     if (fd < 0) continue;
     drmVersionPtr version = drmGetVersion(fd);
-    gboolean match = version && strcmp(version->name, GPU_DRIVER) == 0;
+    gboolean match = version && strcmp(version->name, DISPLAY_DRIVER) == 0;
     drmFreeVersion(version);
     if (match) return fd;
     close(fd);
@@ -348,17 +338,17 @@ static int fail(const char* message) {
 }
 
 static int render(const struct options* o) {
-  int gpu = open_gpu();
-  if (gpu < 0) return fail("no " GPU_DRIVER " render node");
+  int card = open_display_device();
+  if (card < 0) return fail("no " DISPLAY_DRIVER " display device");
   struct renderer r = {
       .loop = g_main_loop_new(NULL, FALSE),
-      .gbm = gbm_create_device(gpu),
+      .gbm = gbm_create_device(card),
       .entries = g_ptr_array_new(),
       .display = {.fd = -1},
   };
   if (!r.gbm) return fail("cannot open the GPU through GBM");
   if (o->display) {
-    if (!open_display(&r.display)) return fail("no connected output can show 1920x1080");
+    if (!find_output(card, &r.display)) return fail("no connected output can show 1920x1080");
     printf("previewing on %ux%u@%u\n", r.display.mode.hdisplay, r.display.mode.vdisplay, r.display.mode.vrefresh);
     g_unix_fd_add(r.display.fd, G_IO_IN, on_display_event, NULL);
   }
@@ -408,9 +398,8 @@ static int render(const struct options* o) {
   g_main_loop_unref(r.loop);
   for (guint i = 0; i < r.entries->len; i++) free_entry(&r, g_ptr_array_index(r.entries, i));
   g_ptr_array_unref(r.entries);
-  if (r.display.fd >= 0) close(r.display.fd);
   gbm_device_destroy(r.gbm);
-  close(gpu);
+  close(card);
   return r.exit_code;
 }
 
