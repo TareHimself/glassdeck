@@ -7,17 +7,17 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-ctrlc = "3.5.3"
 glassdeck-package.workspace = true
-glassdeck-luau.workspace = true
 glassdeck-proto.workspace = true
 glassdeck-wallpaper-engine.workspace = true
-mlua = { version = "0.12.3", features = ["luau", "serde"] }
-sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 openh264.workspace = true
+serde.workspace = true
 windows.workspace = true
 windows-capture.workspace = true
 windows-core.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [build-dependencies]
 cc = "1.11.3"

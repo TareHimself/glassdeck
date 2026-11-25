@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
 glassdeck-package = { path = "crates/glassdeck-package" }
+glassdeck-capture = { path = "crates/glassdeck-capture" }
 glassdeck-layout = { path = "crates/glassdeck-layout" }
 glassdeck-luau = { path = "crates/glassdeck-luau" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
@@ -33,7 +34,9 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
     "Win32_System_Ole",
+    "Win32_Security",
     "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_WindowsAndMessaging",
 ] }

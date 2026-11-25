@@ -20,12 +20,12 @@
 extern "C" {
 typedef void (*gd_web_frame_fn)(void* user, void* shared_handle, uint32_t width, uint32_t height, uint64_t timestamp_us);
 
-// Rust's view of an open deck: `lookup` finds an entry (0 when found), `read` reads inside one (bytes, or -1).
+// Rust's view of an open background: `lookup` finds an entry (0 when found), `read` reads inside one (bytes, or -1).
 typedef struct {
   void* user;
   int (*lookup)(void* user, const char* path, uint64_t* offset, uint64_t* len, char* mime, uint32_t mime_cap);
   int64_t (*read)(void* user, uint64_t offset, uint64_t len, uint64_t at, void* buf, uint32_t buf_len);
-} gd_deck_provider;
+} gd_background_provider;
 }
 
 namespace {
@@ -87,8 +87,8 @@ class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHand
 };
 
 constexpr char kInitScript[] = "glassdeck_init_script";
-constexpr char kDeckScheme[] = "deck";
-constexpr char kDeckHost[] = "wallpaper";
+constexpr char kBackgroundScheme[] = "background";
+constexpr char kBackgroundHost[] = "wallpaper";
 
 // "bytes=a-b", "bytes=a-" or "bytes=-n" into [start, end); one range only.
 bool ParseRange(const std::string& header, uint64_t len, uint64_t& start, uint64_t& end) {
@@ -114,10 +114,10 @@ bool ParseRange(const std::string& header, uint64_t len, uint64_t& start, uint64
   return start < end;
 }
 
-// Serves deck://wallpaper/<entry> straight from the entry's byte range, honouring Range for media seeking.
-class DeckResourceHandler : public CefResourceHandler {
+// Serves background://wallpaper/<entry> straight from the entry's byte range, honouring Range for media seeking.
+class BackgroundResourceHandler : public CefResourceHandler {
  public:
-  explicit DeckResourceHandler(gd_deck_provider deck) : deck_(deck) {}
+  explicit BackgroundResourceHandler(gd_background_provider background) : background_(background) {}
 
   bool Open(CefRefPtr<CefRequest> request, bool& handle_request, CefRefPtr<CefCallback>) override {
     handle_request = true;
@@ -131,7 +131,7 @@ class DeckResourceHandler : public CefResourceHandler {
     std::string path = CefURIDecode(CefString(&parts.path), true, rules).ToString();
     if (!path.empty() && path[0] == '/') path.erase(0, 1);
     char mime[128] = {};
-    if (deck_.lookup(deck_.user, path.c_str(), &offset_, &len_, mime, sizeof mime) != 0) {
+    if (background_.lookup(background_.user, path.c_str(), &offset_, &len_, mime, sizeof mime) != 0) {
       status_ = 404;
       return true;
     }
@@ -176,7 +176,7 @@ class DeckResourceHandler : public CefResourceHandler {
     bytes_read = 0;
     if (position_ >= end_) return false;
     const uint32_t want = static_cast<uint32_t>(std::min<uint64_t>(bytes_to_read, end_ - position_));
-    const int64_t n = deck_.read(deck_.user, offset_, len_, position_, data_out, want);
+    const int64_t n = background_.read(background_.user, offset_, len_, position_, data_out, want);
     if (n <= 0) {
       bytes_read = ERR_FAILED;
       return false;
@@ -189,27 +189,27 @@ class DeckResourceHandler : public CefResourceHandler {
   void Cancel() override {}
 
  private:
-  gd_deck_provider deck_;
+  gd_background_provider background_;
   int status_ = 500;
   std::string mime_;
   uint64_t offset_ = 0, len_ = 0, start_ = 0, end_ = 0, position_ = 0;
 
-  IMPLEMENT_REFCOUNTING(DeckResourceHandler);
+  IMPLEMENT_REFCOUNTING(BackgroundResourceHandler);
 };
 
-class DeckSchemeFactory : public CefSchemeHandlerFactory {
+class BackgroundSchemeFactory : public CefSchemeHandlerFactory {
  public:
-  explicit DeckSchemeFactory(gd_deck_provider deck) : deck_(deck) {}
+  explicit BackgroundSchemeFactory(gd_background_provider background) : background_(background) {}
 
   CefRefPtr<CefResourceHandler> Create(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, const CefString&,
                                        CefRefPtr<CefRequest>) override {
-    return new DeckResourceHandler(deck_);
+    return new BackgroundResourceHandler(background_);
   }
 
  private:
-  gd_deck_provider deck_;
+  gd_background_provider background_;
 
-  IMPLEMENT_REFCOUNTING(DeckSchemeFactory);
+  IMPLEMENT_REFCOUNTING(BackgroundSchemeFactory);
 };
 
 // The init script reaches the renderer through the browser's extra_info, and runs before the page's own scripts.
@@ -219,7 +219,7 @@ class App : public CefApp, public CefRenderProcessHandler {
 
   // Every process must agree on the scheme, so this runs in the browser and in each helper.
   void OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) override {
-    registrar->AddCustomScheme(kDeckScheme, CEF_SCHEME_OPTION_STANDARD | CEF_SCHEME_OPTION_SECURE |
+    registrar->AddCustomScheme(kBackgroundScheme, CEF_SCHEME_OPTION_STANDARD | CEF_SCHEME_OPTION_SECURE |
                                                 CEF_SCHEME_OPTION_CORS_ENABLED | CEF_SCHEME_OPTION_FETCH_ENABLED);
   }
 
@@ -262,8 +262,8 @@ int gd_web_subprocess(void) {
 
 // Starts CEF on its own message-loop thread and opens one windowless browser. Returns 0 on success.
 // `init_script` may be empty; otherwise it runs in the main frame before the page's scripts.
-// `deck` may be null; otherwise it serves deck://wallpaper/ and must outlive gd_web_stop.
-int gd_web_start(const char* url, const char* init_script, const gd_deck_provider* deck, uint32_t width,
+// `background` may be null; otherwise it serves background://wallpaper/ and must outlive gd_web_stop.
+int gd_web_start(const char* url, const char* init_script, const gd_background_provider* background, uint32_t width,
                  uint32_t height, uint32_t fps, const char* cache_dir, gd_web_frame_fn on_frame, void* user) {
   CefMainArgs args(GetModuleHandleW(nullptr));
   CefSettings settings;
@@ -274,7 +274,7 @@ int gd_web_start(const char* url, const char* init_script, const gd_deck_provide
   CefString(&settings.root_cache_path).FromString(cache_dir);
   CefRefPtr<App> app(new App);
   if (!CefInitialize(args, settings, app, nullptr)) return 1;
-  if (deck && !CefRegisterSchemeHandlerFactory(kDeckScheme, kDeckHost, new DeckSchemeFactory(*deck))) {
+  if (background && !CefRegisterSchemeHandlerFactory(kBackgroundScheme, kBackgroundHost, new BackgroundSchemeFactory(*background))) {
     CefShutdown();
     return 3;
   }

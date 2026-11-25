@@ -12,6 +12,7 @@ use crate::clock::{ClockSample, best_sample};
 use simulated::SimulatedLink;
 
 const CLOCK_PROBES: usize = 8;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The sender's end of the link: the protocol over a socket, optionally throttled like USB 2.0.
 pub struct Link {
@@ -21,7 +22,7 @@ pub struct Link {
 
 impl Link {
     pub fn connect(to: SocketAddr, link_bytes_per_sec: Option<u64>) -> Result<Self> {
-        let socket = TcpStream::connect(to).with_context(|| format!("connecting to receiver at {to}"))?;
+        let socket = TcpStream::connect_timeout(&to, CONNECT_TIMEOUT).with_context(|| format!("connecting to receiver at {to}"))?;
         socket.set_nodelay(true)?;
         let simulated = link_bytes_per_sec.map(|rate| SimulatedLink::new(rate, Instant::now()));
         Ok(Self { socket, simulated })

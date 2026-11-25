@@ -1,17 +1,18 @@
-//! Source -> Encoder -> Link: everything the sources share, from connecting to the receiver to StreamEnd.
+//! Source -> Encoder -> out: everything the sources share, from StreamStart to StreamEnd. Whoever owns the
+//! Link (glassdeckd) takes the messages from there.
 
 use std::fmt;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Result, anyhow};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use glassdeck_proto::{Codec, Frame, Message, Mode, PACED_SEND_AHEAD_US, StreamInfo};
 
-use crate::link::{Link, new_stream_id};
+use crate::link::new_stream_id;
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const QUEUED_FRAMES: usize = 4;
@@ -19,16 +20,9 @@ const SEND_AHEAD: Duration = Duration::from_micros(PACED_SEND_AHEAD_US);
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-/// Ctrl+C asks the running source to end its stream cleanly, so the receiver gets StreamEnd.
-/// A second Ctrl+C quits at once, in case a source is stuck.
-pub fn stop_on_ctrl_c() -> Result<()> {
-    ctrlc::set_handler(request_stop).context("installing the Ctrl+C handler")
-}
-
+/// Asks the running source to end its stream cleanly, so the receiver gets StreamEnd.
 pub fn request_stop() {
-    if STOP.swap(true, Ordering::Relaxed) {
-        std::process::exit(130);
-    }
+    STOP.store(true, Ordering::Relaxed);
 }
 
 /// Sources poll this and stop as if their duration had run out.
@@ -93,7 +87,8 @@ pub struct EncoderSettings {
 }
 
 /// Codec choice on the command line.
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum VideoCodec {
     /// Fewer bits for the same picture, and the RK3566 decodes it faster
     Hevc,
@@ -109,10 +104,13 @@ impl From<VideoCodec> for Codec {
     }
 }
 
-pub struct LinkOptions {
-    pub to: SocketAddr,
-    pub link_bytes_per_sec: Option<u64>,
+/// Where a stream's messages go, in order. Sending blocks while the Link is behind, which slows the source.
+pub trait StreamOut: Send {
+    fn send(&mut self, message: &Message) -> Result<()>;
 }
+
+/// A live stream's clock offset belongs to the Link owner, which measures it and fills it in before sending.
+pub const UNSYNCED_CLOCK_OFFSET_US: i64 = 0;
 
 /// How a frame's `time_us` becomes the time sent on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,36 +140,27 @@ impl StreamClock {
     }
 }
 
-pub fn run(source: Source, options: LinkOptions) -> Result<()> {
+pub fn run(source: Source, out: Box<dyn StreamOut>) -> Result<()> {
     let format = match &source {
         Source::Frames(frames) => frames.format(),
         Source::Encoded(encoded) => encoded.format(),
     };
     let clock = StreamClock::of(&source);
-    let mut link = Link::connect(options.to, options.link_bytes_per_sec)?;
     let mode = match clock {
-        StreamClock::Wall => {
-            let sample = link.sync_clock()?;
-            println!(
-                "Receiver clock is {:+.1} ms from ours (probe round trip {:.1} ms)",
-                sample.offset_us() as f64 / 1000.0,
-                sample.round_trip_us() as f64 / 1000.0
-            );
-            Mode::Live { clock_offset_us: sample.offset_us() }
-        }
+        StreamClock::Wall => Mode::Live { clock_offset_us: UNSYNCED_CLOCK_OFFSET_US },
         StreamClock::FromFirstFrame | StreamClock::Presentation => Mode::Paced,
     };
     let info = StreamInfo { stream_id: new_stream_id(), codec: format.codec, mode, width: format.width, height: format.height };
 
     let (tx, rx) = mpsc::sync_channel(QUEUED_FRAMES);
-    let network = thread::spawn(move || send_loop(link, info, clock, rx));
+    let network = thread::spawn(move || send_loop(out, info, clock, rx));
     let produced = match source {
         Source::Frames(frames) => frames.run(tx),
         Source::Encoded(encoded) => pace(encoded, tx),
     };
     let sent = network.join().map_err(|_| anyhow!("network thread panicked"))?;
     // A failed send ends the source too, so the send error is the one worth reporting.
-    sent.context("sending to receiver")?;
+    sent.map_err(|e| e.context("sending the stream"))?;
     produced
 }
 
@@ -190,15 +179,16 @@ fn pace(mut source: Box<dyn EncodedSource>, out: SyncSender<EncodedFrame>) -> Re
     Ok(())
 }
 
-fn send_loop(mut link: Link, info: StreamInfo, clock: StreamClock, frames: Receiver<EncodedFrame>) -> Result<()> {
-    link.send(&Message::StreamStart(info))?;
+fn send_loop(mut out: Box<dyn StreamOut>, info: StreamInfo, clock: StreamClock, frames: Receiver<EncodedFrame>) -> Result<()> {
+    out.send(&Message::StreamStart(info))?;
     let mut stats = SendStats::new(Instant::now());
     let mut first_us = None;
 
     for frame in frames {
         let first = *first_us.get_or_insert(frame.time_us);
         let sent = SentFrame { bytes: frame.data.len(), keyframe: frame.keyframe, encode_time: frame.encode_time };
-        let link_wait = link.send(&Message::Frame(Frame {
+        let waiting = Instant::now();
+        out.send(&Message::Frame(Frame {
             stream_id: info.stream_id,
             seq: frame.seq,
             time_us: clock.wire_time_us(first, frame.time_us),
@@ -206,14 +196,14 @@ fn send_loop(mut link: Link, info: StreamInfo, clock: StreamClock, frames: Recei
             payload: frame.data,
         }))?;
 
-        stats = stats.record(sent, link_wait);
+        stats = stats.record(sent, waiting.elapsed());
         let now = Instant::now();
         if now - stats.since >= STATS_INTERVAL {
             println!("{stats}");
             stats = SendStats::new(now);
         }
     }
-    link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
+    out.send(&Message::StreamEnd { stream_id: info.stream_id })?;
     Ok(())
 }
 

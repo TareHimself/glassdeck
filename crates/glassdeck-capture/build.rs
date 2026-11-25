@@ -31,9 +31,8 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", lib.parent().unwrap().display());
         println!("cargo:rustc-link-lib={}", lib.file_stem().unwrap().to_string_lossy());
     }
-    // Only `web` touches CEF, so `stream` and `play` start without libcef.dll present.
+    // Binaries that link this add /DELAYLOAD:libcef.dll, so only web sources need libcef.dll.
     println!("cargo:rustc-link-lib=dylib=delayimp");
-    println!("cargo:rustc-link-arg-bins=/DELAYLOAD:libcef.dll");
 
     let profile_dir = out_dir
         .ancestors()

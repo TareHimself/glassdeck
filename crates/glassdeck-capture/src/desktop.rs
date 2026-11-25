@@ -20,7 +20,8 @@ use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoF
 const POLL: Duration = Duration::from_millis(50);
 use crate::software::SoftwareEncoder;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EncoderKind {
     /// Hardware H.264 or HEVC through Media Foundation, frames stay on the GPU
     Gpu,
