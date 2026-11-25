@@ -12,6 +12,12 @@ pub const VERSION: u8 = 3;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
+/// Paced streams are wallpapers, where start-up delay costs nothing, so they buffer deeply enough to
+/// ride out Wi-Fi stalls. The sender runs this far ahead of presentation time...
+pub const PACED_SEND_AHEAD_US: u64 = 400_000;
+/// ...and the receiver starts this far behind the first frame. It must exceed the send-ahead.
+pub const PACED_PLAYOUT_DELAY_US: u64 = 500_000;
+
 const KIND_STREAM_START: u8 = 1;
 const KIND_FRAME: u8 = 2;
 const KIND_STREAM_END: u8 = 3;

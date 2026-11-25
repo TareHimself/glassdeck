@@ -9,14 +9,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use clap::ValueEnum;
-use glassdeck_proto::{Codec, Frame, Message, Mode, StreamInfo};
+use glassdeck_proto::{Codec, Frame, Message, Mode, PACED_SEND_AHEAD_US, StreamInfo};
 
 use crate::link::{Link, new_stream_id};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const QUEUED_FRAMES: usize = 4;
-/// Encoded sources send this far ahead of presentation time, inside the receiver's playout delay.
-const SEND_AHEAD: Duration = Duration::from_millis(100);
+const SEND_AHEAD: Duration = Duration::from_micros(PACED_SEND_AHEAD_US);
 
 static STOP: AtomicBool = AtomicBool::new(false);
 

@@ -1,5 +1,4 @@
-/// How far behind the first frame's arrival paced playback starts, to absorb network jitter.
-pub const PLAYOUT_DELAY_US: u64 = 150_000;
+use glassdeck_proto::PACED_PLAYOUT_DELAY_US as PLAYOUT_DELAY_US;
 
 /// Maps a paced stream's presentation times onto this machine's wall clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
