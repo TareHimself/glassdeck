@@ -445,6 +445,7 @@ dependencies = [
  "glassdeck-proto",
  "minifb",
  "pkg-config",
+ "rustix",
  "windows",
 ]
 
