@@ -160,7 +160,7 @@ enum WallpaperAction {
 
 #[derive(Subcommand)]
 enum ModuleAction {
-    /// Pack a module folder (module.json, keyboard.luau, optional pc.luau and assets/) into a .deckmod
+    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod
     Pack {
         folder: PathBuf,
         /// Defaults to <folder>.deckmod

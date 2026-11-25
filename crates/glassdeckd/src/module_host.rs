@@ -1,4 +1,4 @@
-//! The PC host: runs the `pc.luau` half of each widget in the profile, one VM per instance, and hands
+//! The module host: runs the `host.luau` half of each widget in the profile, one VM per instance, and hands
 //! what each `send()`s to the Link. Picks up profile and module changes while running, like the keyboard.
 
 use std::cell::RefCell;
@@ -23,7 +23,7 @@ use crate::link::Uplink;
 const RESCAN: Duration = Duration::from_secs(1);
 
 pub fn start(profile: PathBuf, modules: PathBuf, uplink: Arc<Uplink>) -> Result<()> {
-    thread::Builder::new().name("pc host".into()).spawn(move || Host::new(profile, modules, uplink).run())?;
+    thread::Builder::new().name("module host".into()).spawn(move || Host::new(profile, modules, uplink).run())?;
     Ok(())
 }
 
@@ -32,7 +32,7 @@ struct Host {
     modules: PathBuf,
     uplink: Arc<Uplink>,
     system: Rc<RefCell<System>>,
-    instances: Vec<PcInstance>,
+    instances: Vec<HostInstance>,
     seen: Option<Snapshot>,
 }
 
@@ -45,7 +45,7 @@ struct Snapshot {
 /// The latest unsent value of one instance.
 type Slot = Rc<RefCell<Option<Vec<u8>>>>;
 
-struct PcInstance {
+struct HostInstance {
     label: String,
     number: u16,
     slot: Slot,
@@ -94,26 +94,26 @@ impl Host {
         self.uplink.forget_module_data();
         match self.load() {
             Ok(instances) => {
-                println!("PC host: {} PC halves running", instances.len());
+                println!("Module host: {} host halves running", instances.len());
                 self.instances = instances;
             }
-            Err(e) => eprintln!("error: PC host: {e:#}"),
+            Err(e) => eprintln!("error: module host: {e:#}"),
         }
     }
 
-    fn load(&self) -> Result<Vec<PcInstance>> {
+    fn load(&self) -> Result<Vec<HostInstance>> {
         if !self.profile.exists() {
-            println!("PC host: no profile at {}, so no widgets", self.profile.display());
+            println!("Module host: no profile at {}, so no widgets", self.profile.display());
             return Ok(Vec::new());
         }
         let packages = installed(&self.modules)?;
         let profile = Profile::read(&self.profile, WidgetArea::of_panel().size, |id| packages.get(id).map(|p| p.manifest().clone()))?;
         let mut instances = Vec::new();
         for (index, widget) in profile.widgets.iter().enumerate() {
-            if let Some(script) = packages[&widget.module].pc_script()? {
+            if let Some(script) = packages[&widget.module].host_script()? {
                 let label = format!("widget {index} ({})", widget.module);
                 let number = u16::try_from(index).expect("profiles hold at most u16::MAX widgets");
-                match PcInstance::start(label.clone(), number, &script, &self.system) {
+                match HostInstance::start(label.clone(), number, &script, &self.system) {
                     Ok(instance) => instances.push(instance),
                     Err(e) => eprintln!("error: {label}: {e:#}"),
                 }
@@ -123,7 +123,7 @@ impl Host {
     }
 }
 
-impl PcInstance {
+impl HostInstance {
     fn start(label: String, number: u16, script: &str, system: &Rc<RefCell<System>>) -> Result<Self> {
         let vm = Vm::new()?;
         let slot: Slot = Rc::new(RefCell::new(None));
@@ -141,7 +141,7 @@ impl PcInstance {
         globals.set("send", send).lua_context("installing send")?;
         globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
         vm.seal()?;
-        vm.load::<()>(script, "pc.luau")?;
+        vm.load::<()>(script, "host.luau")?;
         Ok(Self { label, number, slot, vm })
     }
 }

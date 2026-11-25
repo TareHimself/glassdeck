@@ -121,7 +121,7 @@ mod tests {
             version: "1.0.0".into(),
             size: Size { w: 240, h: 120 },
             resize: Resize::Between { min: Size { w: 160, h: 80 }, max: Size { w: 480, h: 240 } },
-            pc: false,
+            host: false,
         })
     }
 

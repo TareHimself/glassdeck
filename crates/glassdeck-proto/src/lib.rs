@@ -129,15 +129,15 @@ pub enum Message {
     /// Sender to receiver: play this background from the keyboard's background folder whenever no stream is open,
     /// and remember it across restarts.
     SelectBackground { name: String },
-    /// PC to keyboard: what a widget's `pc.luau` sent, for the instance numbered by its place in
+    /// Host to keyboard: what a widget's `host.luau` sent, for the instance numbered by its place in
     /// the profile's widget list. `payload` is MessagePack.
     ModuleData { instance: u16, payload: Vec<u8> },
-    /// PC to keyboard: a piece of a file to install. The keyboard answers only the piece that
+    /// Host to keyboard: a piece of a file to install. The keyboard answers only the piece that
     /// completes the file, with `PutDone` or `PutRefused`.
     PutFile(PutFile),
-    /// Keyboard to PC: the file is in place.
+    /// Keyboard to host: the file is in place.
     PutDone { target: FileTarget },
-    /// Keyboard to PC: the file was not installed.
+    /// Keyboard to host: the file was not installed.
     PutRefused { target: FileTarget, reason: String },
 }
 

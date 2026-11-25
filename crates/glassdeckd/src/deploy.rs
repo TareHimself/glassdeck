@@ -1,5 +1,5 @@
 //! Deploying: checking a file before the keyboard installs it, and keeping glassdeckd's own modules
-//! and profile the same as the keyboard's, so the PC halves match what the keyboard runs.
+//! and profile the same as the keyboard's, so the host halves match what the keyboard runs.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use glassdeck_luau::profile::{Profile, WidgetArea};
 use glassdeck_package::{Background, EXTENSION, MODULE_EXTENSION, ModulePackage};
 use glassdeck_proto::FileTarget;
 
-use crate::pc_host;
+use crate::module_host;
 
 /// The Link carries a file name's length in one byte.
 const MAX_NAME_BYTES: usize = 255;
@@ -28,7 +28,7 @@ pub fn target_for(path: &Path, modules: &Path) -> Result<FileTarget> {
             Ok(FileTarget::Module(name.to_owned()))
         }
         Some("json") => {
-            let installed = pc_host::installed(modules)?;
+            let installed = module_host::installed(modules)?;
             Profile::read(path, WidgetArea::of_panel().size, |id| installed.get(id).map(|p| p.manifest().clone()))?;
             Ok(FileTarget::Profile)
         }
@@ -36,7 +36,7 @@ pub fn target_for(path: &Path, modules: &Path) -> Result<FileTarget> {
     }
 }
 
-/// Copies a deployed module or profile into glassdeckd's own folder; the PC host reloads from there.
+/// Copies a deployed module or profile into glassdeckd's own folder; the module host reloads from there.
 pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &Path) -> Result<()> {
     let place = match target {
         FileTarget::Background(_) => return Ok(()),

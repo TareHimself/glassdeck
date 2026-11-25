@@ -19,7 +19,7 @@ impl WebBackground {
         _mailbox: Arc<Mailbox>,
         _stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        bail!("web backgrounds play only on the keyboard; stream them from the PC with `glassdeck play`")
+        bail!("web backgrounds play only on the keyboard; stream them from the host with `glassdeck play`")
     }
 
     pub fn stop(self) {

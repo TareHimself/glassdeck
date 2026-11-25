@@ -14,10 +14,10 @@ use crate::{MANIFEST, read_exact_at, staging_path};
 pub const MODULE_EXTENSION: &str = "deckmod";
 pub const MODULE_MANIFEST: &str = "module.json";
 pub const KEYBOARD_SCRIPT: &str = "keyboard.luau";
-pub const PC_SCRIPT: &str = "pc.luau";
+pub const HOST_SCRIPT: &str = "host.luau";
 pub const ASSETS_FOLDER: &str = "assets";
 /// The module.json layout this build reads.
-pub const MODULE_FORMAT_VERSION: u32 = 1;
+pub const MODULE_FORMAT_VERSION: u32 = 2;
 const MAX_SCRIPT_LEN: u64 = 16 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -51,7 +51,7 @@ pub struct ModuleManifest {
     pub version: String,
     pub size: Size,
     pub resize: Resize,
-    pub pc: bool,
+    pub host: bool,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +68,7 @@ struct RawManifest {
     min: Option<Size>,
     max: Option<Size>,
     #[serde(default)]
-    pc: bool,
+    host: bool,
 }
 
 impl ModuleManifest {
@@ -84,7 +84,7 @@ impl ModuleManifest {
             _ => bail!("give both min and max, or neither for a fixed size"),
         };
         ensure!(resize.allows(raw.size, raw.size), "size {}x{} is outside min and max", raw.size.w, raw.size.h);
-        Ok(Self { id: raw.id, name: raw.name, version: raw.version, size: raw.size, resize, pc: raw.pc })
+        Ok(Self { id: raw.id, name: raw.name, version: raw.version, size: raw.size, resize, host: raw.host })
     }
 }
 
@@ -125,9 +125,9 @@ impl ModulePackage {
         self.script(KEYBOARD_SCRIPT)
     }
 
-    /// `None` when the module has no PC half.
-    pub fn pc_script(&self) -> Result<Option<String>> {
-        self.manifest.pc.then(|| self.script(PC_SCRIPT)).transpose()
+    /// `None` when the module has no host half.
+    pub fn host_script(&self) -> Result<Option<String>> {
+        self.manifest.host.then(|| self.script(HOST_SCRIPT)).transpose()
     }
 
     /// A file from `assets/`, named without the folder.
@@ -154,9 +154,9 @@ fn read_text(file: &File, entry: Entry) -> Result<String> {
 
 fn check_scripts(manifest: &ModuleManifest, has: impl Fn(&str) -> bool) -> Result<()> {
     ensure!(has(KEYBOARD_SCRIPT), "{KEYBOARD_SCRIPT} is missing");
-    match (manifest.pc, has(PC_SCRIPT)) {
-        (true, false) => bail!("module.json says \"pc\": true but {PC_SCRIPT} is missing"),
-        (false, true) => bail!("{PC_SCRIPT} is present but module.json doesn't say \"pc\": true"),
+    match (manifest.host, has(HOST_SCRIPT)) {
+        (true, false) => bail!("module.json says \"host\": true but {HOST_SCRIPT} is missing"),
+        (false, true) => bail!("{HOST_SCRIPT} is present but module.json doesn't say \"host\": true"),
         _ => Ok(()),
     }
 }
@@ -203,7 +203,7 @@ pub fn pack_folder(folder: &Path, out: &Path) -> Result<ModulePackage> {
     let manifest_path = folder.join(MODULE_MANIFEST);
     let manifest = fs::read_to_string(&manifest_path).with_context(|| format!("reading {}", manifest_path.display()))?;
     let mut writer = ModuleWriter::create(out, &manifest)?;
-    for script in [KEYBOARD_SCRIPT, PC_SCRIPT] {
+    for script in [KEYBOARD_SCRIPT, HOST_SCRIPT] {
         let path = folder.join(script);
         if path.exists() {
             writer.add_file(script, &path)?;
@@ -227,7 +227,7 @@ mod tests {
     use crate::tests::{Scratch, web_manifest};
 
     const CLOCK: &str = r#"{
-        "format": 1,
+        "format": 2,
         "id": "dev.glassdeck.clock",
         "name": "Clock",
         "version": "1.0.0",
@@ -236,22 +236,22 @@ mod tests {
         "max": { "w": 480, "h": 240 }
     }"#;
 
-    fn with_pc(manifest: &str) -> String {
-        manifest.replacen('{', "{ \"pc\": true,", 1)
+    fn with_host(manifest: &str) -> String {
+        manifest.replacen('{', "{ \"host\": true,", 1)
     }
 
     #[test]
     fn parses_a_resizable_manifest() {
         let manifest = ModuleManifest::parse(CLOCK).unwrap();
         assert_eq!(manifest.resize, Resize::Between { min: Size { w: 160, h: 80 }, max: Size { w: 480, h: 240 } });
-        assert!(!manifest.pc);
+        assert!(!manifest.host);
         assert!(manifest.resize.allows(manifest.size, Size { w: 200, h: 200 }));
         assert!(!manifest.resize.allows(manifest.size, Size { w: 100, h: 200 }));
     }
 
     #[test]
     fn a_fixed_module_allows_only_its_size() {
-        let manifest = ModuleManifest::parse(r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
+        let manifest = ModuleManifest::parse(r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
         assert_eq!(manifest.resize, Resize::Fixed);
         assert!(manifest.resize.allows(manifest.size, Size { w: 8, h: 8 }));
         assert!(!manifest.resize.allows(manifest.size, Size { w: 16, h: 8 }));
@@ -260,12 +260,12 @@ mod tests {
     #[test]
     fn refuses_bad_manifests() {
         for bad in [
-            r#"{ "format": 1, "id": "clock", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "min": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 800, "h": 8 }, "min": { "w": 8, "h": 8 }, "max": { "w": 16, "h": 16 } }"#,
-            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "colour": 1 }"#,
-            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
-            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 2, "id": "clock", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "min": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 800, "h": 8 }, "min": { "w": 8, "h": 8 }, "max": { "w": 16, "h": 16 } }"#,
+            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "colour": 1 }"#,
+            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0", "size": { "w": 8, "h": 8 } }"#,
             r#"{ "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
         ] {
             assert!(ModuleManifest::parse(bad).is_err(), "{bad}");
@@ -283,16 +283,16 @@ mod tests {
         let package = pack_folder(&folder, &scratch.0.join("clock.deckmod")).unwrap();
         assert_eq!(package.manifest().id, "dev.glassdeck.clock");
         assert_eq!(package.keyboard_script().unwrap(), "return {}");
-        assert_eq!(package.pc_script().unwrap(), None);
+        assert_eq!(package.host_script().unwrap(), None);
         assert_eq!(package.asset("face.svg").unwrap(), b"<svg/>");
     }
 
     #[test]
-    fn a_pc_module_needs_its_pc_script() {
-        let scratch = Scratch::new("module-pc");
+    fn a_host_module_needs_its_host_script() {
+        let scratch = Scratch::new("module-host");
         let folder = scratch.0.join("cpu");
         fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join(MODULE_MANIFEST), with_pc(CLOCK)).unwrap();
+        fs::write(folder.join(MODULE_MANIFEST), with_host(CLOCK)).unwrap();
         fs::write(folder.join(KEYBOARD_SCRIPT), "return {}").unwrap();
         assert!(pack_folder(&folder, &scratch.0.join("cpu.deckmod")).is_err());
     }

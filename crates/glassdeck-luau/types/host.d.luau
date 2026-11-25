@@ -1,4 +1,4 @@
--- pc.luau: runs on the PC and sends data to its keyboard half's on_data.
+-- host.luau: runs on the host (the machine running glassdeckd) and sends data to its keyboard half's on_data.
 
 declare function every(seconds: number, callback: () -> ()): ()
 

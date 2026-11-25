@@ -6,7 +6,7 @@
   "required": ["format", "id", "name", "version", "size"],
   "properties": {
     "$schema": { "type": "string" },
-    "format": { "description": "The module.json layout; this schema describes format 1", "const": 1 },
+    "format": { "description": "The module.json layout; this schema describes format 2", "const": 2 },
     "id": {
       "description": "Unique, reverse-DNS, like dev.glassdeck.clock",
       "type": "string",
@@ -17,7 +17,7 @@
     "size": { "$ref": "#/$defs/size", "description": "Default size in panel pixels" },
     "min": { "$ref": "#/$defs/size", "description": "Smallest size; give min and max together, or neither for a fixed size" },
     "max": { "$ref": "#/$defs/size", "description": "Largest size; give min and max together, or neither for a fixed size" },
-    "pc": { "description": "The module has a pc.luau half that sends data", "type": "boolean", "default": false }
+    "host": { "description": "The module has a host.luau half, run on the host, that sends data", "type": "boolean", "default": false }
   },
   "dependentRequired": { "min": ["max"], "max": ["min"] },
   "$defs": {

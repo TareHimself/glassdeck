@@ -5,7 +5,7 @@ mod api;
 mod config;
 mod deploy;
 mod link;
-mod pc_host;
+mod module_host;
 mod runner;
 mod system;
 mod worker;
@@ -24,7 +24,7 @@ use link::Uplink;
 use runner::{Runner, RunnerEvent};
 
 #[derive(Parser)]
-#[command(about = "Glassdeck's PC host: owns the Link to the keyboard, runs sources and widgets")]
+#[command(about = "Glassdeck's host: owns the Link to the keyboard, runs sources and widgets' host halves")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -93,7 +93,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
-    pc_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink))?;
+    module_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink))?;
     let (modules, profile) = (paths.modules.clone(), paths.profile.clone());
     Api { token, runner, uplink, keyboard: config.keyboard, modules, profile, large_uploads: Mutex::new(0) }.serve(&paths.api)
 }

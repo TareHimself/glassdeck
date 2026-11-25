@@ -83,7 +83,7 @@ impl Director {
         self.apply(effects)
     }
 
-    /// A background chosen from the PC; it must already be in the background folder.
+    /// A background chosen from the host; it must already be in the background folder.
     pub fn select(&mut self, name: &str) -> Result<()> {
         let background = BackgroundName::parse(name)?;
         let path = self.backgrounds.join(background.as_str());

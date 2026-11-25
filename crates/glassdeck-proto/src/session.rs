@@ -20,7 +20,7 @@ pub enum Action<'a> {
     AnswerProbe { probe_sent_us: u64 },
     /// Make this the background shown when no stream is open; the session itself doesn't change.
     SelectBackground(&'a str),
-    /// Hand a widget instance what its PC half sent; widgets run whether or not a stream is open.
+    /// Hand a widget instance what its host half sent; widgets run whether or not a stream is open.
     ModuleData { instance: u16, payload: &'a [u8] },
     /// Write a piece of a file; files arrive whether or not a stream is open.
     PutFile(&'a PutFile),
