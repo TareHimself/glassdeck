@@ -4,17 +4,14 @@ use std::process::Command;
 
 use serde_json::Value;
 
-/// CEF comes from silo: its recipe builds CEF's C++ wrapper, and the store holds the result.
-const CEF_RECIPE: &str = "recipes/cef/156.0.32";
-
+/// CEF comes from silo: the recipe in cef/ builds CEF's C++ wrapper, and the store holds the result.
 fn main() {
     println!("cargo:rerun-if-changed=src/web_shim.cpp");
     println!("cargo:rerun-if-env-changed=SILO");
-    println!("cargo:rerun-if-env-changed=SILO_RECIPES");
-    let workspace = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
-    let silo = env_path("SILO").unwrap_or_else(|| workspace.join("../silo"));
-    let recipe = env_path("SILO_RECIPES").unwrap_or_else(|| workspace.join("../silo-recipes")).join(CEF_RECIPE);
-    println!("cargo:rerun-if-changed={}", recipe.join("silopkg.py").display());
+    println!("cargo:rerun-if-changed=cef/silopkg.py");
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let silo = env_path("SILO").unwrap_or_else(|| manifest.join("../../../silo"));
+    let recipe = manifest.join("cef");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let cef = Cef::from_store(&silo_build(&silo, &recipe, &out_dir.join("silo")));

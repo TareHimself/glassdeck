@@ -1,0 +1,2 @@
+# silo refuses recipes with Windows line endings
+*.py text eol=lf
