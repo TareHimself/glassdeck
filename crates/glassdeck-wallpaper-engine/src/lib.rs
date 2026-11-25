@@ -4,27 +4,27 @@
 pub mod library;
 pub mod project;
 pub mod steam;
-pub mod video;
-pub mod web_media;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use glassdeck_package::{Content, Background, BackgroundWriter, FORMAT_VERSION, Manifest, Origin, PANEL, VideoFormat};
-use glassdeck_proto::Codec;
+use anyhow::{Result, bail};
+use glassdeck_convert::{Details, EncodeSettings};
+use glassdeck_package::{Background, Origin};
 use serde_json::{Map, Value};
 
 pub use library::{Item, find, subscribed};
 pub use project::{Kind, Project};
-pub use video::EncodeSettings;
 
-pub const WEB_ROOT: &str = "web";
-const VIDEO_ENTRY: &str = "video.mp4";
-
-/// Where converted backgrounds go unless told otherwise: `%LOCALAPPDATA%\Glassdeck\backgrounds`.
-pub fn default_backgrounds_dir() -> Result<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    Ok(PathBuf::from(local).join("Glassdeck").join("backgrounds"))
+/// Why an item can't become a background, or `None` when it can.
+pub fn why_unsupported(kind: &Kind) -> Option<String> {
+    Some(match kind {
+        Kind::Video { .. } | Kind::Web { .. } => return None,
+        Kind::Scene => "scenes only render in Wallpaper Engine; they'll stream live once the Wallpaper Engine stream exists".into(),
+        Kind::Application => "application wallpapers run a program and are not supported".into(),
+        Kind::Preset { base_id } => format!("a preset for workshop item {base_id}; presets are not supported yet"),
+        Kind::Unknown { declared: Some(t) } => format!("unknown wallpaper type {t:?}"),
+        Kind::Unknown { declared: None } => "the project.json names no wallpaper type".into(),
+    })
 }
 
 pub fn background_path(backgrounds_dir: &Path, item: &Item) -> PathBuf {
@@ -33,128 +33,16 @@ pub fn background_path(backgrounds_dir: &Path, item: &Item) -> PathBuf {
 
 /// Converts a video or web item into a background at `out`; other kinds are refused.
 pub fn convert(item: &Item, project: &Project, out: &Path, settings: EncodeSettings) -> Result<Background> {
-    match &project.kind {
-        Kind::Video { file } => convert_video(item, project, file, out, settings),
-        Kind::Web { file } => convert_web(item, project, file, out),
-        other => bail!("{} is a {other} wallpaper; only video and web wallpapers convert to a background", item.id),
-    }
-}
-
-/// A video goes in as it is when it meets the background spec, and is re-encoded otherwise.
-pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, settings: EncodeSettings) -> Result<Background> {
-    video::start_media_foundation()?;
-    let source = item.dir.join(file);
-    let content = |format| Content::Video { file: VIDEO_ENTRY.into(), format };
-    match glassdeck_package::check(video::probe(&source)?) {
-        Ok(format) => {
-            println!("{file} already meets the background spec ({:?} {}x{}); storing it as is", format.codec, format.width, format.height);
-            write_background(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &source))
-        }
-        Err(why) => {
-            println!("Re-encoding {file} to HEVC {}x{}: {why}", PANEL.0, PANEL.1);
-            let encoded = out.with_extension("encoding.mp4");
-            if let Some(parent) = encoded.parent() {
-                std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-            }
-            let frame_rate = video::transcode(&source, &encoded, settings)?;
-            let format = VideoFormat { codec: Codec::Hevc, width: PANEL.0, height: PANEL.1, frame_rate };
-            let background = write_background(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &encoded));
-            std::fs::remove_file(&encoded).with_context(|| format!("removing {}", encoded.display()))?;
-            background
-        }
-    }
-}
-
-/// The item's whole folder goes under `web/`, so its relative URLs keep working from `background://`.
-/// Media goes through `web_media` first: VP9 where needed, and no sound.
-pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Result<Background> {
-    let files = folder_files(&item.dir)?;
-    let content = Content::Web {
-        entry: format!("{WEB_ROOT}/{}", file.replace('\\', "/")),
-        properties: project::user_properties(&project.properties),
-    };
-    let converted_dir = out.with_extension("media");
-    let sources = web_sources(item, &files, &converted_dir)?;
-    println!("Packing {} files from {}", files.len(), item.dir.display());
-    let background = write_background(item, project, content, out, |w| {
-        for (relative, source) in files.iter().zip(&sources) {
-            w.add_file(&format!("{WEB_ROOT}/{relative}"), source)?;
-        }
-        Ok(())
-    });
-    if converted_dir.exists() {
-        std::fs::remove_dir_all(&converted_dir).with_context(|| format!("removing {}", converted_dir.display()))?;
-    }
-    background
-}
-
-/// Where each file's bytes come from: the item folder, or a converted copy under `converted_dir`.
-fn web_sources(item: &Item, files: &[String], converted_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut sources = Vec::with_capacity(files.len());
-    for relative in files {
-        let original = item.dir.join(relative);
-        if web_media::MediaKind::of(relative).is_none() {
-            sources.push(original);
-            continue;
-        }
-        let plan = web_media::plan(&web_media::probe(&original)?).with_context(|| format!("planning {relative}"))?;
-        if plan == web_media::Plan::Keep {
-            sources.push(original);
-            continue;
-        }
-        println!("{relative}: {plan:?}");
-        let converted = converted_dir.join(relative);
-        if let Some(parent) = converted.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-        web_media::convert(&original, &converted, plan)?;
-        sources.push(converted);
-    }
-    Ok(sources)
-}
-
-fn write_background(
-    item: &Item,
-    project: &Project,
-    content: Content,
-    out: &Path,
-    add_content: impl FnOnce(&mut BackgroundWriter) -> Result<()>,
-) -> Result<Background> {
-    let preview = project.preview.as_ref().map(|name| item.dir.join(name)).filter(|p| p.is_file());
-    let preview_name = preview.as_deref().map(glassdeck_package::preview_name);
-    let manifest = Manifest {
-        format: FORMAT_VERSION,
+    let details = Details {
         title: project.title.clone(),
         origin: Origin::WallpaperEngine { workshop_id: item.id.clone() },
-        content,
-        preview: preview_name.clone(),
+        preview: project.preview.as_ref().map(|name| item.dir.join(name)),
     };
-    let mut writer = BackgroundWriter::create(out, manifest)?;
-    if let (Some(path), Some(name)) = (&preview, &preview_name) {
-        writer.add_file(name, path)?;
+    match &project.kind {
+        Kind::Video { file } => glassdeck_convert::video(&item.dir.join(file), out, details, settings),
+        Kind::Web { file } => glassdeck_convert::web(&item.dir, file, project::user_properties(&project.properties), out, details),
+        other => bail!("{} is a {other} wallpaper; only video and web wallpapers convert to a background", item.id),
     }
-    add_content(&mut writer)?;
-    writer.finish()
-}
-
-/// Every file under `root`, as sorted `/`-separated relative paths.
-fn folder_files(root: &Path) -> Result<Vec<String>> {
-    let mut files = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).with_context(|| format!("listing {}", dir.display()))? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                let relative = entry.path().strip_prefix(root)?.to_str().context("a file name is not UTF-8")?.replace('\\', "/");
-                files.push(relative);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 /// Stands in for Wallpaper Engine's JS hooks: user properties get their defaults, audio and media stay silent.
@@ -186,16 +74,5 @@ mod tests {
         let script = init_script(&project::user_properties(&project.properties));
         assert!(script.contains(r#"{"speed":{"type":"slider","value":3}}"#), "{script}");
         assert!(script.contains("wallpaperRegisterAudioListener"));
-    }
-
-    #[test]
-    fn folder_files_are_relative_and_sorted() {
-        let root = std::env::temp_dir().join(format!("glassdeck-we-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("js")).unwrap();
-        std::fs::write(root.join("index.html"), "").unwrap();
-        std::fs::write(root.join("js").join("app.js"), "").unwrap();
-        assert_eq!(folder_files(&root).unwrap(), ["index.html", "js/app.js"]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

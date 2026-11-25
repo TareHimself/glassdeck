@@ -638,6 +638,7 @@ dependencies = [
  "anyhow",
  "clap",
  "glassdeck-capture",
+ "glassdeck-convert",
  "glassdeck-package",
  "serde",
  "serde_json",
@@ -651,6 +652,7 @@ dependencies = [
  "anyhow",
  "cc",
  "clap",
+ "glassdeck-convert",
  "glassdeck-package",
  "glassdeck-proto",
  "glassdeck-wallpaper-engine",
@@ -660,6 +662,18 @@ dependencies = [
  "windows",
  "windows-capture",
  "windows-core",
+]
+
+[[package]]
+name = "glassdeck-convert"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glassdeck-package",
+ "glassdeck-proto",
+ "serde",
+ "serde_json",
+ "windows",
 ]
 
 [[package]]
@@ -734,6 +748,8 @@ name = "glassdeck-wallpaper-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "glassdeck-convert",
  "glassdeck-package",
  "glassdeck-proto",
  "serde",

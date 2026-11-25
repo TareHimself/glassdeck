@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 glassdeck-capture.workspace = true
+glassdeck-convert.workspace = true
 glassdeck-package.workspace = true
 serde.workspace = true
 serde_json.workspace = true

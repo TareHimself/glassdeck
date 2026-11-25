@@ -1,24 +1,22 @@
 //! The Glassdeck CLI. Anything that reaches the keyboard goes through glassdeckd, which owns the Link;
-//! the rest (monitors, recording, converting wallpapers, packing modules) runs here.
+//! the rest (monitors, recording, converting, packing modules) runs here.
 
 mod client;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use glassdeck_capture::EncoderKind;
 use glassdeck_capture::monitors::{self, MonitorQuery};
-use glassdeck_capture::pipeline::VideoCodec;
 use glassdeck_capture::record::{self, RecordOptions};
-use glassdeck_capture::sources::{Play, SourceRequest};
-use glassdeck_capture::wallpaper;
+use glassdeck_convert::{Details, EncodeSettings};
+use glassdeck_package::Origin;
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(about = "Glassdeck: put monitors, web pages, videos and wallpapers on the keyboard")]
+#[command(about = "Glassdeck: choose what the keyboard shows, and put files on it")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,92 +24,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// What glassdeckd is doing: the Link and the current source
+    /// The Link, the background and where it runs
     Status,
-    /// Mirror a monitor on the keyboard, live
-    Stream {
-        /// Monitor EDID name (case-insensitive) or index from `list`
-        #[arg(long)]
-        monitor: String,
-        /// Stop after this many seconds instead of running until stopped
-        #[arg(long)]
-        seconds: Option<u64>,
-        #[arg(long, value_enum, default_value_t = EncoderKind::Gpu)]
-        encoder: EncoderKind,
-        #[arg(long, value_enum, default_value_t = VideoCodec::Hevc)]
-        codec: VideoCodec,
-        #[arg(long, default_value_t = 15)]
-        mbps: u32,
-        #[arg(long, default_value_t = 60)]
-        fps: u32,
-        #[arg(long, default_value_t = 120)]
-        keyframe_every: u32,
-        /// Cap the encoder's rate-control buffer to N average frames, shrinking keyframes (GPU only)
-        #[arg(long)]
-        vbv_frames: Option<u32>,
+    /// Streams glassdeckd can show, such as monitor-q27g4zd
+    Streams,
+    /// Show or set the background: gradient (built in), a .deckbg, or stream:<name>
+    Bg {
+        /// gradient, a .deckbg file (uploaded if it's a file here) or name on the keyboard, or stream:<name>
+        choice: Option<String>,
     },
-    /// Render a web page offscreen and play it as a wallpaper
-    Web {
-        url: String,
-        #[arg(long, default_value_t = 1920)]
-        width: u32,
-        #[arg(long, default_value_t = 1080)]
-        height: u32,
-        /// Stop after this many seconds instead of running until stopped
+    /// Put a .deckbg, .deckmod or profile .json on the keyboard
+    Deploy { file: PathBuf },
+    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod
+    Pack {
+        folder: PathBuf,
+        /// Defaults to <folder>.deckmod
         #[arg(long)]
-        seconds: Option<u64>,
-        #[arg(long, value_enum, default_value_t = VideoCodec::Hevc)]
-        codec: VideoCodec,
-        #[arg(long, default_value_t = 15)]
-        mbps: u32,
-        #[arg(long, default_value_t = 60)]
-        fps: u32,
-        #[arg(long, default_value_t = 120)]
-        keyframe_every: u32,
+        out: Option<PathBuf>,
     },
-    /// Play an H.264 or HEVC file without re-encoding, or a .deckbg (video or web)
-    Play {
-        file: PathBuf,
-        /// Start over at the end, for wallpapers
-        #[arg(long = "loop")]
-        looping: bool,
-        /// Web backgrounds: frames per second to render
-        #[arg(long, default_value_t = 60)]
-        fps: u32,
-        /// Web backgrounds: encoder bitrate
+    /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a .deckbg
+    Convert {
+        input: PathBuf,
+        /// Defaults to %LOCALAPPDATA%\Glassdeck\backgrounds\<name>.deckbg
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Bitrate when a video has to be re-encoded
         #[arg(long, default_value_t = 12)]
         mbps: u32,
-        /// Web backgrounds: stop after this many seconds
-        #[arg(long)]
-        seconds: Option<u64>,
-    },
-    /// Stop the current source; the keyboard goes back to its own background
-    Stop,
-    /// Choose what the keyboard plays whenever nothing is streaming: builtin:gradient (the default) or a background from its folder
-    SelectBackground {
-        /// builtin:gradient, or a file name in the keyboard's background folder such as we-2970107491.deckbg
-        name: String,
-    },
-    /// Install a background (.deckbg), widget module (.deckmod) or widget profile (.json) on the keyboard
-    Deploy {
-        file: PathBuf,
-    },
-    /// Wallpaper Engine items already in this PC's Steam workshop folder
-    Wallpaper {
-        #[command(subcommand)]
-        action: WallpaperAction,
-    },
-    /// Widget modules
-    Module {
-        #[command(subcommand)]
-        action: ModuleAction,
     },
     /// List monitors with their index and EDID name
-    List,
+    Monitors,
     /// Record a monitor to an MP4 file
     Record {
-        /// Monitor EDID name (case-insensitive) or index from `list`
-        #[arg(long)]
+        /// Monitor index or EDID name from `monitors`
         monitor: MonitorQuery,
         #[arg(long, default_value = "capture.mp4")]
         out: PathBuf,
@@ -121,51 +66,6 @@ enum Command {
         mbps: u32,
         #[arg(long, default_value_t = 60)]
         fps: u32,
-    },
-}
-
-#[derive(Subcommand)]
-enum WallpaperAction {
-    /// List subscribed items with their type
-    List,
-    /// Convert a video or web wallpaper into a .deckbg (a video is stored as is if it meets the background spec, re-encoded otherwise)
-    Background {
-        /// Workshop ID, or a folder holding a project.json
-        item: String,
-        /// Background file (default: %LOCALAPPDATA%\Glassdeck\backgrounds\we-<id>.deckbg)
-        #[arg(long)]
-        out: Option<PathBuf>,
-        /// Bitrate when re-encoding
-        #[arg(long, default_value_t = 12)]
-        mbps: u32,
-    },
-    /// Play a wallpaper: video and web on a loop from its .deckbg (built on first use), scenes live from Wallpaper Engine
-    Play {
-        /// Workshop ID, or a folder holding a project.json
-        item: String,
-        /// Build the .deckbg again even if one exists
-        #[arg(long)]
-        rebuild: bool,
-        /// Bitrate when encoding (re-encoded videos and web pages)
-        #[arg(long, default_value_t = 12)]
-        mbps: u32,
-        /// Web pages and scenes: frames per second
-        #[arg(long, default_value_t = 60)]
-        fps: u32,
-        /// Web pages and scenes: stop after this many seconds
-        #[arg(long)]
-        seconds: Option<u64>,
-    },
-}
-
-#[derive(Subcommand)]
-enum ModuleAction {
-    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod
-    Pack {
-        folder: PathBuf,
-        /// Defaults to <folder>.deckmod
-        #[arg(long)]
-        out: Option<PathBuf>,
     },
 }
 
@@ -182,52 +82,24 @@ fn main() -> ExitCode {
 fn run(command: Command) -> Result<()> {
     match command {
         Command::Status => status(),
-        Command::Stream { monitor, seconds, encoder, codec, mbps, fps, keyframe_every, vbv_frames } => {
-            start(Play::Monitor { monitor, encoder, codec, mbps, fps, keyframe_every, vbv_frames }, seconds)
-        }
-        Command::Web { url, width, height, seconds, codec, mbps, fps, keyframe_every } => {
-            start(Play::Web { url, width, height, codec, mbps, fps, keyframe_every }, seconds)
-        }
-        Command::Play { file, looping, fps, mbps, seconds } => {
-            let path = std::path::absolute(&file).with_context(|| format!("finding {}", file.display()))?;
-            let play = match glassdeck_package::is_background(&path) {
-                true => Play::Background { path, looping, mbps, fps },
-                false => Play::File { path, looping },
-            };
-            start(play, seconds)
-        }
-        Command::Stop => {
-            client::call("DELETE", "/source", None)?;
-            println!("Stopped; the keyboard plays its own background");
+        Command::Streams => streams(),
+        Command::Bg { choice: None } => {
+            println!("{}", describe_bg(&client::call("GET", "/bg", None)?));
             Ok(())
         }
-        Command::SelectBackground { name } => {
-            client::call("PUT", "/background", Some(json!({ "name": name })))?;
-            println!("The keyboard plays {name} whenever nothing is streaming");
-            Ok(())
-        }
+        Command::Bg { choice: Some(choice) } => set_bg(&choice),
         Command::Deploy { file } => {
-            let path = std::path::absolute(&file).with_context(|| format!("finding {}", file.display()))?;
-            let answer = client::call("PUT", "/deploy", Some(json!({ "path": path })))?;
-            println!("The keyboard installed {}", text(&answer["deployed"]));
+            println!("The keyboard installed {}", deploy(&file)?);
             Ok(())
         }
-        Command::Wallpaper { action } => match action {
-            WallpaperAction::List => wallpaper::list(),
-            WallpaperAction::Background { item, out, mbps } => {
-                let background = wallpaper::convert_item(&item, out, mbps)?;
-                println!("Wrote {}", background.path().display());
-                Ok(())
-            }
-            WallpaperAction::Play { item, rebuild, mbps, fps, seconds } => start(Play::Wallpaper { item, rebuild, mbps, fps }, seconds),
-        },
-        Command::Module { action: ModuleAction::Pack { folder, out } } => {
+        Command::Pack { folder, out } => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
             let package = glassdeck_package::pack_folder(&folder, &out)?;
             println!("Packed {} into {}", package.manifest().id, out.display());
             Ok(())
         }
-        Command::List => {
+        Command::Convert { input, out, mbps } => convert(&input, out, mbps),
+        Command::Monitors => {
             for info in monitors::enumerate()? {
                 println!("{info}");
             }
@@ -241,17 +113,56 @@ fn run(command: Command) -> Result<()> {
     }
 }
 
-fn start(play: Play, seconds: Option<u64>) -> Result<()> {
-    let request = SourceRequest { play, seconds };
-    let answer = client::call("PUT", "/source", Some(serde_json::to_value(&request)?))?;
-    match (answer.get("playing"), answer.get("waiting"), answer.get("after_upload"), answer.get("starting")) {
-        (Some(what), _, _, _) => println!("Playing {}", text(what)),
-        (_, Some(what), _, _) => println!("{} starts when the keyboard connects", text(what)),
-        (_, _, Some(what), _) => println!("{} starts once the keyboard has the file it's installing", text(what)),
-        (_, _, _, Some(what)) => println!("{} is still starting; `glassdeck status` shows how it goes", text(what)),
-        _ => println!("{answer}"),
-    }
+/// A `.deckbg` that's a file here is uploaded first and then chosen by its name; anything else is
+/// passed to glassdeckd as it is.
+fn set_bg(choice: &str) -> Result<()> {
+    let local = Path::new(choice);
+    let name = if glassdeck_package::is_background(local) {
+        deploy(local)?;
+        file_name(local)?
+    } else {
+        choice.to_owned()
+    };
+    let answer = client::call("PUT", "/bg", Some(json!({ "bg": name })))?;
+    let state = match answer["state"].as_str() {
+        Some("shown") | None => String::new(),
+        Some(other) => format!(" ({other})"),
+    };
+    println!("{}{state}", describe_bg(&answer));
     Ok(())
+}
+
+fn deploy(file: &Path) -> Result<String> {
+    let path = std::path::absolute(file).with_context(|| format!("finding {}", file.display()))?;
+    let answer = client::call("PUT", "/deploy", Some(json!({ "path": path })))?;
+    Ok(text(&answer["deployed"]))
+}
+
+fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
+    let title = input.file_stem().context("the input has no name")?.to_string_lossy().into_owned();
+    let out = match out {
+        Some(out) => out,
+        None => glassdeck_convert::default_backgrounds_dir()?.join(format!("{title}.{}", glassdeck_package::EXTENSION)),
+    };
+    let details = Details { title, origin: Origin::Converted { from: file_name(input)? }, preview: None };
+    let is_html = input.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    let background = if input.is_dir() {
+        if !input.join("index.html").is_file() {
+            bail!("{} has no index.html; give the page's .html file instead", input.display());
+        }
+        glassdeck_convert::web(input, "index.html", Default::default(), &out, details)?
+    } else if is_html {
+        let folder = input.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        glassdeck_convert::web(folder, &file_name(input)?, Default::default(), &out, details)?
+    } else {
+        glassdeck_convert::video(input, &out, details, EncodeSettings { bitrate: mbps * 1_000_000 })?
+    };
+    println!("Wrote {}; show it with `glassdeck bg {}`", background.path().display(), background.path().display());
+    Ok(())
+}
+
+fn file_name(path: &Path) -> Result<String> {
+    Ok(path.file_name().with_context(|| format!("{} has no file name", path.display()))?.to_string_lossy().into_owned())
 }
 
 fn status() -> Result<()> {
@@ -259,15 +170,32 @@ fn status() -> Result<()> {
     let link = &status["link"];
     let connected = if link["connected"] == Value::Bool(true) { "connected" } else { "not connected" };
     println!("Keyboard {}: {connected}", text(&link["keyboard"]));
-    let source = &status["source"];
-    match source["playing"].as_str() {
-        Some(playing) => println!("Source: {} ({})", playing, text(&source["state"])),
-        None => println!("Source: none; the keyboard plays its own background"),
+    println!("{}", describe_bg(&status["bg"]));
+    let stream = &status["stream"];
+    if let Some(playing) = stream["playing"].as_str() {
+        println!("Stream: {playing} ({})", text(&stream["state"]));
     }
-    if let Some(ended) = source["last_ended"].as_array().and_then(|pair| pair.get(1)) {
-        println!("Last source: {}", text(ended));
+    if let Some(ended) = stream["last_ended"].as_array().and_then(|pair| pair.get(1)) {
+        println!("Last stream: {}", text(ended));
     }
     Ok(())
+}
+
+fn streams() -> Result<()> {
+    let answer = client::call("GET", "/streams", None)?;
+    for stream in answer["streams"].as_array().context("glassdeckd sent no stream list")? {
+        let shown = if stream["shown"] == Value::Bool(true) { "shown" } else { "" };
+        println!("{:<28} {:<6} {:<9} {shown}", text(&stream["name"]), text(&stream["mode"]), text(&stream["from"]));
+    }
+    Ok(())
+}
+
+fn describe_bg(answer: &Value) -> String {
+    match (answer["bg"].as_str(), answer["runs_on"].as_str()) {
+        (None, _) => "Background: the keyboard's own choice (none set from here)".into(),
+        (Some(bg), Some("host")) => format!("Background: {bg}, streamed from this PC"),
+        (Some(bg), _) => format!("Background: {bg}, played by the keyboard itself"),
+    }
 }
 
 fn text(value: &Value) -> String {

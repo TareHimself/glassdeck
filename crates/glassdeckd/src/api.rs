@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use glassdeck_capture::sources::SourceRequest;
+use glassdeck_capture::monitors;
 use glassdeck_proto::LARGE_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -17,6 +17,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::deploy;
 use crate::link::Uplink;
 use crate::runner::{PAUSED_FOR_UPLOAD, Runner, RunnerEvent};
+use crate::streams::{self, Choice, Effect, MonitorStream, StreamName, effects, monitor_streams};
 
 pub const API_FORMAT_VERSION: u32 = 1;
 /// How long starting a source may take before the CLI is told it's still starting (CEF is the slow one).
@@ -34,8 +35,8 @@ struct ApiFile<'a> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SelectBackground {
-    name: String,
+struct SetBg {
+    bg: String,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +55,9 @@ pub struct Api {
     pub staging: PathBuf,
     /// Large uploads running now; the source stays paused until the last one is answered.
     pub large_uploads: Mutex<usize>,
+    /// Where the `bg` choice is remembered across restarts
+    pub bg_file: PathBuf,
+    pub bg: Mutex<Option<Choice>>,
 }
 
 /// Held for the length of a large upload.
@@ -111,31 +115,24 @@ impl Api {
         match (request.method(), request.url()) {
             (Method::Get, "/status") => Ok(json!({
                 "link": { "keyboard": self.keyboard.to_string(), "connected": self.uplink.is_connected() },
-                "source": self.runner.status(),
+                "bg": self.bg_json(),
+                "stream": self.runner.status(),
             })),
-            (Method::Put, "/source") => {
-                let source: SourceRequest = serde_json::from_slice(&body(request)?).context("reading the source request")?;
-                self.start(source)
+            (Method::Get, "/streams") => {
+                let shown = match &*self.bg.lock().expect("bg poisoned") {
+                    Some(Choice::Stream(name)) if self.runner.status().worker.is_some() => Some(name.clone()),
+                    _ => None,
+                };
+                let streams: Vec<serde_json::Value> = monitor_streams(&monitors::enumerate()?)
+                    .into_iter()
+                    .map(|s| json!({ "name": s.name.as_str(), "mode": "live", "from": "built in", "shown": shown.as_ref() == Some(&s.name) }))
+                    .collect();
+                Ok(json!({ "streams": streams }))
             }
-            (Method::Delete, "/source") => {
-                self.runner.send(RunnerEvent::Stop)?;
-                let deadline = Instant::now() + STOP_WAIT;
-                while self.runner.status().state != "idle" {
-                    if Instant::now() > deadline {
-                        bail!("the source is still stopping");
-                    }
-                    thread::sleep(POLL);
-                }
-                Ok(json!({ "stopped": true }))
-            }
-            (Method::Put, "/background") => {
-                let SelectBackground { name } = serde_json::from_slice(&body(request)?).context("reading the background name")?;
-                let is_file = !name.contains(['/', '\\']) && name.ends_with(&format!(".{}", glassdeck_package::EXTENSION));
-                if !is_file && name != glassdeck_proto::BUILT_IN_BACKGROUND {
-                    bail!("{name:?} isn't {} or a background file name like we-2970107491.deckbg", glassdeck_proto::BUILT_IN_BACKGROUND);
-                }
-                self.uplink.select_background(name.clone());
-                Ok(json!({ "selected": name }))
+            (Method::Get, "/bg") => Ok(self.bg_json()),
+            (Method::Put, "/bg") => {
+                let SetBg { bg } = serde_json::from_slice(&body(request)?).context("reading the bg request")?;
+                self.choose(Choice::parse(&bg)?)
             }
             (Method::Put, "/deploy") => {
                 let Deploy { path } = serde_json::from_slice(&body(request)?).context("reading the deploy request")?;
@@ -169,33 +166,92 @@ impl Api {
         Ok(UploadPause { api: self })
     }
 
-    /// Starts the source and waits until it streams, fails, or is still starting after `START_WAIT`.
-    fn start(&self, source: SourceRequest) -> Result<serde_json::Value> {
+    fn bg_json(&self) -> serde_json::Value {
+        match &*self.bg.lock().expect("bg poisoned") {
+            Some(choice) => json!({ "bg": choice.to_string(), "runs_on": choice.runs_on() }),
+            None => json!({ "bg": null, "runs_on": "keyboard" }),
+        }
+    }
+
+    /// What glassdeckd remembered, applied at start-up without waiting: a stream starts once the
+    /// keyboard connects, and a keyboard choice is sent on connect.
+    pub fn restore(&self) -> Result<()> {
+        let Some(choice) = streams::load(&self.bg_file)? else { return Ok(()) };
+        for effect in effects(&choice) {
+            match effect {
+                Effect::StopStream => {}
+                Effect::SelectOnKeyboard(name) => self.uplink.select_background(name),
+                Effect::ShowStream(name) => self.runner.send(RunnerEvent::Start(self.find_stream(&name)?.request()))?,
+            }
+        }
+        println!("Background: {choice} (on the {})", choice.runs_on());
+        *self.bg.lock().expect("bg poisoned") = Some(choice);
+        Ok(())
+    }
+
+    /// Shows `choice` and remembers it. A stream is looked up first, so an unknown name changes nothing.
+    fn choose(&self, choice: Choice) -> Result<serde_json::Value> {
+        let stream = match &choice {
+            Choice::Stream(name) => Some(self.find_stream(name)?),
+            Choice::BuiltIn | Choice::Background(_) => None,
+        };
+        let mut state = "shown";
+        for effect in effects(&choice) {
+            match effect {
+                Effect::StopStream => self.stop_stream()?,
+                Effect::SelectOnKeyboard(name) => self.uplink.select_background(name),
+                Effect::ShowStream(_) => state = self.show(stream.as_ref().expect("looked up above"))?,
+            }
+        }
+        streams::save(&self.bg_file, &choice)?;
+        *self.bg.lock().expect("bg poisoned") = Some(choice.clone());
+        Ok(json!({ "bg": choice.to_string(), "runs_on": choice.runs_on(), "state": state }))
+    }
+
+    fn find_stream(&self, name: &StreamName) -> Result<MonitorStream> {
+        let streams = monitor_streams(&monitors::enumerate()?);
+        let listed = streams.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
+        streams.into_iter().find(|s| s.name == *name).ok_or_else(|| anyhow!("no stream named {name}; there are: {listed}"))
+    }
+
+    fn stop_stream(&self) -> Result<()> {
+        self.runner.send(RunnerEvent::Stop)?;
+        let deadline = Instant::now() + STOP_WAIT;
+        while self.runner.status().state != "idle" {
+            if Instant::now() > deadline {
+                bail!("the stream is still stopping");
+            }
+            thread::sleep(POLL);
+        }
+        Ok(())
+    }
+
+    /// Starts the stream and waits until it shows, fails, or is still starting after `START_WAIT`.
+    fn show(&self, stream: &MonitorStream) -> Result<&'static str> {
         let before = self.runner.status();
-        let playing = source.play.to_string();
-        self.runner.send(RunnerEvent::Start(source))?;
+        self.runner.send(RunnerEvent::Start(stream.request()))?;
         let deadline = Instant::now() + START_WAIT;
         while Instant::now() < deadline {
             thread::sleep(POLL);
             let now = self.runner.status();
             let new_worker = now.worker.is_some() && now.worker != before.worker;
             if new_worker && now.streaming {
-                return Ok(json!({ "playing": playing }));
+                return Ok("shown");
             }
             if let Some((worker, said)) = &now.last_ended
                 && now.last_ended != before.last_ended
                 && Some(*worker) != before.worker
             {
-                bail!("{playing} {said}");
+                bail!("stream:{} {said}", stream.name);
             }
             if now.state == "waiting for the keyboard" {
-                return Ok(json!({ "waiting": playing }));
+                return Ok("waiting for the keyboard");
             }
             if now.state == PAUSED_FOR_UPLOAD {
-                return Ok(json!({ "after_upload": playing }));
+                return Ok("after the upload");
             }
         }
-        Ok(json!({ "starting": playing }))
+        Ok("starting")
     }
 }
 

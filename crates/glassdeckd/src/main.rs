@@ -9,6 +9,7 @@ mod link;
 mod media;
 mod module_host;
 mod runner;
+mod streams;
 mod system;
 mod worker;
 
@@ -97,7 +98,22 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     module_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink), media::start()?)?;
     let (modules, profile, staging) = (paths.modules.clone(), paths.profile.clone(), paths.staging.clone());
-    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile, staging, large_uploads: Mutex::new(0) }.serve(&paths.api)
+    let api = Api {
+        token,
+        runner,
+        uplink,
+        keyboard: config.keyboard,
+        modules,
+        profile,
+        staging,
+        large_uploads: Mutex::new(0),
+        bg_file: paths.bg.clone(),
+        bg: Mutex::new(None),
+    };
+    if let Err(e) = api.restore() {
+        eprintln!("error: restoring the background: {e:#}; the keyboard keeps its own");
+    }
+    api.serve(&paths.api)
 }
 
 fn new_token() -> Result<String> {

@@ -13,6 +13,8 @@ pub const CONFIG_FORMAT_VERSION: u32 = 1;
 pub struct Paths {
     pub config: PathBuf,
     pub profile: PathBuf,
+    /// The remembered `bg` choice
+    pub bg: PathBuf,
     pub modules: PathBuf,
     pub api: PathBuf,
     pub log: PathBuf,
@@ -27,6 +29,7 @@ impl Paths {
         Ok(Self {
             config: roaming.join("config.json"),
             profile: roaming.join("profile.json"),
+            bg: roaming.join("bg.json"),
             modules: roaming.join("modules"),
             api: local.join("api.json"),
             log: local.join("logs").join("glassdeckd.log"),

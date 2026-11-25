@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
+glassdeck-convert.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true
 serde.workspace = true

@@ -22,6 +22,8 @@ pub struct Manifest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Origin {
     WallpaperEngine { workshop_id: String },
+    /// Made by `glassdeck convert` from the file or folder of this name
+    Converted { from: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
