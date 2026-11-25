@@ -9,6 +9,8 @@ use serde::Deserialize;
 
 /// Positions snap to this, so widgets line up.
 pub const GRID: u32 = 8;
+/// The profile.json layout this build reads.
+pub const PROFILE_FORMAT_VERSION: u32 = 1;
 
 /// The widget area in whole panel pixels: where widget (0, 0) sits, and how much room there is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,7 @@ impl WidgetArea {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProfile {
+    format: u32,
     widgets: Vec<RawWidget>,
 }
 
@@ -84,6 +87,7 @@ impl Profile {
 
     pub fn parse(json: &str, area: Size, manifest: impl Fn(&str) -> Option<ModuleManifest>) -> Result<Self> {
         let raw: RawProfile = serde_json::from_str(json).context("parsing the profile")?;
+        ensure!(raw.format == PROFILE_FORMAT_VERSION, "profile format {} is not the {PROFILE_FORMAT_VERSION} this build reads", raw.format);
         ensure!(raw.widgets.len() <= usize::from(u16::MAX), "a profile holds at most {} widgets", u16::MAX);
         let mut widgets: Vec<Widget> = Vec::with_capacity(raw.widgets.len());
         for (index, raw) in raw.widgets.into_iter().enumerate() {
@@ -114,6 +118,7 @@ mod tests {
         (id == "dev.glassdeck.clock").then(|| ModuleManifest {
             id: id.into(),
             name: "Clock".into(),
+            version: "1.0.0".into(),
             size: Size { w: 240, h: 120 },
             resize: Resize::Between { min: Size { w: 160, h: 80 }, max: Size { w: 480, h: 240 } },
             pc: false,
@@ -125,7 +130,7 @@ mod tests {
     }
 
     fn profile(widgets: &[String]) -> Result<Profile> {
-        Profile::parse(&format!(r#"{{ "widgets": [{}] }}"#, widgets.join(",")), AREA, clock)
+        Profile::parse(&format!(r#"{{ "format": 1, "widgets": [{}] }}"#, widgets.join(",")), AREA, clock)
     }
 
     #[test]

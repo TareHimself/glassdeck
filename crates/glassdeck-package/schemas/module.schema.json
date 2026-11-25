@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Glassdeck module manifest (module.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "id", "name", "version", "size"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "format": { "description": "The module.json layout; this schema describes format 1", "const": 1 },
+    "id": {
+      "description": "Unique, reverse-DNS, like dev.glassdeck.clock",
+      "type": "string",
+      "pattern": "^[^\\s]+\\.[^\\s]+$"
+    },
+    "name": { "description": "Shown to people", "type": "string" },
+    "version": { "description": "The module's own version, major.minor.patch", "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "size": { "$ref": "#/$defs/size", "description": "Default size in panel pixels" },
+    "min": { "$ref": "#/$defs/size", "description": "Smallest size; give min and max together, or neither for a fixed size" },
+    "max": { "$ref": "#/$defs/size", "description": "Largest size; give min and max together, or neither for a fixed size" },
+    "pc": { "description": "The module has a pc.luau half that sends data", "type": "boolean", "default": false }
+  },
+  "dependentRequired": { "min": ["max"], "max": ["min"] },
+  "$defs": {
+    "size": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["w", "h"],
+      "properties": {
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

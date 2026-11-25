@@ -25,7 +25,7 @@ const MAX_WAIT: Duration = Duration::from_millis(200);
 
 #[derive(clap::Subcommand)]
 pub enum ModuleAction {
-    /// Pack a module folder (module.toml, keyboard.luau, optional pc.luau and assets/) into a .deckmod
+    /// Pack a module folder (module.json, keyboard.luau, optional pc.luau and assets/) into a .deckmod
     Pack {
         folder: PathBuf,
         /// Defaults to <folder>.deckmod

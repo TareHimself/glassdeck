@@ -284,7 +284,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glassdeck-widget-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(dir.join("src/module.toml"), "id = \"dev.test.widget\"\nname = \"Test\"\nsize = { w = 64, h = 32 }\n").unwrap();
+        fs::write(dir.join("src/module.json"), r#"{ "format": 1, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#).unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
         let package = pack_folder(&dir.join("src"), &dir.join("widget.deckmod")).unwrap();
         let modified = fs::metadata(package.path()).unwrap().modified().unwrap();

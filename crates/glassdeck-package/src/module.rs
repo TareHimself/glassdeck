@@ -1,4 +1,4 @@
-//! A `.deckmod`: a widget module in the same stored-zip container as a background, with `module.toml` as
+//! A `.deckmod`: a widget module in the same stored-zip container as a background, with `module.json` as
 //! its manifest. Modules and backgrounds refuse each other's files.
 
 use std::collections::HashMap;
@@ -12,10 +12,12 @@ use crate::zip::{self, Entry};
 use crate::{MANIFEST, read_exact_at, staging_path};
 
 pub const MODULE_EXTENSION: &str = "deckmod";
-pub const MODULE_MANIFEST: &str = "module.toml";
+pub const MODULE_MANIFEST: &str = "module.json";
 pub const KEYBOARD_SCRIPT: &str = "keyboard.luau";
 pub const PC_SCRIPT: &str = "pc.luau";
 pub const ASSETS_FOLDER: &str = "assets";
+/// The module.json layout this build reads.
+pub const MODULE_FORMAT_VERSION: u32 = 1;
 const MAX_SCRIPT_LEN: u64 = 16 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -40,11 +42,13 @@ impl Resize {
     }
 }
 
-/// A checked `module.toml`.
+/// A checked `module.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleManifest {
     pub id: String,
     pub name: String,
+    /// The module's own version, `major.minor.patch`.
+    pub version: String,
     pub size: Size,
     pub resize: Resize,
     pub pc: bool,
@@ -53,8 +57,13 @@ pub struct ModuleManifest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawManifest {
+    /// Lets editors find the schema; not used otherwise.
+    #[serde(rename = "$schema")]
+    _schema: Option<String>,
+    format: u32,
     id: String,
     name: String,
+    version: String,
     size: Size,
     min: Option<Size>,
     max: Option<Size>,
@@ -64,7 +73,9 @@ struct RawManifest {
 
 impl ModuleManifest {
     pub fn parse(text: &str) -> Result<Self> {
-        let raw: RawManifest = toml::from_str(text).context("parsing module.toml")?;
+        let raw: RawManifest = serde_json::from_str(text).context("parsing module.json")?;
+        ensure!(raw.format == MODULE_FORMAT_VERSION, "module.json format {} is not the {MODULE_FORMAT_VERSION} this build reads", raw.format);
+        ensure!(is_version(&raw.version), "version {:?} is not major.minor.patch, like 1.0.0", raw.version);
         ensure!(raw.id.contains('.') && !raw.id.contains(char::is_whitespace), "id {:?} is not reverse-DNS, like dev.glassdeck.clock", raw.id);
         ensure!(raw.size.w > 0 && raw.size.h > 0, "size must not be zero");
         let resize = match (raw.min, raw.max) {
@@ -73,8 +84,13 @@ impl ModuleManifest {
             _ => bail!("give both min and max, or neither for a fixed size"),
         };
         ensure!(resize.allows(raw.size, raw.size), "size {}x{} is outside min and max", raw.size.w, raw.size.h);
-        Ok(Self { id: raw.id, name: raw.name, size: raw.size, resize, pc: raw.pc })
+        Ok(Self { id: raw.id, name: raw.name, version: raw.version, size: raw.size, resize, pc: raw.pc })
     }
+}
+
+fn is_version(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// An opened module whose manifest parsed and whose scripts are present.
@@ -139,8 +155,8 @@ fn read_text(file: &File, entry: Entry) -> Result<String> {
 fn check_scripts(manifest: &ModuleManifest, has: impl Fn(&str) -> bool) -> Result<()> {
     ensure!(has(KEYBOARD_SCRIPT), "{KEYBOARD_SCRIPT} is missing");
     match (manifest.pc, has(PC_SCRIPT)) {
-        (true, false) => bail!("module.toml says pc = true but {PC_SCRIPT} is missing"),
-        (false, true) => bail!("{PC_SCRIPT} is present but module.toml doesn't say pc = true"),
+        (true, false) => bail!("module.json says \"pc\": true but {PC_SCRIPT} is missing"),
+        (false, true) => bail!("{PC_SCRIPT} is present but module.json doesn't say \"pc\": true"),
         _ => Ok(()),
     }
 }
@@ -149,7 +165,7 @@ pub fn is_module(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case(MODULE_EXTENSION))
 }
 
-/// Builds `<path>.tmp` with `module.toml` first, then renames it over `path`.
+/// Builds `<path>.tmp` with `module.json` first, then renames it over `path`.
 pub struct ModuleWriter {
     path: PathBuf,
     staging: PathBuf,
@@ -182,7 +198,7 @@ impl ModuleWriter {
     }
 }
 
-/// Packs a module folder: `module.toml`, the scripts and everything under `assets/`.
+/// Packs a module folder: `module.json`, the scripts and everything under `assets/`.
 pub fn pack_folder(folder: &Path, out: &Path) -> Result<ModulePackage> {
     let manifest_path = folder.join(MODULE_MANIFEST);
     let manifest = fs::read_to_string(&manifest_path).with_context(|| format!("reading {}", manifest_path.display()))?;
@@ -210,13 +226,19 @@ mod tests {
     use super::*;
     use crate::tests::{Scratch, web_manifest};
 
-    const CLOCK: &str = r#"
-id = "dev.glassdeck.clock"
-name = "Clock"
-size = { w = 240, h = 120 }
-min = { w = 160, h = 80 }
-max = { w = 480, h = 240 }
-"#;
+    const CLOCK: &str = r#"{
+        "format": 1,
+        "id": "dev.glassdeck.clock",
+        "name": "Clock",
+        "version": "1.0.0",
+        "size": { "w": 240, "h": 120 },
+        "min": { "w": 160, "h": 80 },
+        "max": { "w": 480, "h": 240 }
+    }"#;
+
+    fn with_pc(manifest: &str) -> String {
+        manifest.replacen('{', "{ \"pc\": true,", 1)
+    }
 
     #[test]
     fn parses_a_resizable_manifest() {
@@ -229,7 +251,7 @@ max = { w = 480, h = 240 }
 
     #[test]
     fn a_fixed_module_allows_only_its_size() {
-        let manifest = ModuleManifest::parse("id = \"a.b\"\nname = \"A\"\nsize = { w = 8, h = 8 }").unwrap();
+        let manifest = ModuleManifest::parse(r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
         assert_eq!(manifest.resize, Resize::Fixed);
         assert!(manifest.resize.allows(manifest.size, Size { w: 8, h: 8 }));
         assert!(!manifest.resize.allows(manifest.size, Size { w: 16, h: 8 }));
@@ -238,10 +260,13 @@ max = { w = 480, h = 240 }
     #[test]
     fn refuses_bad_manifests() {
         for bad in [
-            "id = \"clock\"\nname = \"A\"\nsize = { w = 8, h = 8 }",
-            "id = \"a.b\"\nname = \"A\"\nsize = { w = 8, h = 8 }\nmin = { w = 8, h = 8 }",
-            "id = \"a.b\"\nname = \"A\"\nsize = { w = 800, h = 8 }\nmin = { w = 8, h = 8 }\nmax = { w = 16, h = 16 }",
-            "id = \"a.b\"\nname = \"A\"\nsize = { w = 8, h = 8 }\ncolour = 1",
+            r#"{ "format": 1, "id": "clock", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "min": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 800, "h": 8 }, "min": { "w": 8, "h": 8 }, "max": { "w": 16, "h": 16 } }"#,
+            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 }, "colour": 1 }"#,
+            r#"{ "format": 2, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "format": 1, "id": "a.b", "name": "A", "version": "1.0", "size": { "w": 8, "h": 8 } }"#,
+            r#"{ "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#,
         ] {
             assert!(ModuleManifest::parse(bad).is_err(), "{bad}");
         }
@@ -267,7 +292,7 @@ max = { w = 480, h = 240 }
         let scratch = Scratch::new("module-pc");
         let folder = scratch.0.join("cpu");
         fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join(MODULE_MANIFEST), format!("{CLOCK}pc = true\n")).unwrap();
+        fs::write(folder.join(MODULE_MANIFEST), with_pc(CLOCK)).unwrap();
         fs::write(folder.join(KEYBOARD_SCRIPT), "return {}").unwrap();
         assert!(pack_folder(&folder, &scratch.0.join("cpu.deckmod")).is_err());
     }

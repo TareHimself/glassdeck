@@ -1,0 +1,10 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/module.schema.json",
+  "format": 1,
+  "id": "dev.glassdeck.pomodoro",
+  "name": "Pomodoro",
+  "version": "1.0.0",
+  "size": { "w": 160, "h": 160 },
+  "min": { "w": 120, "h": 120 },
+  "max": { "w": 256, "h": 256 }
+}

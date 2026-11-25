@@ -9,4 +9,3 @@ anyhow.workspace = true
 glassdeck-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml = "1.2.3"
