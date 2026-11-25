@@ -49,6 +49,10 @@ impl Compositor {
         }
     }
 
+    pub fn registrar(&self) -> super::Registrar {
+        super::Registrar
+    }
+
     pub fn is_open(&self) -> bool {
         self.window.as_ref().is_none_or(|w| w.is_open() && !w.is_key_down(Key::Escape))
     }

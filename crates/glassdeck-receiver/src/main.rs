@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
-    let director = Director::start(cli.decks, Arc::clone(&mailbox))?;
+    let director = Director::start(cli.decks, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director))?;
     compose_loop(&mailbox, compositor)
@@ -135,7 +135,7 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox, director: &SharedDirector, st
                             Timing::Paced { late_us: wait_until(clock.due_us(picture.time_us)) }
                         }
                     };
-                    mailbox.put(ShownFrame { picture, timing });
+                    mailbox.put(ShownFrame { picture: platform::decoded(picture), timing });
                 }
             }
             Action::End => {

@@ -1,39 +1,42 @@
-//! Decks played on the keyboard itself, with no PC: video decks through our own decoder.
+//! Decks played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-web.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use glassdeck_deck::{Content, Deck, Entry};
 use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
-use crate::platform::{self, Decoder};
+use crate::platform::{self, Decoder, Registrar, WebDeck};
 use crate::playout::{PlayoutClock, wait_until};
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
 const LOCAL_PLAYOUT_DELAY_US: u64 = 100_000;
 
-/// A deck playing on its own thread until stopped or failed.
-pub struct LocalDeck {
-    stop: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+/// A deck playing until stopped or failed.
+pub enum LocalDeck {
+    /// Decoded on its own thread
+    Video { stop: Arc<AtomicBool>, thread: JoinHandle<()> },
+    /// Rendered by glassdeck-web
+    Web(WebDeck),
 }
 
 impl LocalDeck {
     /// `stopped` runs if the deck ends by itself, never after `stop`.
     pub fn start(
         path: &Path,
+        registrar: Registrar,
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         let deck = Deck::open(path)?;
         let entry = match &deck.manifest().content {
             Content::Video { file, .. } => deck.entry(file).context("the deck's video is missing")?,
-            Content::Web { .. } => bail!("web decks are not wired to the receiver yet"),
+            Content::Web { .. } => return WebDeck::start(path, registrar, mailbox, stopped).map(Self::Web),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
@@ -46,13 +49,18 @@ impl LocalDeck {
                 stopped(error);
             }
         })?;
-        Ok(Self { stop, thread })
+        Ok(Self::Video { stop, thread })
     }
 
     pub fn stop(self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if self.thread.join().is_err() {
-            eprintln!("error: the local deck thread panicked");
+        match self {
+            Self::Video { stop, thread } => {
+                stop.store(true, Ordering::Relaxed);
+                if thread.join().is_err() {
+                    eprintln!("error: the local deck thread panicked");
+                }
+            }
+            Self::Web(web) => web.stop(),
         }
     }
 }
@@ -112,7 +120,7 @@ fn play_video(deck: &Deck, entry: Entry, mailbox: &Mailbox, stop: &AtomicBool) -
                 let clock =
                     *clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), LOCAL_PLAYOUT_DELAY_US));
                 let late_us = wait_until(clock.due_us(picture.time_us));
-                mailbox.put(ShownFrame { picture, timing: Timing::Paced { late_us } });
+                mailbox.put(ShownFrame { picture: platform::decoded(picture), timing: Timing::Paced { late_us } });
             }
         }
     }

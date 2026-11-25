@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -16,11 +17,13 @@ use drm::control::{
 };
 use drm::{ClientCapability, Device};
 use fontdue::Font;
+use glassdeck_proto::compositor::BufferLayout;
 use glassdeck_proto::unix_micros;
 use rustix::fs::OFlags;
 use rustix::time::{ClockId, clock_gettime};
 
-use super::mpp::{Color, Encoding, Picture, Range};
+use super::Picture;
+use super::mpp::{Color, Encoding, Range};
 use super::scanout::{Effect, Event, Scanout, step};
 use crate::overlay::Overlay;
 use crate::presentation::Outcome;
@@ -51,6 +54,7 @@ struct Surface {
 }
 
 /// The video plane's properties, for atomic commits.
+#[derive(Clone)]
 struct VideoPlane {
     handle: plane::Handle,
     fb_id: property::Handle,
@@ -65,13 +69,14 @@ struct VideoPlane {
 /// video plane, and the key labels sit on the primary plane above it, blended by the display controller.
 /// Pictures go up with non-blocking atomic commits; the flip event says when each reached the screen.
 pub struct Compositor {
-    card: Card,
+    card: Arc<Card>,
     crtc: crtc::Handle,
     video: VideoPlane,
     size: (u32, u32),
     applied_color: Option<Color>,
     scanout: Scanout,
     pictures: HashMap<u64, Picture>,
+    /// Framebuffers made for decoded pictures; shared buffers keep theirs for their whole life.
     framebuffers: HashMap<u64, framebuffer::Handle>,
     outcomes: Vec<Outcome>,
     _labels: Surface,
@@ -133,7 +138,7 @@ impl Compositor {
 
         Ok(Self {
             video: VideoPlane::find(&card, video_plane)?,
-            card,
+            card: Arc::new(card),
             crtc,
             size,
             applied_color: None,
@@ -176,9 +181,11 @@ impl Compositor {
                 Effect::Commit(token) => self.commit(token)?,
                 Effect::Presented(token) => self.outcomes.push(Outcome::Presented { token, at_us: flipped_at_us }),
                 Effect::Release(token) => {
-                    let fb = self.framebuffers.remove(&token).context("released a picture with no framebuffer")?;
-                    self.card.destroy_framebuffer(fb)?;
-                    self.pictures.remove(&token);
+                    let picture = self.pictures.remove(&token).context("released a picture that was never submitted")?;
+                    if let Picture::Decoded(_) = picture {
+                        let fb = self.framebuffers.remove(&token).context("released a picture with no framebuffer")?;
+                        self.card.destroy_framebuffer(fb)?;
+                    }
                 }
                 Effect::Drop(token) => {
                     self.pictures.remove(&token);
@@ -191,34 +198,17 @@ impl Compositor {
 
     fn commit(&mut self, token: u64) -> Result<()> {
         let picture = self.pictures.get(&token).context("committing a picture that was never submitted")?;
-        let (width, height) = picture.size();
-        let (hor_stride, ver_stride) = picture.strides();
-        let color = picture.color();
-        let handle = self.card.prime_fd_to_buffer(picture.dma_buf()).context("importing the decoded picture")?;
-        let nv12 = Nv12 { size: (width, height), handle, pitch: hor_stride, chroma_offset: hor_stride * ver_stride };
-        let fb = self.card.add_planar_framebuffer(&nv12, FbCmd2Flags::empty());
-        self.card.close_buffer(handle)?;
-        let fb = fb.context("wrapping the decoded picture in a framebuffer")?;
-
-        let video = &self.video;
-        let mut request = AtomicModeReq::new();
-        request.add_property(video.handle, video.fb_id, Value::Framebuffer(Some(fb)));
-        request.add_property(video.handle, video.crtc_id, Value::CRTC(Some(self.crtc)));
-        let (sx, sy, sw, sh) = whole((width, height));
-        for (property, value) in video.src.iter().zip([sx, sy, sw, sh]) {
-            request.add_property(video.handle, *property, Value::UnsignedRange(value as u64));
-        }
-        let (dx, dy, dw, dh) = fit((width, height), self.size);
-        let dst = [
-            Value::SignedRange(dx as i64),
-            Value::SignedRange(dy as i64),
-            Value::UnsignedRange(dw as u64),
-            Value::UnsignedRange(dh as u64),
-        ];
-        for (property, value) in video.dst.iter().zip(dst) {
-            request.add_property(video.handle, *property, value);
-        }
-        if self.applied_color != Some(color) {
+        let (fb, size, color) = match picture {
+            Picture::Decoded(decoded) => {
+                let fb = decoded_framebuffer(&self.card, decoded)?;
+                self.framebuffers.insert(token, fb);
+                (fb, decoded.size(), Some(decoded.color()))
+            }
+            Picture::Shared(shared) => (shared.buffer.fb, shared.buffer.size, None),
+        };
+        let mut request = self.video.show(fb, self.crtc, size, self.size);
+        if let Some(color) = color.filter(|&color| self.applied_color != Some(color)) {
+            let video = &self.video;
             let (encoding, range) = color_names(color);
             let encoding = enum_value(&self.card, video.color_encoding, encoding)?;
             let range = enum_value(&self.card, video.color_range, range)?;
@@ -229,9 +219,12 @@ impl Compositor {
         }
         self.card
             .atomic_commit(AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, request)
-            .context("committing the decoded picture")?;
-        self.framebuffers.insert(token, fb);
-        Ok(())
+            .context("committing the picture")
+    }
+
+    /// Lets a renderer on the keyboard hand over scanout buffers from another thread.
+    pub fn registrar(&self) -> Registrar {
+        Registrar { card: Arc::clone(&self.card), crtc: self.crtc, video: self.video.clone(), screen: self.size }
     }
 
     pub fn idle(&mut self) {}
@@ -241,6 +234,98 @@ impl Compositor {
     }
 
     pub fn set_status(&mut self, _status: &str) {}
+}
+
+fn decoded_framebuffer(card: &Card, picture: &super::mpp::Picture) -> Result<framebuffer::Handle> {
+    let (width, height) = picture.size();
+    let (hor_stride, ver_stride) = picture.strides();
+    let handle = card.prime_fd_to_buffer(picture.dma_buf()).context("importing the decoded picture")?;
+    let nv12 = Nv12 { size: (width, height), handle, pitch: hor_stride, chroma_offset: hor_stride * ver_stride };
+    let fb = card.add_planar_framebuffer(&nv12, FbCmd2Flags::empty());
+    card.close_buffer(handle)?;
+    fb.context("wrapping the decoded picture in a framebuffer")
+}
+
+/// A renderer's buffer, wrapped in a framebuffer once and shown as often as it is presented.
+pub struct SharedBuffer {
+    card: Arc<Card>,
+    pub fb: framebuffer::Handle,
+    pub size: (u32, u32),
+}
+
+impl Drop for SharedBuffer {
+    fn drop(&mut self) {
+        if let Err(e) = self.card.destroy_framebuffer(self.fb) {
+            eprintln!("error: freeing a shared framebuffer: {e}");
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Registrar {
+    card: Arc<Card>,
+    crtc: crtc::Handle,
+    video: VideoPlane,
+    screen: (u32, u32),
+}
+
+impl Registrar {
+    /// Imports the buffer and checks with a test-only commit that the video plane can show it.
+    pub fn register(&self, dma_buf: &OwnedFd, layout: BufferLayout) -> Result<SharedBuffer> {
+        let format = match DrmFourcc::try_from(layout.fourcc) {
+            Ok(format @ (DrmFourcc::Xrgb8888 | DrmFourcc::Argb8888)) => format,
+            _ => bail!("buffer format {:#x} is not XRGB8888 or ARGB8888", layout.fourcc),
+        };
+        let handle = self.card.prime_fd_to_buffer(dma_buf.as_fd()).context("importing the buffer")?;
+        let single = SinglePlane { layout, format, handle };
+        let flags = if layout.modifier == LINEAR { FbCmd2Flags::empty() } else { FbCmd2Flags::MODIFIERS };
+        let fb = self.card.add_planar_framebuffer(&single, flags);
+        self.card.close_buffer(handle)?;
+        let buffer = SharedBuffer {
+            card: Arc::clone(&self.card),
+            fb: fb.context("wrapping the buffer in a framebuffer")?,
+            size: (layout.width, layout.height),
+        };
+        let request = self.video.show(buffer.fb, self.crtc, buffer.size, self.screen);
+        self.card
+            .atomic_commit(AtomicCommitFlags::TEST_ONLY, request)
+            .context("the video plane cannot show this buffer")?;
+        Ok(buffer)
+    }
+}
+
+const LINEAR: u64 = 0;
+
+struct SinglePlane {
+    layout: BufferLayout,
+    format: DrmFourcc,
+    handle: BufferHandle,
+}
+
+impl PlanarBuffer for SinglePlane {
+    fn size(&self) -> (u32, u32) {
+        (self.layout.width, self.layout.height)
+    }
+
+    fn format(&self) -> DrmFourcc {
+        self.format
+    }
+
+    fn modifier(&self) -> Option<DrmModifier> {
+        (self.layout.modifier != LINEAR).then(|| DrmModifier::from(self.layout.modifier))
+    }
+
+    fn pitches(&self) -> [u32; 4] {
+        [self.layout.stride, 0, 0, 0]
+    }
+
+    fn handles(&self) -> [Option<BufferHandle>; 4] {
+        [Some(self.handle), None, None, None]
+    }
+
+    fn offsets(&self) -> [u32; 4] {
+        [self.layout.offset, 0, 0, 0]
+    }
 }
 
 impl Surface {
@@ -319,6 +404,28 @@ fn pick_planes(card: &Card, resources: &drm::control::ResourceHandles, crtc: crt
 }
 
 impl VideoPlane {
+    /// The request that puts `fb` on this plane, scaled to fit the screen.
+    fn show(&self, fb: framebuffer::Handle, crtc: crtc::Handle, size: (u32, u32), screen: (u32, u32)) -> AtomicModeReq {
+        let mut request = AtomicModeReq::new();
+        request.add_property(self.handle, self.fb_id, Value::Framebuffer(Some(fb)));
+        request.add_property(self.handle, self.crtc_id, Value::CRTC(Some(crtc)));
+        let (sx, sy, sw, sh) = whole(size);
+        for (property, value) in self.src.iter().zip([sx, sy, sw, sh]) {
+            request.add_property(self.handle, *property, Value::UnsignedRange(value as u64));
+        }
+        let (dx, dy, dw, dh) = fit(size, screen);
+        let dst = [
+            Value::SignedRange(dx as i64),
+            Value::SignedRange(dy as i64),
+            Value::UnsignedRange(dw as u64),
+            Value::UnsignedRange(dh as u64),
+        ];
+        for (property, value) in self.dst.iter().zip(dst) {
+            request.add_property(self.handle, *property, value);
+        }
+        request
+    }
+
     fn find(card: &Card, handle: plane::Handle) -> Result<Self> {
         let named = |name: &str| property_handle(card, handle, name);
         Ok(Self {

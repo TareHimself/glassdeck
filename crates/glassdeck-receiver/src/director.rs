@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::local::LocalDeck;
 use crate::mailbox::Mailbox;
+use crate::platform::Registrar;
 use crate::screen::{DeckName, Effect, Event, Screen, step};
 
 /// Lives in the deck folder; deck names can't start with a dot, so it never collides with one.
@@ -29,12 +30,13 @@ pub struct Director {
     /// Counts deck starts, so a report from a deck that was since replaced is ignored.
     generation: u64,
     decks: PathBuf,
+    registrar: Registrar,
     mailbox: Arc<Mailbox>,
     stopped: Sender<DeckStopped>,
 }
 
 impl Director {
-    pub fn start(decks: PathBuf, mailbox: Arc<Mailbox>) -> Result<SharedDirector> {
+    pub fn start(decks: PathBuf, registrar: Registrar, mailbox: Arc<Mailbox>) -> Result<SharedDirector> {
         fs::create_dir_all(&decks).with_context(|| format!("creating the deck folder {}", decks.display()))?;
         let remembered = read_recent(&decks).unwrap_or_else(|e| {
             eprintln!("error: forgetting the remembered deck: {e:#}");
@@ -42,7 +44,8 @@ impl Director {
         });
         let (screen, effects) = Screen::at_boot(remembered);
         let (stopped, reports) = mpsc::channel::<DeckStopped>();
-        let director = Arc::new(Mutex::new(Self { screen, running: None, generation: 0, decks, mailbox, stopped }));
+        let director =
+            Arc::new(Mutex::new(Self { screen, running: None, generation: 0, decks, registrar, mailbox, stopped }));
         lock(&director).apply(effects)?;
 
         let watched = Arc::clone(&director);
@@ -99,7 +102,12 @@ impl Director {
                         // Only fails once the watch thread is gone, at shutdown, when nobody needs the report.
                         let _ = stopped.send(DeckStopped { generation, error });
                     };
-                    match LocalDeck::start(&self.decks.join(deck.as_str()), Arc::clone(&self.mailbox), report) {
+                    match LocalDeck::start(
+                        &self.decks.join(deck.as_str()),
+                        self.registrar.clone(),
+                        Arc::clone(&self.mailbox),
+                        report,
+                    ) {
                         Ok(running) => self.running = Some(running),
                         Err(e) => failed_start = Some(e.context(format!("starting {deck}"))),
                     }
