@@ -237,8 +237,9 @@ class App : public CefApp, public CefRenderProcessHandler {
   }
 
   void OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> command_line) override {
-    // Wallpapers play sound and video without anyone clicking first.
+    // Wallpapers play media without anyone clicking first, and never make a sound.
     command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
+    command_line->AppendSwitch("mute-audio");
   }
 
  private:

@@ -66,7 +66,7 @@ pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, set
 }
 
 /// The item's whole folder goes under `web/`, so its relative URLs keep working from `deck://`.
-/// Videos that are not VP8 or VP9 are re-encoded to VP9 under the same name first.
+/// Media goes through `web_media` first: VP9 where needed, and no sound.
 pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Result<Deck> {
     let files = folder_files(&item.dir)?;
     let content = Content::Web {
@@ -88,28 +88,27 @@ pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Re
     deck
 }
 
-/// Where each file's bytes come from: the item folder, or a re-encoded copy under `converted_dir`.
+/// Where each file's bytes come from: the item folder, or a converted copy under `converted_dir`.
 fn web_sources(item: &Item, files: &[String], converted_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut sources = Vec::with_capacity(files.len());
     for relative in files {
         let original = item.dir.join(relative);
-        if !web_media::is_video_file(relative) {
+        if web_media::MediaKind::of(relative).is_none() {
             sources.push(original);
             continue;
         }
-        let probe = web_media::probe(&original)?;
-        match web_media::plan(&probe) {
-            web_media::Plan::Keep => sources.push(original),
-            web_media::Plan::Convert { video, audio } => {
-                println!("Re-encoding {relative} ({video:?} video, {audio:?} audio) so both browsers decode it in hardware");
-                let converted = converted_dir.join(relative);
-                if let Some(parent) = converted.parent() {
-                    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-                }
-                web_media::convert(&original, &converted, video, audio)?;
-                sources.push(converted);
-            }
+        let plan = web_media::plan(&web_media::probe(&original)?).with_context(|| format!("planning {relative}"))?;
+        if plan == web_media::Plan::Keep {
+            sources.push(original);
+            continue;
         }
+        println!("{relative}: {plan:?}");
+        let converted = converted_dir.join(relative);
+        if let Some(parent) = converted.parent() {
+            std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        web_media::convert(&original, &converted, plan)?;
+        sources.push(converted);
     }
     Ok(sources)
 }
