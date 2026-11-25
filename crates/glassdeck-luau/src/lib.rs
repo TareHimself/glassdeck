@@ -4,7 +4,7 @@
 pub mod profile;
 mod resource;
 
-pub use resource::{ResourceReader, resource_of};
+pub use resource::{LiveName, MAX_LIVE_RESOURCE_BYTES, ResourceReader, ResourceRef, resource_of};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

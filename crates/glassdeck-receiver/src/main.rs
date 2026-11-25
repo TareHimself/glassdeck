@@ -202,6 +202,9 @@ fn serve(
             Action::ModuleData { instance, payload } => widgets
                 .send(Input::Data { instance, payload: payload.to_vec() })
                 .context("the widget thread has stopped")?,
+            Action::ModuleResource { instance, name, data } => widgets
+                .send(Input::Resource { instance, name: name.to_owned(), data: data.to_vec() })
+                .context("the widget thread has stopped")?,
             Action::PutFile(put) => pieces.send(put.clone()).context("the file writer has stopped")?,
             Action::AnswerProbe { probe_sent_us } => {
                 let reply = Message::ClockReply { probe_sent_us, received_us };

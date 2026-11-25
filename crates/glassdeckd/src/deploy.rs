@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_luau::profile::{Profile, WidgetArea};
@@ -34,6 +35,40 @@ pub fn target_for(path: &Path, modules: &Path) -> Result<FileTarget> {
         }
         _ => bail!("{} isn't a .{EXTENSION}, .{MODULE_EXTENSION} or profile .json", path.display()),
     }
+}
+
+/// What goes to the keyboard for a file: modules go as their keyboard copy, so host files never
+/// leave the host. A copy made for the upload is deleted with this.
+pub struct KeyboardFile {
+    path: PathBuf,
+    made_for_upload: bool,
+}
+
+impl KeyboardFile {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for KeyboardFile {
+    fn drop(&mut self) {
+        if self.made_for_upload
+            && let Err(e) = fs::remove_file(&self.path)
+        {
+            eprintln!("error: removing {}: {e}", self.path.display());
+        }
+    }
+}
+
+pub fn keyboard_file(target: &FileTarget, path: &Path, staging: &Path) -> Result<KeyboardFile> {
+    let FileTarget::Module(name) = target else {
+        return Ok(KeyboardFile { path: path.to_owned(), made_for_upload: false });
+    };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
+    let copy = staging.join(format!("{}-{name}", NEXT.fetch_add(1, Ordering::Relaxed)));
+    ModulePackage::open(path)?.write_keyboard_copy(&copy).context("making the keyboard's copy")?;
+    Ok(KeyboardFile { path: copy, made_for_upload: true })
 }
 
 /// Copies a deployed module or profile into glassdeckd's own folder; the module host reloads from there.

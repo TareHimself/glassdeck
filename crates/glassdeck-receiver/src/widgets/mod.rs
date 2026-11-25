@@ -4,6 +4,7 @@
 mod draw;
 mod installing;
 mod instance;
+mod live;
 mod ui;
 
 use std::collections::HashMap;
@@ -17,10 +18,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_package::{ModulePackage, is_module};
+use glassdeck_package::{KeyboardModule, is_module};
 use glassdeck_luau::profile::{Placement, Profile, WidgetArea};
 
+use glassdeck_luau::LiveName;
 use installing::Installing;
+use live::LiveCache;
 use instance::Instance;
 
 /// How often the profile and module folder are checked for changes.
@@ -60,7 +63,7 @@ impl Tiles {
 /// A module package, and when the file was written, so a rewrite counts as a new version.
 #[derive(Clone)]
 pub struct Installed {
-    pub package: Rc<ModulePackage>,
+    pub package: Rc<KeyboardModule>,
     pub modified: SystemTime,
 }
 
@@ -72,6 +75,8 @@ impl Installed {
 
 pub enum Input {
     Data { instance: u16, payload: Vec<u8> },
+    /// A resource the instance's host half made; empty `data` removes it.
+    Resource { instance: u16, name: String, data: Vec<u8> },
     /// A large file is arriving: the widget area shows its progress instead of the widgets.
     InstallProgress { what: String, fraction: f32 },
     InstallEnded,
@@ -99,6 +104,8 @@ struct Host {
     last_frame: Option<Instant>,
     /// While set, widgets keep running but their redraws wait until the install ends.
     installing: Option<Installing>,
+    /// Each instance's live resources, by its number in the profile.
+    live: HashMap<u16, LiveCache>,
 }
 
 #[derive(PartialEq)]
@@ -109,7 +116,7 @@ struct Snapshot {
 
 impl Host {
     fn new(config: Config, tiles: Arc<Tiles>) -> Self {
-        Self { config, area: WidgetArea::of_panel(), tiles, instances: Vec::new(), seen: None, last_frame: None, installing: None }
+        Self { config, area: WidgetArea::of_panel(), tiles, instances: Vec::new(), seen: None, last_frame: None, installing: None, live: HashMap::new() }
     }
 
     fn run(mut self, inputs: Receiver<Input>) {
@@ -126,6 +133,7 @@ impl Host {
                     Some(target) => target.on_data(&payload),
                     None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
                 },
+                Ok(Input::Resource { instance, name, data }) => self.store_live(instance, &name, data),
                 Ok(Input::InstallProgress { what, fraction }) => match &mut self.installing {
                     Some(installing) if installing.what == what => installing.fraction = fraction,
                     _ => self.installing = Some(Installing::new(what, fraction)),
@@ -174,8 +182,10 @@ impl Host {
             }
             return;
         }
-        for instance in &mut self.instances {
-            if let Some(tile) = instance.draw(&self.config.font) {
+        let none = LiveCache::default();
+        for (number, instance) in self.instances.iter_mut().enumerate() {
+            let live = u16::try_from(number).ok().and_then(|n| self.live.get(&n)).unwrap_or(&none);
+            if let Some(tile) = instance.draw(&self.config.font, live) {
                 let p = instance.placement;
                 self.tiles.put(Tile { x: self.area.x + p.x, y: self.area.y + p.y, w: p.w, h: p.h, pixels: tile.pixels });
             }
@@ -191,6 +201,23 @@ impl Host {
         self.clear(Placement { x: 0, y: 0, w, h });
         for instance in &mut self.instances {
             instance.request_redraw();
+        }
+    }
+
+    /// Kept by instance number, not in the instance, so a resource that arrives before its widget
+    /// starts, or across a restart, is still there to draw.
+    fn store_live(&mut self, instance: u16, name: &str, data: Vec<u8>) {
+        let stored = LiveName::parse(name).and_then(|name| {
+            let dropped = self.live.entry(instance).or_default().put(name.clone(), data)?;
+            Ok(dropped.into_iter().chain([name]).collect::<Vec<_>>())
+        });
+        match stored {
+            Ok(changed) => {
+                if let Some(target) = self.instances.get_mut(usize::from(instance)) {
+                    target.live_changed(&changed);
+                }
+            }
+            Err(e) => eprintln!("error: widget {instance}: live resource: {e:#}"),
         }
     }
 
@@ -238,7 +265,7 @@ impl Host {
                 continue;
             }
             let opened = fs::metadata(&path).and_then(|m| m.modified()).map_err(anyhow::Error::from).and_then(|modified| {
-                ModulePackage::open(&path).map(|package| Installed { package: Rc::new(package), modified })
+                KeyboardModule::open(&path).map(|package| Installed { package: Rc::new(package), modified })
             });
             match opened {
                 Ok(installed) => {
@@ -290,5 +317,7 @@ impl Host {
             self.clear(removed.placement);
             drop(removed.unload());
         }
+        let count = self.instances.len();
+        self.live.retain(|number, _| usize::from(*number) < count);
     }
 }

@@ -87,9 +87,9 @@ enum Command {
     },
     /// Stop the current source; the keyboard goes back to its own background
     Stop,
-    /// Choose the background the keyboard plays from its own folder whenever nothing is streaming
+    /// Choose what the keyboard plays whenever nothing is streaming: builtin:gradient (the default) or a background from its folder
     SelectBackground {
-        /// File name in the keyboard's background folder, such as we-2970107491.deckbg
+        /// builtin:gradient, or a file name in the keyboard's background folder such as we-2970107491.deckbg
         name: String,
     },
     /// Install a background (.deckbg), widget module (.deckmod) or widget profile (.json) on the keyboard

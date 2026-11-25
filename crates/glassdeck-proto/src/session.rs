@@ -22,6 +22,8 @@ pub enum Action<'a> {
     SelectBackground(&'a str),
     /// Hand a widget instance what its host half sent; widgets run whether or not a stream is open.
     ModuleData { instance: u16, payload: &'a [u8] },
+    /// Give a widget instance a resource its host half made; empty `data` removes it.
+    ModuleResource { instance: u16, name: &'a str, data: &'a [u8] },
     /// Write a piece of a file; files arrive whether or not a stream is open.
     PutFile(&'a PutFile),
 }
@@ -55,6 +57,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
         (_, Message::ClockReply { .. } | Message::PutDone { .. } | Message::PutRefused { .. }) => Err(SessionError::UnexpectedReply),
         (_, Message::PutFile(put)) => Ok((state, Action::PutFile(put))),
+        (_, Message::ModuleResource { instance, name, data }) => Ok((state, Action::ModuleResource { instance: *instance, name, data })),
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
@@ -107,6 +110,7 @@ mod tests {
             Ok((next, Action::SelectBackground(_))) => Expect::Moves(next, "select background"),
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
+            Ok((next, Action::ModuleResource { .. })) => Expect::Moves(next, "module resource"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -122,9 +126,12 @@ mod tests {
         let data = Message::ModuleData { instance: 0, payload: vec![0xc0] };
         let put = Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 1, data: vec![b'{'] });
         let done = Message::PutDone { target: FileTarget::Profile };
+        let resource = Message::ModuleResource { instance: 0, name: "cover".into(), data: vec![1] };
         let refused = Message::PutRefused { target: FileTarget::Profile, reason: "full".into() };
         let table = [
             (Idle, put.clone(), Expect::Moves(Idle, "put file")),
+            (Idle, resource.clone(), Expect::Moves(Idle, "module resource")),
+            (Streaming(a), resource, Expect::Moves(Streaming(a), "module resource")),
             (Streaming(a), put, Expect::Moves(Streaming(a), "put file")),
             (Idle, done.clone(), Expect::Refused(SessionError::UnexpectedReply)),
             (Streaming(a), done, Expect::Refused(SessionError::UnexpectedReply)),

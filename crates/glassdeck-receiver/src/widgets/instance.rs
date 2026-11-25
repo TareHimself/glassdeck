@@ -5,13 +5,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_package::{ModulePackage, ResourceKind};
+use glassdeck_package::{KeyboardModule, ResourceKind};
 use glassdeck_luau::profile::{Placement, Widget};
-use glassdeck_luau::{LuaResultExt, Vm, decode, encode, from_json};
+use glassdeck_luau::{LiveName, LuaResultExt, ResourceRef, Vm, decode, encode, from_json};
 use mlua::{Function, Table, Value};
 
 use super::Installed;
 use super::draw::{self, Align, Area, Color, Command, Images};
+use super::live::LiveCache;
 use super::ui::Ui;
 
 const ERROR_FILL: &str = "#4a0d0de0";
@@ -78,6 +79,17 @@ impl Instance {
             if live.vm.call::<bool>(&hook, (live.state.clone(), data))? {
                 live.ui.request_redraw();
             }
+            Ok(())
+        });
+    }
+
+    /// Live resources the widget host stored or dropped for this instance; it redraws with them.
+    pub fn live_changed(&mut self, names: &[LiveName]) {
+        for name in names {
+            self.images.forget(&ResourceRef::Live(name.clone()));
+        }
+        self.with_live(|live| {
+            live.ui.request_redraw();
             Ok(())
         });
     }
@@ -163,7 +175,7 @@ impl Instance {
     }
 
     /// The instance's new pixels, if anything asked for a redraw.
-    pub fn draw(&mut self, font: &Font) -> Option<DrawnTile> {
+    pub fn draw(&mut self, font: &Font, resources: &LiveCache) -> Option<DrawnTile> {
         let size = (self.placement.w, self.placement.h);
         if let Run::Running(live) = &self.run
             && live.ui.take_redraw()
@@ -172,7 +184,11 @@ impl Instance {
             let result = live.draw().and_then(|commands| {
                 let listed = started.elapsed();
                 let package = Rc::clone(&self.installed.package);
-                let tile = draw::render(&commands, size, font, &mut self.images, &|resource| package.resource(resource))?;
+                let read = |resource: &ResourceRef| match resource {
+                    ResourceRef::Packaged(packaged) => package.resource(packaged).map(Some),
+                    ResourceRef::Live(name) => Ok(resources.get(name)),
+                };
+                let tile = draw::render(&commands, size, font, &mut self.images, &read)?;
                 Ok((tile, listed))
             });
             match result {
@@ -208,7 +224,7 @@ impl Instance {
 }
 
 impl Live {
-    fn start(package: &Rc<ModulePackage>, widget: &Widget, saved: Option<Vec<u8>>) -> Result<Self> {
+    fn start(package: &Rc<KeyboardModule>, widget: &Widget, saved: Option<Vec<u8>>) -> Result<Self> {
         let source = package.keyboard_script()?;
         let vm = Vm::new()?;
         let ui = Ui::new(widget.placement.w, widget.placement.h, vm.every_function()?);
@@ -216,6 +232,7 @@ impl Live {
         lua.globals().set("ui", ui.clone()).lua_context("installing ui")?;
         let readable = Rc::clone(package);
         vm.install_resources(&[ResourceKind::Keyboard], Rc::new(move |resource| readable.resource(resource)))?;
+        vm.install_live_resources()?;
         vm.seal()?;
         let hooks: Table = vm.load(&source, "keyboard.luau")?;
         hooks.get::<Function>("draw").lua_context("keyboard.luau must return a table with a draw function")?;
@@ -264,7 +281,7 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
         let text = line.iter().collect();
         commands.push(Command::Text { text, x: 8.0, y, size: ERROR_TEXT_SIZE, color: color(ERROR_STROKE), align: Align::Left, width: Some(w - 16.0) });
     }
-    let no_assets = |resource: &glassdeck_package::Resource| -> Result<Vec<u8>> { anyhow::bail!("the error tile has no {resource}") };
+    let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { anyhow::bail!("the error tile has no {resource}") };
     let tile = draw::render(&commands, (w as u32, h as u32), font, &mut Images::new(), &no_assets).expect("the error tile draws");
     DrawnTile { pixels: draw::to_argb(&tile) }
 }
@@ -307,6 +324,7 @@ mod tests {
         fs::write(dir.join("src/module.json"), r#"{ "format": 3, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#).unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
         let package = pack_folder(&dir.join("src"), &dir.join("widget.deckmod")).unwrap();
+        let package = package.write_keyboard_copy(&dir.join("widget-keyboard.deckmod")).unwrap();
         let modified = fs::metadata(package.path()).unwrap().modified().unwrap();
         (Scratch(dir), Installed { package: Rc::new(package), modified })
     }
@@ -334,12 +352,12 @@ mod tests {
         "##;
         let (_scratch, installed) = module("draws", script);
         let mut instance = Instance::start(0, &widget(), installed, None);
-        let first = instance.draw(&font()).expect("the first draw");
+        let first = instance.draw(&font(), &LiveCache::default()).expect("the first draw");
         assert_eq!(opaque_pixels(&first), 32 * 32);
-        assert!(instance.draw(&font()).is_none());
+        assert!(instance.draw(&font(), &LiveCache::default()).is_none());
 
         instance.on_data(&rmpv_map_n(5));
-        assert!(instance.draw(&font()).is_some());
+        assert!(instance.draw(&font(), &LiveCache::default()).is_some());
     }
 
     #[test]
@@ -351,9 +369,34 @@ mod tests {
         "##;
         let (_scratch, installed) = module_with("image", script, &[("keyboard/icons/dot.svg", svg)]);
         let mut instance = Instance::start(0, &widget(), installed, None);
-        let tile = instance.draw(&font()).expect("the first draw");
+        let tile = instance.draw(&font(), &LiveCache::default()).expect("the first draw");
         assert!(matches!(instance.run, Run::Running(_)));
         assert_eq!(opaque_pixels(&tile), 16 * 16);
+    }
+
+    #[test]
+    fn draws_a_live_resource_once_it_arrives() {
+        let script = r##"
+            local cover = live.resource("cover")
+            return { draw = function(state, ui) ui:image(cover, { x = 0, y = 0, w = 16, h = 16 }) end }
+        "##;
+        let (_scratch, installed) = module("live", script);
+        let mut instance = Instance::start(0, &widget(), installed, None);
+        let mut live = LiveCache::default();
+        assert_eq!(opaque_pixels(&instance.draw(&font(), &live).expect("the first draw")), 0);
+
+        let cover = LiveName::parse("cover").unwrap();
+        let mut green = resvg::tiny_skia::Pixmap::new(4, 4).unwrap();
+        green.fill(resvg::tiny_skia::Color::from_rgba8(0, 255, 0, 255));
+        live.put(cover.clone(), green.encode_png().unwrap()).unwrap();
+        instance.live_changed(std::slice::from_ref(&cover));
+        let tile = instance.draw(&font(), &live).expect("a redraw for the new resource");
+        assert!(matches!(instance.run, Run::Running(_)));
+        assert_eq!(opaque_pixels(&tile), 16 * 16);
+
+        live.put(cover.clone(), Vec::new()).unwrap();
+        instance.live_changed(&[cover]);
+        assert_eq!(opaque_pixels(&instance.draw(&font(), &live).expect("a redraw after removal")), 0);
     }
 
     #[test]
@@ -361,9 +404,9 @@ mod tests {
         let script = "return { draw = function() while true do end end }";
         let (_scratch, installed) = module("endless", script);
         let mut instance = Instance::start(0, &widget(), installed, None);
-        let tile = instance.draw(&font()).expect("an error tile");
+        let tile = instance.draw(&font(), &LiveCache::default()).expect("an error tile");
         assert!(tile.pixels.iter().any(|p| *p != 0));
-        assert!(instance.draw(&font()).is_none());
+        assert!(instance.draw(&font(), &LiveCache::default()).is_none());
         assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("took longer than")));
     }
 
@@ -380,7 +423,7 @@ mod tests {
         let script = "return { draw = function(_, ui) ui:text('hi', { colour = '#fff' }) end }";
         let (_scratch, installed) = module("typo", script);
         let mut instance = Instance::start(0, &widget(), installed, None);
-        instance.draw(&font());
+        instance.draw(&font(), &LiveCache::default());
         assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("unknown option colour")));
     }
 
@@ -420,12 +463,12 @@ mod tests {
         "#;
         let (_scratch, installed) = module("frames", script);
         let mut instance = Instance::start(0, &widget(), installed, None);
-        instance.draw(&font());
+        instance.draw(&font(), &LiveCache::default());
         let now = Instant::now();
         for expected in [true, true, false] {
             assert_eq!(instance.wants_frame(), expected);
             instance.tick(now, Some(Duration::from_millis(16)));
-            assert_eq!(instance.draw(&font()).is_some(), expected);
+            assert_eq!(instance.draw(&font(), &LiveCache::default()).is_some(), expected);
         }
     }
 

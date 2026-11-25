@@ -103,6 +103,9 @@ struct Queues {
     /// Each widget's latest value, kept after sending so a reconnect brings the keyboard up to date.
     latest: BTreeMap<u16, Vec<u8>>,
     unsent: BTreeSet<u16>,
+    /// Each widget's latest live resources by name, kept like `latest` for a reconnect. Empty means removed.
+    resources: BTreeMap<(u16, String), Vec<u8>>,
+    unsent_resources: BTreeSet<(u16, String)>,
     selected: Option<String>,
     uploads: VecDeque<Upload>,
     /// Fully sent files, oldest first, which is the order the keyboard answers them in.
@@ -113,6 +116,7 @@ enum Outgoing {
     Control(Message),
     Stream(Message),
     ModuleData { instance: u16, payload: Vec<u8> },
+    ModuleResource { instance: u16, name: String, data: Vec<u8> },
     Put(Upload),
 }
 
@@ -174,11 +178,22 @@ impl Uplink {
         self.changed.notify_all();
     }
 
+    /// Latest wins per widget and name: a resource replaces anything of the same name not yet sent.
+    /// Empty `data` removes it on the keyboard.
+    pub fn put_module_resource(&self, instance: u16, name: String, data: Vec<u8>) {
+        let mut queues = self.lock();
+        queues.resources.insert((instance, name.clone()), data);
+        queues.unsent_resources.insert((instance, name));
+        self.changed.notify_all();
+    }
+
     /// For a new widget list, whose instance numbers mean different widgets.
     pub fn forget_module_data(&self) {
         let mut queues = self.lock();
         queues.latest.clear();
         queues.unsent.clear();
+        queues.resources.clear();
+        queues.unsent_resources.clear();
     }
 
     /// Queues one message of the running stream, waiting while the queue is full.
@@ -266,6 +281,11 @@ impl Uplink {
                 let payload = queues.latest[&instance].clone();
                 return Outgoing::ModuleData { instance, payload };
             }
+            if let Some(key) = queues.unsent_resources.pop_first() {
+                let data = queues.resources[&key].clone();
+                let (instance, name) = key;
+                return Outgoing::ModuleResource { instance, name, data };
+            }
             if let Some(upload) = queues.uploads.pop_front() {
                 return Outgoing::Put(upload);
             }
@@ -279,6 +299,7 @@ impl Uplink {
             LinkEffect::Resend => {
                 queues.connected = true;
                 queues.unsent = queues.latest.keys().copied().collect();
+                queues.unsent_resources = queues.resources.keys().cloned().collect();
                 if let Some(name) = queues.selected.clone() {
                     queues.control.push_back(Message::SelectBackground { name });
                 }
@@ -354,6 +375,7 @@ fn send(link: &mut Link, uplink: &Uplink, outgoing: Outgoing) -> Result<()> {
     let message = match outgoing {
         Outgoing::Control(message) => message,
         Outgoing::ModuleData { instance, payload } => Message::ModuleData { instance, payload },
+        Outgoing::ModuleResource { instance, name, data } => Message::ModuleResource { instance, name, data },
         Outgoing::Stream(Message::StreamStart(info @ StreamInfo { mode: Mode::Live { .. }, .. })) => {
             let sample = link.sync_clock()?;
             println!(
@@ -443,6 +465,21 @@ mod tests {
         uplink.apply(DropQueued);
         assert!(second.recv().unwrap().is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn resources_go_after_widget_data_latest_wins_and_come_back_after_a_reconnect() {
+        let uplink = Uplink::new(|| {});
+        uplink.apply(Resend);
+        uplink.put_module_resource(2, "cover".into(), vec![1]);
+        uplink.put_module_resource(2, "cover".into(), vec![2]);
+        uplink.put_module_data(2, vec![9]);
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 2, .. }));
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleResource { instance: 2, ref name, ref data } if name == "cover" && *data == vec![2]));
+        uplink.apply(DropQueued);
+        uplink.apply(Resend);
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 2, .. }));
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleResource { instance: 2, .. }));
     }
 
     #[test]

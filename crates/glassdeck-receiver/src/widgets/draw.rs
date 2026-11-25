@@ -5,7 +5,7 @@ use std::f32::consts::PI;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fontdue::Font;
-use glassdeck_package::Resource;
+use glassdeck_luau::ResourceRef;
 use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use resvg::usvg;
 
@@ -81,7 +81,7 @@ pub enum Command {
     Rect { area: Area, fill: Option<Color>, stroke: Option<(Color, f32)>, radius: f32 },
     Bar { fraction: f32, area: Area, color: Color },
     Graph { values: Vec<f32>, area: Area, color: Color, min: Option<f32>, max: Option<f32> },
-    Image { resource: Resource, area: Area },
+    Image { resource: ResourceRef, area: Area },
     /// Degrees, clockwise from 12 o'clock.
     Arc { cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, color: Color },
 }
@@ -91,12 +91,14 @@ enum Image {
     Vector(Box<usvg::Tree>),
 }
 
-/// Reads a resource's bytes.
-pub type ReadResource<'a> = &'a dyn Fn(&Resource) -> Result<Vec<u8>>;
+/// Reads a resource's bytes; `None` for a live resource the host half hasn't sent yet.
+pub type ReadResource<'a> = &'a dyn Fn(&ResourceRef) -> Result<Option<Vec<u8>>>;
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 /// A module's images, decoded on first use.
 pub struct Images {
-    decoded: HashMap<Resource, Image>,
+    decoded: HashMap<ResourceRef, Image>,
 }
 
 impl Images {
@@ -104,19 +106,35 @@ impl Images {
         Self { decoded: HashMap::new() }
     }
 
-    fn get(&mut self, resource: &Resource, read: ReadResource) -> Result<&Image> {
+    /// For a live resource that changed, so the next draw decodes the new bytes.
+    pub fn forget(&mut self, resource: &ResourceRef) {
+        self.decoded.remove(resource);
+    }
+
+    fn get(&mut self, resource: &ResourceRef, read: ReadResource) -> Result<Option<&Image>> {
         if !self.decoded.contains_key(resource) {
-            let bytes = read(resource)?;
-            let name = resource.name.as_str();
-            let image = match name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
-                Some("png") => Image::Raster(Pixmap::decode_png(&bytes).map_err(|e| anyhow!("decoding {resource}: {e}"))?),
-                Some("svg") => Image::Vector(Box::new(usvg::Tree::from_data(&bytes, &usvg::Options::default()).with_context(|| format!("parsing {resource}"))?)),
-                _ => bail!("{resource} is not a .png or .svg"),
+            let Some(bytes) = read(resource)? else { return Ok(None) };
+            let image = match resource {
+                ResourceRef::Live(_) if bytes.starts_with(PNG_SIGNATURE) => raster(&bytes, resource)?,
+                ResourceRef::Live(_) => bail!("{resource} isn't a PNG"),
+                ResourceRef::Packaged(packaged) => {
+                    match packaged.name.as_str().rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
+                        Some("png") => raster(&bytes, resource)?,
+                        Some("svg") => Image::Vector(Box::new(
+                            usvg::Tree::from_data(&bytes, &usvg::Options::default()).with_context(|| format!("parsing {resource}"))?,
+                        )),
+                        _ => bail!("{resource} is not a .png or .svg"),
+                    }
+                }
             };
             self.decoded.insert(resource.clone(), image);
         }
-        Ok(&self.decoded[resource])
+        Ok(self.decoded.get(resource))
     }
+}
+
+fn raster(bytes: &[u8], resource: &ResourceRef) -> Result<Image> {
+    Ok(Image::Raster(Pixmap::decode_png(bytes).map_err(|e| anyhow!("decoding {resource}: {e}"))?))
 }
 
 /// Draws `commands` into a transparent tile of `size`; anything outside it is clipped.
@@ -161,16 +179,17 @@ pub fn render(
                 }
             }
             Command::Image { resource, area } => match images.get(resource, read_resource)? {
-                Image::Raster(image) => {
+                Some(Image::Raster(image)) => {
                     let scale = Transform::from_row(area.w / image.width() as f32, 0.0, 0.0, area.h / image.height() as f32, area.x, area.y);
                     let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
                     pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, scale, None);
                 }
-                Image::Vector(tree) => {
+                Some(Image::Vector(tree)) => {
                     let natural = tree.size();
                     let scale = Transform::from_row(area.w / natural.width(), 0.0, 0.0, area.h / natural.height(), area.x, area.y);
                     resvg::render(tree, scale, &mut pixmap.as_mut());
                 }
+                None => {}
             },
             Command::Arc { cx, cy, r, from, to, width, color } => {
                 if let Some(path) = arc_path(*cx, *cy, *r, *from, *to) {
@@ -317,7 +336,7 @@ mod tests {
             stroke: None,
             radius: 0.0,
         }];
-        let no_assets = |resource: &Resource| -> Result<Vec<u8>> { bail!("no {resource}") };
+        let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
         let tile = render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).unwrap();
         let argb = to_argb(&tile);
         assert_eq!(argb[3 * 8 + 3], 0xFF_FF_00_00);
@@ -326,10 +345,20 @@ mod tests {
 
     #[test]
     fn a_missing_resource_fails_loudly() {
-        let missing = Resource { kind: glassdeck_package::ResourceKind::Keyboard, name: glassdeck_package::ResourceName::parse("missing.png").unwrap() };
+        let name = glassdeck_package::ResourceName::parse("missing.png").unwrap();
+        let missing = ResourceRef::Packaged(glassdeck_package::Resource { kind: glassdeck_package::ResourceKind::Keyboard, name });
         let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
-        let no_assets = |resource: &Resource| -> Result<Vec<u8>> { bail!("no {resource}") };
+        let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
         assert!(render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).is_err());
+    }
+
+    #[test]
+    fn a_live_resource_not_sent_yet_draws_nothing() {
+        let cover = ResourceRef::Live(glassdeck_luau::LiveName::parse("cover").unwrap());
+        let commands = [Command::Image { resource: cover, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
+        let not_yet = |_: &ResourceRef| -> Result<Option<Vec<u8>>> { Ok(None) };
+        let tile = render(&commands, (8, 8), &test_font(), &mut Images::new(), &not_yet).unwrap();
+        assert!(tile.pixels().iter().all(|p| p.alpha() == 0));
     }
 
     #[test]

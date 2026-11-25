@@ -16,6 +16,8 @@ pub struct Paths {
     pub modules: PathBuf,
     pub api: PathBuf,
     pub log: PathBuf,
+    /// Files made only to be uploaded, such as a module's keyboard copy.
+    pub staging: PathBuf,
 }
 
 impl Paths {
@@ -28,6 +30,7 @@ impl Paths {
             modules: roaming.join("modules"),
             api: local.join("api.json"),
             log: local.join("logs").join("glassdeckd.log"),
+            staging: local.join("staging"),
         })
     }
 }

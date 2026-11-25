@@ -51,6 +51,7 @@ pub struct Api {
     pub keyboard: SocketAddr,
     pub modules: PathBuf,
     pub profile: PathBuf,
+    pub staging: PathBuf,
     /// Large uploads running now; the source stays paused until the last one is answered.
     pub large_uploads: Mutex<usize>,
 }
@@ -129,8 +130,9 @@ impl Api {
             }
             (Method::Put, "/background") => {
                 let SelectBackground { name } = serde_json::from_slice(&body(request)?).context("reading the background name")?;
-                if name.contains(['/', '\\']) || !name.ends_with(&format!(".{}", glassdeck_package::EXTENSION)) {
-                    bail!("{name:?} isn't a background file name like we-2970107491.deckbg");
+                let is_file = !name.contains(['/', '\\']) && name.ends_with(&format!(".{}", glassdeck_package::EXTENSION));
+                if !is_file && name != glassdeck_proto::BUILT_IN_BACKGROUND {
+                    bail!("{name:?} isn't {} or a background file name like we-2970107491.deckbg", glassdeck_proto::BUILT_IN_BACKGROUND);
                 }
                 self.uplink.select_background(name.clone());
                 Ok(json!({ "selected": name }))
@@ -147,9 +149,10 @@ impl Api {
     /// Answers once the keyboard has the file in place.
     fn deploy(&self, path: &Path) -> Result<serde_json::Value> {
         let target = deploy::target_for(path, &self.modules)?;
-        let size = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?.len();
+        let sending = deploy::keyboard_file(&target, path, &self.staging)?;
+        let size = std::fs::metadata(sending.path()).with_context(|| format!("reading {}", sending.path().display()))?.len();
         let _pause = (size >= LARGE_FILE_BYTES).then(|| self.pause_for_upload()).transpose()?;
-        let answered = self.uplink.put_file(target.clone(), path)?;
+        let answered = self.uplink.put_file(target.clone(), sending.path())?;
         answered.recv().context("the Link stopped before the keyboard answered")??;
         deploy::keep_locally(&target, path, &self.modules, &self.profile)?;
         println!("Deployed {target}");

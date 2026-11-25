@@ -3,6 +3,7 @@
 use std::fmt;
 
 use anyhow::{Result, ensure};
+use glassdeck_proto::BUILT_IN_BACKGROUND;
 
 /// A background's file name inside the background folder, checked so it can't name anything outside it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,10 +34,48 @@ impl fmt::Display for BackgroundName {
     }
 }
 
+/// The background the user chose for when nothing streams: the built-in scene, which is the default
+/// and always on the keyboard, or a file in the background folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Selection {
+    BuiltIn,
+    File(BackgroundName),
+}
+
+impl Selection {
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            BUILT_IN_BACKGROUND => Ok(Self::BuiltIn),
+            file => BackgroundName::parse(file).map(Self::File),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::BuiltIn => BUILT_IN_BACKGROUND,
+            Self::File(name) => name.as_str(),
+        }
+    }
+
+    /// The file to come back to after a stream or an install; none means the built-in scene.
+    fn file(&self) -> Option<BackgroundName> {
+        match self {
+            Self::BuiltIn => None,
+            Self::File(name) => Some(name.clone()),
+        }
+    }
+}
+
+impl fmt::Display for Selection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// The built-in scene. `recent` is a background that stopped on its own; it's retried when a
-    /// stream or an install ends.
+    /// The built-in scene: chosen, or shown because nothing else can be. `recent` is a background that
+    /// stopped on its own; it's retried when a stream or an install ends.
     Fallback { recent: Option<BackgroundName> },
     /// A PC stream; `recent` comes back when it ends. While `installing`, the built-in scene comes
     /// back instead, until the install ends.
@@ -51,7 +90,7 @@ pub enum Screen {
 pub enum Event {
     StreamStarted,
     StreamEnded,
-    BackgroundSelected(BackgroundName),
+    BackgroundSelected(Selection),
     /// The running background stopped by itself: it failed, or its renderer exited.
     BackgroundStopped,
     /// A large file started arriving; its background may be the one being replaced.
@@ -64,7 +103,7 @@ pub enum Effect {
     Start(BackgroundName),
     Stop,
     /// Persist the choice, so the keyboard plays it after a restart.
-    Remember(BackgroundName),
+    Remember(Selection),
     ShowFallback,
     HideFallback,
 }
@@ -91,11 +130,11 @@ impl fmt::Display for ScreenError {
 impl std::error::Error for ScreenError {}
 
 impl Screen {
-    /// Where the keyboard starts: the remembered background if there is one, else the built-in scene.
-    pub fn at_boot(remembered: Option<BackgroundName>) -> (Self, Vec<Effect>) {
+    /// Where the keyboard starts: the remembered background, or the built-in scene by default.
+    pub fn at_boot(remembered: Option<Selection>) -> (Self, Vec<Effect>) {
         match remembered {
-            Some(background) => (Self::Local(background.clone()), vec![Effect::Start(background)]),
-            None => (Self::Fallback { recent: None }, vec![Effect::ShowFallback]),
+            Some(Selection::File(background)) => (Self::Local(background.clone()), vec![Effect::Start(background)]),
+            Some(Selection::BuiltIn) | None => (Self::Fallback { recent: None }, vec![Effect::ShowFallback]),
         }
     }
 }
@@ -117,18 +156,20 @@ pub fn step(screen: Screen, event: Event) -> Result<(Screen, Vec<Effect>), Scree
         (Stream { recent: None, installing: false }, Event::StreamEnded) => (Fallback { recent: None }, vec![ShowFallback]),
         (Fallback { .. } | Local(_) | Installing { .. }, Event::StreamEnded) => return Err(ScreenError::NoStreamToEnd),
 
-        (Fallback { .. }, Event::BackgroundSelected(background)) => {
-            (Local(background.clone()), vec![HideFallback, Remember(background.clone()), Start(background)])
+        (Fallback { .. }, Event::BackgroundSelected(Selection::File(background))) => {
+            (Local(background.clone()), vec![HideFallback, Remember(Selection::File(background.clone())), Start(background)])
         }
-        (Local(_), Event::BackgroundSelected(background)) => {
-            (Local(background.clone()), vec![Stop, Remember(background.clone()), Start(background)])
+        (Fallback { .. }, Event::BackgroundSelected(Selection::BuiltIn)) => (Fallback { recent: None }, vec![Remember(Selection::BuiltIn)]),
+        (Local(_), Event::BackgroundSelected(Selection::File(background))) => {
+            (Local(background.clone()), vec![Stop, Remember(Selection::File(background.clone())), Start(background)])
         }
-        (Stream { installing, .. }, Event::BackgroundSelected(background)) => {
-            (Stream { recent: Some(background.clone()), installing }, vec![Remember(background)])
+        (Local(_), Event::BackgroundSelected(Selection::BuiltIn)) => {
+            (Fallback { recent: None }, vec![Stop, Remember(Selection::BuiltIn), ShowFallback])
         }
-        (Installing { .. }, Event::BackgroundSelected(background)) => {
-            (Installing { recent: Some(background.clone()) }, vec![Remember(background)])
+        (Stream { installing, .. }, Event::BackgroundSelected(selection)) => {
+            (Stream { recent: selection.file(), installing }, vec![Remember(selection)])
         }
+        (Installing { .. }, Event::BackgroundSelected(selection)) => (Installing { recent: selection.file() }, vec![Remember(selection)]),
 
         (Local(background), Event::BackgroundStopped) => (Fallback { recent: Some(background) }, vec![ShowFallback]),
         (Fallback { .. } | Stream { .. } | Installing { .. }, Event::BackgroundStopped) => {
@@ -179,7 +220,9 @@ mod tests {
         let local_b = Screen::Local(b.clone());
         let installing = Screen::Installing { recent: None };
         let installing_over_a = Screen::Installing { recent: Some(a.clone()) };
-        let select_b = || BackgroundSelected(b.clone());
+        let select_b = || BackgroundSelected(Selection::File(b.clone()));
+        let select_built_in = || BackgroundSelected(Selection::BuiltIn);
+        let remember_b = || Remember(Selection::File(b.clone()));
         let table: Vec<Row> = vec![
             (fallback.clone(), StreamStarted, Ok((stream.clone(), vec![HideFallback]))),
             (fallback_after_a.clone(), StreamStarted, Ok((stream_over_a.clone(), vec![HideFallback]))),
@@ -193,20 +236,24 @@ mod tests {
             (fallback.clone(), StreamEnded, Err(NoStreamToEnd)),
             (local_a.clone(), StreamEnded, Err(NoStreamToEnd)),
             (installing.clone(), StreamEnded, Err(NoStreamToEnd)),
-            (fallback.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, Remember(b.clone()), Start(b.clone())]))),
-            (fallback_after_a.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, Remember(b.clone()), Start(b.clone())]))),
-            (local_a.clone(), select_b(), Ok((local_b.clone(), vec![Stop, Remember(b.clone()), Start(b.clone())]))),
+            (fallback.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, remember_b(), Start(b.clone())]))),
+            (fallback_after_a.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, remember_b(), Start(b.clone())]))),
+            (local_a.clone(), select_b(), Ok((local_b.clone(), vec![Stop, remember_b(), Start(b.clone())]))),
             (
                 stream_over_a.clone(),
                 select_b(),
-                Ok((Screen::Stream { recent: Some(b.clone()), installing: false }, vec![Remember(b.clone())])),
+                Ok((Screen::Stream { recent: Some(b.clone()), installing: false }, vec![remember_b()])),
             ),
             (
                 stream_installing.clone(),
                 select_b(),
-                Ok((Screen::Stream { recent: Some(b.clone()), installing: true }, vec![Remember(b.clone())])),
+                Ok((Screen::Stream { recent: Some(b.clone()), installing: true }, vec![remember_b()])),
             ),
-            (installing.clone(), select_b(), Ok((Screen::Installing { recent: Some(b.clone()) }, vec![Remember(b.clone())]))),
+            (installing.clone(), select_b(), Ok((Screen::Installing { recent: Some(b.clone()) }, vec![remember_b()]))),
+            (fallback_after_a.clone(), select_built_in(), Ok((fallback.clone(), vec![Remember(Selection::BuiltIn)]))),
+            (local_a.clone(), select_built_in(), Ok((fallback.clone(), vec![Stop, Remember(Selection::BuiltIn), ShowFallback]))),
+            (stream_over_a_installing.clone(), select_built_in(), Ok((stream_installing.clone(), vec![Remember(Selection::BuiltIn)]))),
+            (installing_over_a.clone(), select_built_in(), Ok((installing.clone(), vec![Remember(Selection::BuiltIn)]))),
             (local_a.clone(), BackgroundStopped, Ok((fallback_after_a.clone(), vec![ShowFallback]))),
             (fallback.clone(), BackgroundStopped, Err(NoBackgroundRunning)),
             (stream.clone(), BackgroundStopped, Err(NoBackgroundRunning)),
@@ -232,7 +279,8 @@ mod tests {
     #[test]
     fn boots_into_the_remembered_background_or_the_built_in_scene() {
         let a = background("a.deckbg");
-        assert_eq!(Screen::at_boot(Some(a.clone())), (Screen::Local(a.clone()), vec![Effect::Start(a)]));
+        assert_eq!(Screen::at_boot(Some(Selection::File(a.clone()))), (Screen::Local(a.clone()), vec![Effect::Start(a)]));
+        assert_eq!(Screen::at_boot(Some(Selection::BuiltIn)), (Screen::Fallback { recent: None }, vec![Effect::ShowFallback]));
         assert_eq!(Screen::at_boot(None), (Screen::Fallback { recent: None }, vec![Effect::ShowFallback]));
     }
 

@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::local::LocalBackground;
 use crate::mailbox::Mailbox;
 use crate::platform::{FallbackScene, Registrar};
-use crate::screen::{BackgroundName, Effect, Event, Screen, step};
+use crate::screen::{Effect, Event, Screen, Selection, step};
 
 /// Lives in the background folder; background names can't start with a dot, so it never collides with one.
 const RECENT_FILE: &str = ".recent";
@@ -83,13 +83,17 @@ impl Director {
         self.apply(effects)
     }
 
-    /// A background chosen from the host; it must already be in the background folder.
+    /// A background chosen from the host: the built-in scene, or a file already in the background folder.
     pub fn select(&mut self, name: &str) -> Result<()> {
-        let background = BackgroundName::parse(name)?;
+        let selection = Selection::parse(name)?;
+        let Selection::File(background) = selection else {
+            println!("Background selected: the built-in scene");
+            return self.handle(Event::BackgroundSelected(Selection::BuiltIn));
+        };
         let path = self.backgrounds.join(background.as_str());
         ensure!(path.is_file(), "{} is not in the background folder {}", background, self.backgrounds.display());
         println!("Background selected: {background}");
-        self.handle(Event::BackgroundSelected(background))
+        self.handle(Event::BackgroundSelected(Selection::File(background)))
     }
 
     /// A large file started or finished arriving.
@@ -135,7 +139,7 @@ impl Director {
                     Some(background) => background.stop(),
                     None => bail!("asked to stop a background while none was running"),
                 },
-                Effect::Remember(background) => write_recent(&self.backgrounds, &background)?,
+                Effect::Remember(selection) => write_recent(&self.backgrounds, &selection)?,
                 Effect::Start(background) => {
                     let report = self.report_for(Runner::Background);
                     match LocalBackground::start(
@@ -177,16 +181,16 @@ pub fn lock(director: &SharedDirector) -> std::sync::MutexGuard<'_, Director> {
     director.lock().expect("director poisoned")
 }
 
-fn read_recent(backgrounds: &Path) -> Result<Option<BackgroundName>> {
+fn read_recent(backgrounds: &Path) -> Result<Option<Selection>> {
     match fs::read_to_string(backgrounds.join(RECENT_FILE)) {
-        Ok(text) => BackgroundName::parse(text.trim()).map(Some),
+        Ok(text) => Selection::parse(text.trim()).map(Some),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("reading the remembered background"),
     }
 }
 
-fn write_recent(backgrounds: &Path, background: &BackgroundName) -> Result<()> {
+fn write_recent(backgrounds: &Path, selection: &Selection) -> Result<()> {
     let staging = backgrounds.join(format!("{RECENT_FILE}.tmp"));
-    fs::write(&staging, background.as_str()).context("remembering the background")?;
+    fs::write(&staging, selection.as_str()).context("remembering the background")?;
     fs::rename(&staging, backgrounds.join(RECENT_FILE)).context("remembering the background")
 }

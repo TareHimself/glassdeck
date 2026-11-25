@@ -57,3 +57,6 @@ type Module<State> = {
     on_data: ((state: State, data: Data) -> boolean)?,
     draw: (state: State, ui: Ui) -> (),
 }
+
+-- What the host half sent with live.put; draws nothing until it arrives. Names are one word.
+declare live: { resource: (name: string) -> Resource }

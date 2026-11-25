@@ -17,13 +17,15 @@ use glassdeck_package::{ModulePackage, ResourceKind, is_module};
 use mlua::{Lua, Table, Value};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
+use crate::host_api::{LiveOutbox, image_api, live_api, media_api};
 use crate::link::Uplink;
+use crate::media::SharedNowPlaying;
 
 /// How often the profile and module folder are checked for changes.
 const RESCAN: Duration = Duration::from_secs(1);
 
-pub fn start(profile: PathBuf, modules: PathBuf, uplink: Arc<Uplink>) -> Result<()> {
-    thread::Builder::new().name("module host".into()).spawn(move || Host::new(profile, modules, uplink).run())?;
+pub fn start(profile: PathBuf, modules: PathBuf, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Result<()> {
+    thread::Builder::new().name("module host".into()).spawn(move || Host::new(profile, modules, uplink, now_playing).run())?;
     Ok(())
 }
 
@@ -32,6 +34,7 @@ struct Host {
     modules: PathBuf,
     uplink: Arc<Uplink>,
     system: Rc<RefCell<System>>,
+    now_playing: SharedNowPlaying,
     instances: Vec<HostInstance>,
     seen: Option<Snapshot>,
 }
@@ -49,14 +52,15 @@ struct HostInstance {
     label: String,
     number: u16,
     slot: Slot,
+    live: LiveOutbox,
     vm: Vm,
 }
 
 impl Host {
-    fn new(profile: PathBuf, modules: PathBuf, uplink: Arc<Uplink>) -> Self {
+    fn new(profile: PathBuf, modules: PathBuf, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Self {
         let refresh = RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_usage()).with_memory(MemoryRefreshKind::nothing().with_ram());
         let system = Rc::new(RefCell::new(System::new_with_specifics(refresh).expect("system stats are readable")));
-        Self { profile, modules, uplink, system, instances: Vec::new(), seen: None }
+        Self { profile, modules, uplink, system, now_playing, instances: Vec::new(), seen: None }
     }
 
     fn run(mut self) {
@@ -77,6 +81,9 @@ impl Host {
             for instance in &self.instances {
                 if let Some(payload) = instance.slot.borrow_mut().take() {
                     self.uplink.put_module_data(instance.number, payload);
+                }
+                for (name, data) in std::mem::take(&mut *instance.live.borrow_mut()) {
+                    self.uplink.put_module_resource(instance.number, name, data);
                 }
             }
             let wake = self.instances.iter().filter_map(|i| i.vm.next_timer()).min().map_or(next_scan, |at| at.min(next_scan));
@@ -114,7 +121,7 @@ impl Host {
             if let Some(script) = package.host_script()? {
                 let label = format!("widget {index} ({})", widget.module);
                 let number = u16::try_from(index).expect("profiles hold at most u16::MAX widgets");
-                match HostInstance::start(label.clone(), number, &script, package, &self.system) {
+                match HostInstance::start(label.clone(), number, &script, package, &self.system, &self.now_playing) {
                     Ok(instance) => instances.push(instance),
                     Err(e) => eprintln!("error: {label}: {e:#}"),
                 }
@@ -125,7 +132,14 @@ impl Host {
 }
 
 impl HostInstance {
-    fn start(label: String, number: u16, script: &str, package: &Rc<ModulePackage>, system: &Rc<RefCell<System>>) -> Result<Self> {
+    fn start(
+        label: String,
+        number: u16,
+        script: &str,
+        package: &Rc<ModulePackage>,
+        system: &Rc<RefCell<System>>,
+        now_playing: &SharedNowPlaying,
+    ) -> Result<Self> {
         let vm = Vm::new()?;
         let slot: Slot = Rc::new(RefCell::new(None));
         let lua = vm.lua();
@@ -141,11 +155,15 @@ impl HostInstance {
             .lua_context("creating send")?;
         globals.set("send", send).lua_context("installing send")?;
         globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
+        let live: LiveOutbox = Rc::default();
+        globals.set("live", live_api(lua, &live)?).lua_context("installing live")?;
+        globals.set("image", image_api(lua)?).lua_context("installing image")?;
+        globals.set("media", media_api(lua, now_playing)?).lua_context("installing media")?;
         let readable = Rc::clone(package);
         vm.install_resources(&ResourceKind::ALL, Rc::new(move |resource| readable.resource(resource)))?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
-        Ok(Self { label, number, slot, vm })
+        Ok(Self { label, number, slot, live, vm })
     }
 }
 

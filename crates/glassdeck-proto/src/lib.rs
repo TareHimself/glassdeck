@@ -9,9 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 7;
+pub const VERSION: u8 = 8;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
+/// `SelectBackground` with this name chooses the built-in scene: the default, always on the keyboard.
+/// Not a file name, so it can never clash with a background in the folder.
+pub const BUILT_IN_BACKGROUND: &str = "builtin:gradient";
 /// Files at least this big pause the stream while they go to the keyboard, which shows their
 /// progress; smaller ones finish too quickly to be worth changing the screen for.
 pub const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -32,12 +35,14 @@ const KIND_MODULE_DATA: u8 = 7;
 const KIND_PUT_FILE: u8 = 8;
 const KIND_PUT_DONE: u8 = 9;
 const KIND_PUT_REFUSED: u8 = 10;
+const KIND_MODULE_RESOURCE: u8 = 11;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
 const CLOCK_PROBE_LEN: usize = 8;
 const CLOCK_REPLY_LEN: usize = 16;
 const MODULE_DATA_FIXED_LEN: usize = 4;
+const MODULE_RESOURCE_FIXED_LEN: usize = 4;
 const TARGET_FIXED_LEN: usize = 4;
 const PUT_FILE_FIXED_LEN: usize = TARGET_FIXED_LEN + 16;
 const TARGET_BACKGROUND: u8 = 1;
@@ -139,6 +144,9 @@ pub enum Message {
     PutDone { target: FileTarget },
     /// Keyboard to host: the file was not installed.
     PutRefused { target: FileTarget, reason: String },
+    /// Host to keyboard: a resource a widget's host half made at run time, such as album art, for
+    /// its keyboard half to draw. Empty `data` removes it.
+    ModuleResource { instance: u16, name: String, data: Vec<u8> },
 }
 
 #[derive(Debug)]
@@ -260,6 +268,10 @@ impl Message {
                 let (head, name) = encode_target(target);
                 (KIND_PUT_REFUSED, [&head[..], name, reason.as_bytes()].concat())
             }
+            Self::ModuleResource { instance, name, data } => {
+                let len = u8::try_from(name.len()).expect("live resource names are at most 255 bytes");
+                (KIND_MODULE_RESOURCE, [&instance.to_le_bytes()[..], &[len, 0], name.as_bytes(), data].concat())
+            }
         };
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.push(VERSION);
@@ -333,8 +345,16 @@ impl Message {
                 let reason = String::from_utf8(body[name_end..].to_vec()).map_err(|_| ProtoError::TextNotUtf8)?;
                 Ok(Self::PutRefused { target, reason })
             }
+            KIND_MODULE_RESOURCE if body.len() >= MODULE_RESOURCE_FIXED_LEN => {
+                let name_end = MODULE_RESOURCE_FIXED_LEN + body[2] as usize;
+                let name = body.get(MODULE_RESOURCE_FIXED_LEN..name_end).ok_or_else(bad_length)?;
+                let name = String::from_utf8(name.to_vec()).map_err(|_| ProtoError::TextNotUtf8)?;
+                let instance = u16::from_le_bytes([body[0], body[1]]);
+                let mut body = body;
+                Ok(Self::ModuleResource { instance, name, data: body.split_off(name_end) })
+            }
             KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA
-            | KIND_PUT_FILE | KIND_PUT_DONE | KIND_PUT_REFUSED => {
+            | KIND_PUT_FILE | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE => {
                 Err(bad_length())
             }
             other => Err(ProtoError::UnknownKind(other)),
@@ -442,6 +462,8 @@ mod tests {
         round_trip(Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 0, data: vec![] }));
         round_trip(Message::PutDone { target: FileTarget::Module("cpu.deckmod".into()) });
         round_trip(Message::PutRefused { target: FileTarget::Profile, reason: "no space left".into() });
+        round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![0x89, b'P', b'N', b'G'] });
+        round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![] });
     }
 
     #[test]

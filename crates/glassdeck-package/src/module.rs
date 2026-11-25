@@ -94,54 +94,119 @@ fn is_version(text: &str) -> bool {
     parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// An opened module whose manifest parsed and whose scripts are present.
-pub struct ModulePackage {
+/// What every opened module has: its container, parsed manifest and entries.
+struct Contents {
     path: PathBuf,
     file: File,
     manifest: ModuleManifest,
     entries: HashMap<String, Entry>,
 }
 
-impl ModulePackage {
-    pub fn open(path: &Path) -> Result<Self> {
+impl Contents {
+    fn open(path: &Path) -> Result<Self> {
         let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let entries = zip::read_directory(&mut file).with_context(|| format!("reading {}", path.display()))?;
         ensure!(!entries.contains_key(MANIFEST), "{} is a background, not a module", path.display());
         let manifest = entries.get(MODULE_MANIFEST).copied().with_context(|| format!("{} has no {MODULE_MANIFEST}", path.display()))?;
         let text = read_text(&file, manifest).with_context(|| format!("reading {}", path.display()))?;
         let manifest = ModuleManifest::parse(&text).with_context(|| format!("checking {}", path.display()))?;
-        check_scripts(&manifest, |name| entries.contains_key(name)).with_context(|| format!("checking {}", path.display()))?;
         Ok(Self { path: path.to_path_buf(), file, manifest, entries })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn manifest(&self) -> &ModuleManifest {
-        &self.manifest
-    }
-
-    pub fn keyboard_script(&self) -> Result<String> {
-        self.script(KEYBOARD_SCRIPT)
-    }
-
-    /// `None` when the module has no host half.
-    pub fn host_script(&self) -> Result<Option<String>> {
-        self.manifest.host.then(|| self.script(HOST_SCRIPT)).transpose()
-    }
-
-    pub fn resource(&self, resource: &Resource) -> Result<Vec<u8>> {
-        let full = resource.entry();
-        let entry = self.entries.get(&full).copied().with_context(|| format!("{} has no {full}, which {resource} names", self.path.display()))?;
+    fn bytes(&self, name: &str) -> Result<Vec<u8>> {
+        let entry = self.entries.get(name).copied().with_context(|| format!("{} has no {name}", self.path.display()))?;
         let mut data = vec![0; usize::try_from(entry.len)?];
-        read_exact_at(&self.file, entry.offset, &mut data).with_context(|| format!("reading {full}"))?;
+        read_exact_at(&self.file, entry.offset, &mut data).with_context(|| format!("reading {name} in {}", self.path.display()))?;
         Ok(data)
     }
 
     fn script(&self, name: &str) -> Result<String> {
         let entry = self.entries.get(name).copied().with_context(|| format!("{} has no {name}", self.path.display()))?;
         read_text(&self.file, entry).with_context(|| format!("reading {name} in {}", self.path.display()))
+    }
+
+    fn resource(&self, resource: &Resource) -> Result<Vec<u8>> {
+        let full = resource.entry();
+        ensure!(self.entries.contains_key(&full), "{} has no {full}, which {resource} names", self.path.display());
+        self.bytes(&full)
+    }
+}
+
+/// A whole module, as packed and as the host keeps it: its manifest parsed and its scripts present.
+pub struct ModulePackage(Contents);
+
+impl ModulePackage {
+    pub fn open(path: &Path) -> Result<Self> {
+        let contents = Contents::open(path)?;
+        check_scripts(&contents.manifest, |name| contents.entries.contains_key(name)).with_context(|| format!("checking {}", path.display()))?;
+        Ok(Self(contents))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0.path
+    }
+
+    pub fn manifest(&self) -> &ModuleManifest {
+        &self.0.manifest
+    }
+
+    pub fn keyboard_script(&self) -> Result<String> {
+        self.0.script(KEYBOARD_SCRIPT)
+    }
+
+    /// `None` when the module has no host half.
+    pub fn host_script(&self) -> Result<Option<String>> {
+        self.0.manifest.host.then(|| self.0.script(HOST_SCRIPT)).transpose()
+    }
+
+    pub fn resource(&self, resource: &Resource) -> Result<Vec<u8>> {
+        self.0.resource(resource)
+    }
+
+    /// Writes what the keyboard needs, and nothing the host keeps to itself: `module.json`,
+    /// `keyboard.luau` and `assets/keyboard/`.
+    pub fn write_keyboard_copy(&self, out: &Path) -> Result<KeyboardModule> {
+        let staging = staging_path(out)?;
+        let file = File::create(&staging).with_context(|| format!("creating {}", staging.display()))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let keyboard_assets = format!("{ASSETS_FOLDER}/{}/", ResourceKind::Keyboard.folder());
+        let mut names: Vec<&String> = self.0.entries.keys().filter(|name| name.starts_with(&keyboard_assets)).collect();
+        names.sort();
+        for name in [MODULE_MANIFEST, KEYBOARD_SCRIPT].iter().copied().chain(names.into_iter().map(String::as_str)) {
+            zip.add(name, &mut self.0.bytes(name)?.as_slice()).with_context(|| format!("copying {name}"))?;
+        }
+        drop(zip.finish()?);
+        fs::rename(&staging, out).with_context(|| format!("moving {} into place", out.display()))?;
+        KeyboardModule::open(out)
+    }
+}
+
+/// A module as the keyboard uses it: `keyboard.luau` and keyboard resources. The host half and host
+/// resources stay on the host, so this opens without them even when the manifest names a host half.
+pub struct KeyboardModule(Contents);
+
+impl KeyboardModule {
+    pub fn open(path: &Path) -> Result<Self> {
+        let contents = Contents::open(path)?;
+        ensure!(contents.entries.contains_key(KEYBOARD_SCRIPT), "{} has no {KEYBOARD_SCRIPT}", path.display());
+        Ok(Self(contents))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0.path
+    }
+
+    pub fn manifest(&self) -> &ModuleManifest {
+        &self.0.manifest
+    }
+
+    pub fn keyboard_script(&self) -> Result<String> {
+        self.0.script(KEYBOARD_SCRIPT)
+    }
+
+    pub fn resource(&self, resource: &Resource) -> Result<Vec<u8>> {
+        ensure!(resource.kind == ResourceKind::Keyboard, "{resource} stays on the host");
+        self.0.resource(resource)
     }
 }
 
@@ -357,6 +422,26 @@ mod tests {
         assert!(refused("module-missing", r#"keyboard.resource("face.svg")"#, &[]).contains("isn't in the folder"));
         let host_on_keyboard = refused("module-host-on-kb", r#"host.resource("zones.json")"#, &[("host/zones.json", "{}")]);
         assert!(host_on_keyboard.contains("never reach the keyboard"));
+    }
+
+    #[test]
+    fn the_keyboard_copy_leaves_host_files_behind() {
+        let scratch = Scratch::new("module-keyboard-copy");
+        let folder = clock_folder(&scratch, "return {}", &[("keyboard/face.svg", "<svg/>"), ("host/zones.json", "{}")]);
+        fs::write(folder.join(MODULE_MANIFEST), with_host(CLOCK)).unwrap();
+        fs::write(folder.join(HOST_SCRIPT), "every(1, function() end)").unwrap();
+        let package = pack_folder(&folder, &scratch.0.join("clock.deckmod")).unwrap();
+        let copy = package.write_keyboard_copy(&scratch.0.join("clock-keyboard.deckmod")).unwrap();
+
+        assert!(copy.manifest().host);
+        assert_eq!(copy.keyboard_script().unwrap(), "return {}");
+        assert_eq!(copy.resource(&resource(ResourceKind::Keyboard, "face.svg")).unwrap(), b"<svg/>");
+        assert!(format!("{:#}", copy.resource(&resource(ResourceKind::Host, "zones.json")).unwrap_err()).contains("stays on the host"));
+        let entries = zip::read_directory(&mut File::open(copy.path()).unwrap()).unwrap();
+        let mut names: Vec<&str> = entries.keys().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, ["assets/keyboard/face.svg", "keyboard.luau", "module.json"]);
+        assert!(ModulePackage::open(copy.path()).is_err(), "the copy isn't a whole package");
     }
 
     #[test]

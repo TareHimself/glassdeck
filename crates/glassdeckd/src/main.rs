@@ -4,7 +4,9 @@
 mod api;
 mod config;
 mod deploy;
+mod host_api;
 mod link;
+mod media;
 mod module_host;
 mod runner;
 mod system;
@@ -93,9 +95,9 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
-    module_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink))?;
-    let (modules, profile) = (paths.modules.clone(), paths.profile.clone());
-    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile, large_uploads: Mutex::new(0) }.serve(&paths.api)
+    module_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink), media::start()?)?;
+    let (modules, profile, staging) = (paths.modules.clone(), paths.profile.clone(), paths.staging.clone());
+    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile, staging, large_uploads: Mutex::new(0) }.serve(&paths.api)
 }
 
 fn new_token() -> Result<String> {
