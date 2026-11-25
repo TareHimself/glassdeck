@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use glassdeck_proto::Message;
+use link::Link;
 
 use desktop::{DesktopSource, EncoderKind};
 use monitors::MonitorQuery;
@@ -112,6 +114,13 @@ enum Command {
         #[command(subcommand)]
         action: WallpaperAction,
     },
+    /// Choose the deck the keyboard plays from its own deck folder whenever no stream is open
+    SelectDeck {
+        /// File name in the keyboard's deck folder, such as we-2970107491.deck
+        name: String,
+        #[arg(long, default_value = "127.0.0.1:7878")]
+        to: SocketAddr,
+    },
     /// Stream a monitor live to a receiver
     Stream {
         /// Monitor EDID name (case-insensitive) or index from `list`
@@ -192,6 +201,11 @@ fn main() -> Result<()> {
             pipeline::run(source, link_options(to, link_mbytes, unlimited_link))
         }
         Command::Wallpaper { action } => wallpaper::run(action),
+        Command::SelectDeck { name, to } => {
+            Link::connect(to, None)?.send(&Message::SelectDeck { name: name.clone() })?;
+            println!("Asked {to} to play {name}");
+            Ok(())
+        }
         Command::Stream {
             monitor,
             to,

@@ -494,6 +494,7 @@ dependencies = [
  "clap",
  "drm",
  "fontdue",
+ "glassdeck-deck",
  "glassdeck-proto",
  "minifb",
  "pkg-config",

@@ -1,6 +1,11 @@
+mod director;
+mod local;
+mod mailbox;
+mod mp4;
 mod overlay;
 mod playout;
 mod presentation;
+mod screen;
 mod stats;
 
 #[cfg(target_os = "linux")]
@@ -14,17 +19,20 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use fontdue::{Font, FontSettings};
-use glassdeck_proto::{Action, Message, Mode, SessionState, StreamInfo, step, unix_micros};
+use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, SessionState, StreamInfo, step, unix_micros};
 
-use platform::{Compositor, Decoder, Picture};
-use playout::PlayoutClock;
+use platform::{Compositor, Decoder};
+use director::{Director, SharedDirector, lock};
+use mailbox::{Mailbox, ShownFrame, Timing};
+use playout::{PlayoutClock, wait_until};
+use screen::Event;
 use presentation::Outcome;
 use stats::{FrameTimes, LatencyStats};
 
@@ -41,39 +49,9 @@ struct Cli {
     /// Show the stream without key labels
     #[arg(long)]
     no_labels: bool,
-}
-
-enum Timing {
-    Live { capture_us: u64, received_us: u64, decoded_us: u64 },
-    Paced { late_us: u64 },
-}
-
-struct ShownFrame {
-    picture: Picture,
-    timing: Timing,
-}
-
-/// Holds only the newest frame, so a slow display skips frames instead of falling behind.
-struct Mailbox {
-    slot: Mutex<(Option<ShownFrame>, u32)>,
-}
-
-impl Mailbox {
-    fn new() -> Self {
-        Self { slot: Mutex::new((None, 0)) }
-    }
-
-    fn put(&self, frame: ShownFrame) {
-        let mut slot = self.slot.lock().expect("mailbox poisoned");
-        if slot.0.replace(frame).is_some() {
-            slot.1 += 1;
-        }
-    }
-
-    fn take(&self) -> (Option<ShownFrame>, u32) {
-        let mut slot = self.slot.lock().expect("mailbox poisoned");
-        (slot.0.take(), std::mem::take(&mut slot.1))
-    }
+    /// Where the keyboard keeps decks it plays with the PC off
+    #[arg(long, default_value = platform::DEFAULT_DECKS)]
+    decks: PathBuf,
 }
 
 fn main() -> Result<()> {
@@ -84,8 +62,9 @@ fn main() -> Result<()> {
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
+    let director = Director::start(cli.decks, Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
-    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer))?;
+    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director))?;
     compose_loop(&mailbox, compositor)
 }
 
@@ -95,18 +74,22 @@ fn load_font(path: &PathBuf) -> Result<Font> {
 }
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
-fn accept_loop(listener: TcpListener, mailbox: &Mailbox) {
+fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector) {
     if let Err(e) = platform::init_decoder_thread() {
         eprintln!("error: starting the decoder: {e:#}");
         std::process::exit(1);
     }
     for connection in listener.incoming() {
+        let mut state = SessionState::Idle;
         let result = connection
             .context("accepting connection")
-            .and_then(|socket| serve(socket, mailbox));
+            .and_then(|socket| serve(socket, mailbox, director, &mut state));
         match result {
             Ok(()) => println!("Sender disconnected"),
             Err(e) => eprintln!("error: {e:#}"),
+        }
+        if matches!(state, SessionState::Streaming(_)) {
+            report(lock(director).handle(Event::StreamEnded));
         }
     }
 }
@@ -117,18 +100,18 @@ struct Playback {
     clock: Option<PlayoutClock>,
 }
 
-fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
+fn serve(mut socket: TcpStream, mailbox: &Mailbox, director: &SharedDirector, state: &mut SessionState) -> Result<()> {
     socket.set_nodelay(true)?;
     println!("Sender connected from {}", socket.peer_addr()?);
-    let mut state = SessionState::Idle;
     let mut playback: Option<Playback> = None;
 
     while let Some(message) = Message::read_from(&mut socket)? {
         let received_us = unix_micros();
-        let (next, action) = step(state, &message)?;
-        state = next;
+        let (next, action) = step(*state, &message)?;
+        *state = next;
         match action {
             Action::Begin(info) => {
+                lock(director).handle(Event::StreamStarted)?;
                 let decoder = Decoder::new(&info)?;
                 println!(
                     "Stream {}: {:?} {}x{} {:?} via {}",
@@ -146,7 +129,9 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
                             decoded_us: unix_micros(),
                         },
                         Mode::Paced => {
-                            let clock = *playback.clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros()));
+                            let clock = *playback
+                                .clock
+                                .get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), PACED_PLAYOUT_DELAY_US));
                             Timing::Paced { late_us: wait_until(clock.due_us(picture.time_us)) }
                         }
                     };
@@ -156,7 +141,9 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
             Action::End => {
                 println!("Stream ended");
                 playback = None;
+                lock(director).handle(Event::StreamEnded)?;
             }
+            Action::SelectDeck(name) => report(lock(director).select(name)),
             Action::AnswerProbe { probe_sent_us } => {
                 let reply = Message::ClockReply { probe_sent_us, received_us };
                 socket.write_all(&reply.encode()).context("answering a clock probe")?;
@@ -166,15 +153,10 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
     Ok(())
 }
 
-/// Sleeps until `due_us`; returns how late we already were if it had passed.
-fn wait_until(due_us: u64) -> u64 {
-    let now = unix_micros();
-    match due_us.checked_sub(now) {
-        Some(ahead) => {
-            thread::sleep(Duration::from_micros(ahead));
-            0
-        }
-        None => now - due_us,
+/// A failure that is logged, not fatal: the connection carries on.
+fn report(result: Result<()>) {
+    if let Err(e) = result {
+        eprintln!("error: {e:#}");
     }
 }
 
