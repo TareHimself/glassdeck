@@ -1,5 +1,6 @@
 mod compositor;
 mod mpp;
+mod scanout;
 
 use anyhow::Result;
 

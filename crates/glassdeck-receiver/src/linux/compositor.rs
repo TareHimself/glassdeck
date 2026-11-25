@@ -1,16 +1,29 @@
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
+use drm::control::atomic::AtomicModeReq;
 use drm::control::dumbbuffer::DumbBuffer;
-use drm::control::property::ValueType;
-use drm::control::{Device as ControlDevice, FbCmd2Flags, connector, crtc, framebuffer, plane, property};
+use drm::control::property::{Value, ValueType};
+use drm::control::{
+    AtomicCommitFlags, Device as ControlDevice, Event as DrmEvent, FbCmd2Flags, connector, crtc, framebuffer, plane,
+    property,
+};
 use drm::{ClientCapability, Device};
 use fontdue::Font;
+use glassdeck_proto::unix_micros;
+use rustix::fs::OFlags;
+use rustix::time::{ClockId, clock_gettime};
 
 use super::mpp::{Color, Encoding, Picture, Range};
+use super::scanout::{Effect, Event, Scanout, step};
 use crate::overlay::Overlay;
+use crate::presentation::Outcome;
 
 const CARD: &str = "/dev/dri/card0";
 /// The keyboard's panel; a monitor offering this mode shows exactly what the keyboard would.
@@ -37,34 +50,48 @@ struct Surface {
     fb: framebuffer::Handle,
 }
 
-struct Shown {
-    _picture: Picture,
-    fb: framebuffer::Handle,
-}
-
-struct ColorProperties {
-    encoding: property::Handle,
-    range: property::Handle,
+/// The video plane's properties, for atomic commits.
+struct VideoPlane {
+    handle: plane::Handle,
+    fb_id: property::Handle,
+    crtc_id: property::Handle,
+    src: [property::Handle; 4],
+    dst: [property::Handle; 4],
+    color_encoding: property::Handle,
+    color_range: property::Handle,
 }
 
 /// Drives the screen directly: decoded pictures are scanned out of the decoder's buffers by a
 /// video plane, and the key labels sit on the primary plane above it, blended by the display controller.
+/// Pictures go up with non-blocking atomic commits; the flip event says when each reached the screen.
 pub struct Compositor {
     card: Card,
     crtc: crtc::Handle,
-    video_plane: plane::Handle,
+    video: VideoPlane,
     size: (u32, u32),
-    color_properties: ColorProperties,
     applied_color: Option<Color>,
-    shown: Option<Shown>,
+    scanout: Scanout,
+    pictures: HashMap<u64, Picture>,
+    framebuffers: HashMap<u64, framebuffer::Handle>,
+    outcomes: Vec<Outcome>,
     _labels: Surface,
 }
 
 impl Compositor {
     pub fn open(font: Option<Font>) -> Result<Self> {
-        let card = Card(OpenOptions::new().read(true).write(true).open(CARD).with_context(|| format!("opening {CARD}"))?);
+        // Non-blocking, so polling for flip events never stalls the compose loop.
+        let card = Card(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(OFlags::NONBLOCK.bits() as i32)
+                .open(CARD)
+                .with_context(|| format!("opening {CARD}"))?,
+        );
         card.set_client_capability(ClientCapability::UniversalPlanes, true)
             .context("the display driver lacks universal planes")?;
+        card.set_client_capability(ClientCapability::Atomic, true)
+            .context("the display driver lacks atomic modesetting")?;
         let resources = card.resource_handles()?;
 
         let mut connected = None;
@@ -105,56 +132,105 @@ impl Compositor {
         println!("Display: {}x{}@{} via CRTC {crtc:?}, video plane {video_plane:?}", size.0, size.1, mode.vrefresh());
 
         Ok(Self {
-            color_properties: color_properties(&card, video_plane)?,
+            video: VideoPlane::find(&card, video_plane)?,
             card,
             crtc,
-            video_plane,
             size,
             applied_color: None,
-            shown: None,
+            scanout: Scanout::Steady { on_screen: None },
+            pictures: HashMap::new(),
+            framebuffers: HashMap::new(),
+            outcomes: Vec::new(),
             _labels: labels,
         })
     }
 
-    /// Blocks until the picture is on screen (the next vblank), then frees the one it replaced.
-    pub fn show(&mut self, picture: Picture) -> Result<()> {
-        let color = picture.color();
-        if self.applied_color != Some(color) {
-            self.apply_color(color)?;
+    /// Hands over a picture without waiting; its fate comes back from `poll`.
+    pub fn submit(&mut self, picture: Picture, token: u64) -> Result<()> {
+        self.pictures.insert(token, picture);
+        self.apply(Event::Submitted(token), 0)
+    }
+
+    /// Collects finished page flips and what became of every picture since the last call.
+    pub fn poll(&mut self) -> Result<Vec<Outcome>> {
+        loop {
+            let events = match self.card.receive_events() {
+                Ok(events) => events,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e).context("reading display events"),
+            };
+            for event in events {
+                if let DrmEvent::PageFlip(flip) = event {
+                    self.apply(Event::FlipDone, flip_wall_time_us(flip.duration))?;
+                }
+            }
         }
+        Ok(std::mem::take(&mut self.outcomes))
+    }
+
+    fn apply(&mut self, event: Event, flipped_at_us: u64) -> Result<()> {
+        let (next, effects) = step(self.scanout, event)?;
+        self.scanout = next;
+        for effect in effects {
+            match effect {
+                Effect::Commit(token) => self.commit(token)?,
+                Effect::Presented(token) => self.outcomes.push(Outcome::Presented { token, at_us: flipped_at_us }),
+                Effect::Release(token) => {
+                    let fb = self.framebuffers.remove(&token).context("released a picture with no framebuffer")?;
+                    self.card.destroy_framebuffer(fb)?;
+                    self.pictures.remove(&token);
+                }
+                Effect::Drop(token) => {
+                    self.pictures.remove(&token);
+                    self.outcomes.push(Outcome::Dropped { token });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, token: u64) -> Result<()> {
+        let picture = self.pictures.get(&token).context("committing a picture that was never submitted")?;
         let (width, height) = picture.size();
         let (hor_stride, ver_stride) = picture.strides();
+        let color = picture.color();
         let handle = self.card.prime_fd_to_buffer(picture.dma_buf()).context("importing the decoded picture")?;
         let nv12 = Nv12 { size: (width, height), handle, pitch: hor_stride, chroma_offset: hor_stride * ver_stride };
         let fb = self.card.add_planar_framebuffer(&nv12, FbCmd2Flags::empty());
         self.card.close_buffer(handle)?;
         let fb = fb.context("wrapping the decoded picture in a framebuffer")?;
 
+        let video = &self.video;
+        let mut request = AtomicModeReq::new();
+        request.add_property(video.handle, video.fb_id, Value::Framebuffer(Some(fb)));
+        request.add_property(video.handle, video.crtc_id, Value::CRTC(Some(self.crtc)));
+        let (sx, sy, sw, sh) = whole((width, height));
+        for (property, value) in video.src.iter().zip([sx, sy, sw, sh]) {
+            request.add_property(video.handle, *property, Value::UnsignedRange(value as u64));
+        }
+        let (dx, dy, dw, dh) = fit((width, height), self.size);
+        let dst = [
+            Value::SignedRange(dx as i64),
+            Value::SignedRange(dy as i64),
+            Value::UnsignedRange(dw as u64),
+            Value::UnsignedRange(dh as u64),
+        ];
+        for (property, value) in video.dst.iter().zip(dst) {
+            request.add_property(video.handle, *property, value);
+        }
+        if self.applied_color != Some(color) {
+            let (encoding, range) = color_names(color);
+            let encoding = enum_value(&self.card, video.color_encoding, encoding)?;
+            let range = enum_value(&self.card, video.color_range, range)?;
+            request.add_property(video.handle, video.color_encoding, Value::Unknown(encoding));
+            request.add_property(video.handle, video.color_range, Value::Unknown(range));
+            println!("Video color: {color:?}");
+            self.applied_color = Some(color);
+        }
         self.card
-            .set_plane(self.video_plane, self.crtc, Some(fb), 0, fit((width, height), self.size), whole((width, height)))
-            .context("showing the decoded picture")?;
-        if let Some(replaced) = self.shown.replace(Shown { _picture: picture, fb }) {
-            self.card.destroy_framebuffer(replaced.fb)?;
-        }
-        Ok(())
-    }
-
-    fn apply_color(&mut self, color: Color) -> Result<()> {
-        let encoding = match color.encoding {
-            Encoding::Bt601 => "ITU-R BT.601 YCbCr",
-            Encoding::Bt709 => "ITU-R BT.709 YCbCr",
-            Encoding::Bt2020 => "ITU-R BT.2020 YCbCr",
-        };
-        let range = match color.range {
-            Range::Limited => "YCbCr limited range",
-            Range::Full => "YCbCr full range",
-        };
-        for (property, name) in [(self.color_properties.encoding, encoding), (self.color_properties.range, range)] {
-            let value = enum_value(&self.card, property, name)?;
-            self.card.set_property(self.video_plane, property, value)?;
-        }
-        println!("Video color: {color:?}");
-        self.applied_color = Some(color);
+            .atomic_commit(AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, request)
+            .context("committing the decoded picture")?;
+        self.framebuffers.insert(token, fb);
         Ok(())
     }
 
@@ -242,11 +318,43 @@ fn pick_planes(card: &Card, resources: &drm::control::ResourceHandles, crtc: crt
     ))
 }
 
-fn color_properties(card: &Card, plane: plane::Handle) -> Result<ColorProperties> {
-    Ok(ColorProperties {
-        encoding: property_handle(card, plane, "COLOR_ENCODING")?,
-        range: property_handle(card, plane, "COLOR_RANGE")?,
-    })
+impl VideoPlane {
+    fn find(card: &Card, handle: plane::Handle) -> Result<Self> {
+        let named = |name: &str| property_handle(card, handle, name);
+        Ok(Self {
+            handle,
+            fb_id: named("FB_ID")?,
+            crtc_id: named("CRTC_ID")?,
+            src: [named("SRC_X")?, named("SRC_Y")?, named("SRC_W")?, named("SRC_H")?],
+            dst: [named("CRTC_X")?, named("CRTC_Y")?, named("CRTC_W")?, named("CRTC_H")?],
+            color_encoding: named("COLOR_ENCODING")?,
+            color_range: named("COLOR_RANGE")?,
+        })
+    }
+}
+
+fn color_names(color: Color) -> (&'static str, &'static str) {
+    let encoding = match color.encoding {
+        Encoding::Bt601 => "ITU-R BT.601 YCbCr",
+        Encoding::Bt709 => "ITU-R BT.709 YCbCr",
+        Encoding::Bt2020 => "ITU-R BT.2020 YCbCr",
+    };
+    let range = match color.range {
+        Range::Limited => "YCbCr limited range",
+        Range::Full => "YCbCr full range",
+    };
+    (encoding, range)
+}
+
+/// Flip events carry CLOCK_MONOTONIC; latency figures use the wall clock.
+fn flip_wall_time_us(flipped: Duration) -> u64 {
+    let now = clock_gettime(ClockId::Monotonic);
+    let now_monotonic_us = now.tv_sec as u64 * 1_000_000 + now.tv_nsec as u64 / 1_000;
+    wall_time_us(flipped.as_micros() as u64, now_monotonic_us, unix_micros())
+}
+
+fn wall_time_us(event_monotonic_us: u64, now_monotonic_us: u64, now_wall_us: u64) -> u64 {
+    now_wall_us.saturating_sub(now_monotonic_us.saturating_sub(event_monotonic_us))
 }
 
 fn property_handle(card: &Card, plane: plane::Handle, name: &str) -> Result<property::Handle> {
@@ -303,6 +411,11 @@ fn fit(src: (u32, u32), dst: (u32, u32)) -> (i32, i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flip_time_moves_onto_the_wall_clock() {
+        assert_eq!(wall_time_us(1_000, 5_000, 1_000_000), 996_000);
+    }
 
     #[test]
     fn prefers_the_panel_mode() {

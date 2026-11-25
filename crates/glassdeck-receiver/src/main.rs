@@ -1,5 +1,6 @@
 mod overlay;
 mod playout;
+mod presentation;
 mod stats;
 
 #[cfg(target_os = "linux")]
@@ -9,6 +10,7 @@ mod platform;
 #[path = "windows/mod.rs"]
 mod platform;
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -23,6 +25,7 @@ use glassdeck_proto::{Action, Message, Mode, SessionState, StreamInfo, step, uni
 
 use platform::{Compositor, Decoder, Picture};
 use playout::PlayoutClock;
+use presentation::Outcome;
 use stats::{FrameTimes, LatencyStats};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -178,28 +181,38 @@ fn wait_until(due_us: u64) -> u64 {
 fn compose_loop(mailbox: &Mailbox, mut compositor: Compositor) -> Result<()> {
     let mut stats = LatencyStats::default();
     let mut stats_since = Instant::now();
+    let mut in_flight: HashMap<u64, Timing> = HashMap::new();
+    let mut next_token = 0;
 
     while compositor.is_open() {
         let (frame, replaced) = mailbox.take();
         stats = stats.replaced(replaced);
-
-        match frame {
-            Some(ShownFrame { picture, timing }) => {
-                compositor.show(picture)?;
-                stats = match timing {
+        let idle = frame.is_none();
+        if let Some(ShownFrame { picture, timing }) = frame {
+            in_flight.insert(next_token, timing);
+            compositor.submit(picture, next_token)?;
+            next_token += 1;
+        }
+        for outcome in compositor.poll()? {
+            stats = match outcome {
+                Outcome::Presented { token, at_us } => match in_flight.remove(&token).context("presented an unknown picture")? {
                     Timing::Live { capture_us, received_us, decoded_us } => stats.record(FrameTimes {
                         capture_us,
                         received_us,
                         decoded_us,
-                        displayed_us: unix_micros(),
+                        displayed_us: at_us,
                     }),
                     Timing::Paced { late_us } => stats.record_paced(late_us),
-                };
-            }
-            None => {
-                compositor.idle();
-                thread::sleep(IDLE_POLL);
-            }
+                },
+                Outcome::Dropped { token } => {
+                    in_flight.remove(&token);
+                    stats.replaced(1)
+                }
+            };
+        }
+        if idle {
+            compositor.idle();
+            thread::sleep(IDLE_POLL);
         }
 
         if stats_since.elapsed() >= STATS_INTERVAL {
