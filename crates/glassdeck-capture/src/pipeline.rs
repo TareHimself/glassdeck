@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +17,25 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const QUEUED_FRAMES: usize = 4;
 /// Encoded sources send this far ahead of presentation time, inside the receiver's playout delay.
 const SEND_AHEAD: Duration = Duration::from_millis(100);
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Ctrl+C asks the running source to end its stream cleanly, so the receiver gets StreamEnd.
+/// A second Ctrl+C quits at once, in case a source is stuck.
+pub fn stop_on_ctrl_c() -> Result<()> {
+    ctrlc::set_handler(request_stop).context("installing the Ctrl+C handler")
+}
+
+pub fn request_stop() {
+    if STOP.swap(true, Ordering::Relaxed) {
+        std::process::exit(130);
+    }
+}
+
+/// Sources poll this and stop as if their duration had run out.
+pub fn stop_requested() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
 
 /// What produces the picture. Raw-frame sources go through an encoder; encoded sources never do.
 pub enum Source {
@@ -159,7 +179,8 @@ pub fn run(source: Source, options: LinkOptions) -> Result<()> {
 fn pace(mut source: Box<dyn EncodedSource>, out: SyncSender<EncodedFrame>) -> Result<()> {
     let started = Instant::now();
     let mut first_us = None;
-    while let Some(frame) = source.next_frame()? {
+    while !stop_requested() {
+        let Some(frame) = source.next_frame()? else { break };
         let first = *first_us.get_or_insert(frame.time_us);
         let due = started + Duration::from_micros(frame.time_us.saturating_sub(first));
         thread::sleep(due.saturating_duration_since(Instant::now() + SEND_AHEAD));

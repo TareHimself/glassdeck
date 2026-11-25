@@ -136,6 +136,7 @@ fn main() -> Result<()> {
     if let Some(code) = web::helper_process_exit_code() {
         std::process::exit(code);
     }
+    pipeline::stop_on_ctrl_c()?;
     match Cli::parse().command {
         Command::List => {
             for info in monitors::enumerate()? {

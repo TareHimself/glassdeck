@@ -1,4 +1,5 @@
 use std::sync::mpsc::SyncSender;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -14,7 +15,9 @@ use windows_capture::settings::{
 
 use crate::gpu::GpuEncoder;
 use crate::monitors::FoundMonitor;
-use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
+use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat, stop_requested};
+
+const POLL: Duration = Duration::from_millis(50);
 use crate::software::SoftwareEncoder;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -55,7 +58,7 @@ impl FrameSource for DesktopSource {
     }
 
     fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
-        let flags = Flags { tx: out, kind: self.encoder, settings: self.settings, duration: self.duration };
+        let flags = Flags { tx: out, kind: self.encoder, settings: self.settings };
         let settings = Settings::new(
             self.monitor.monitor,
             CursorCaptureSettings::WithoutCursor,
@@ -66,7 +69,16 @@ impl FrameSource for DesktopSource {
             ColorFormat::Bgra8,
             flags,
         );
-        Capture::start(settings).map_err(|e| anyhow!("capture failed: {e}"))
+        // Stopped from here rather than from the frame callback: a still screen delivers no frames.
+        let control = Capture::start_free_threaded(settings).map_err(|e| anyhow!("starting capture: {e}"))?;
+        let begun = Instant::now();
+        while !control.is_finished() {
+            if stop_requested() || self.duration.is_some_and(|d| begun.elapsed() >= d) {
+                return control.stop().map_err(|e| anyhow!("capture failed: {e}"));
+            }
+            thread::sleep(POLL);
+        }
+        control.wait().map_err(|e| anyhow!("capture failed: {e}"))
     }
 }
 
@@ -74,19 +86,16 @@ struct Flags {
     tx: SyncSender<EncodedFrame>,
     kind: EncoderKind,
     settings: EncoderSettings,
-    duration: Option<Duration>,
 }
 
 enum Backend {
     Gpu(GpuEncoder),
-    Software(SoftwareEncoder),
+    Software(Box<SoftwareEncoder>),
 }
 
 struct Capture {
     backend: Backend,
     size: (u32, u32),
-    duration: Option<Duration>,
-    started: Instant,
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -96,7 +105,7 @@ impl GraphicsCaptureApiHandler for Capture {
     type Error = BoxError;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        let Flags { tx, kind, settings, duration } = ctx.flags;
+        let Flags { tx, kind, settings } = ctx.flags;
         let backend = match kind {
             EncoderKind::Gpu => {
                 let encoder = GpuEncoder::start(&ctx.device, &ctx.device_context, settings, tx)?;
@@ -105,21 +114,19 @@ impl GraphicsCaptureApiHandler for Capture {
             }
             EncoderKind::Software => {
                 println!("Encoder: openh264 (software)");
-                Backend::Software(SoftwareEncoder::new(settings, tx)?)
+                Backend::Software(Box::new(SoftwareEncoder::new(settings, tx)?))
             }
         };
         Ok(Self {
             backend,
             size: (settings.width, settings.height),
-            duration,
-            started: Instant::now(),
         })
     }
 
     fn on_frame_arrived(
         &mut self,
         frame: &mut CapturedFrame,
-        control: InternalCaptureControl,
+        _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         if (frame.width(), frame.height()) != self.size {
             return Err("monitor resolution changed during the stream".into());
@@ -128,9 +135,6 @@ impl GraphicsCaptureApiHandler for Capture {
         match &mut self.backend {
             Backend::Gpu(encoder) => encoder.submit(frame.as_raw_texture(), capture_us)?,
             Backend::Software(encoder) => encoder.submit(frame, capture_us)?,
-        }
-        if self.duration.is_some_and(|d| self.started.elapsed() >= d) {
-            control.stop();
         }
         Ok(())
     }

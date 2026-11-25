@@ -15,10 +15,11 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
-use windows::core::Interface;
+use windows::Win32::System::Console::SetConsoleCtrlHandler;
+use windows::core::{BOOL, Interface};
 
 use crate::gpu::GpuEncoder;
-use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
+use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat, request_stop, stop_requested};
 
 const POLL: Duration = Duration::from_millis(50);
 
@@ -87,6 +88,8 @@ impl FrameSource for WebSource {
         let started =
             unsafe { gd_web_start(self.url.as_ptr(), self.init_script.as_ptr(), width, height, self.settings.fps, cache.as_ptr(), on_frame, user) };
         ensure!(started == 0, "CEF failed to start (step {started})");
+        // Chromium adds a console handler that quits at once; Windows asks the newest handler first.
+        unsafe { SetConsoleCtrlHandler(Some(on_console_signal), true) }.context("installing the Ctrl+C handler")?;
         println!("Rendering {} at {width}x{height}@{}", self.url.to_string_lossy(), self.settings.fps);
 
         let begun = Instant::now();
@@ -95,7 +98,7 @@ impl FrameSource for WebSource {
             if let Some(e) = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.failure.take() {
                 break Some(e);
             }
-            if self.duration.is_some_and(|d| begun.elapsed() >= d) {
+            if stop_requested() || self.duration.is_some_and(|d| begun.elapsed() >= d) {
                 break None;
             }
         };
@@ -201,6 +204,11 @@ impl FrameSink {
             texture.context("CreateTexture2D returned nothing")
         }
     }
+}
+
+unsafe extern "system" fn on_console_signal(_signal: u32) -> BOOL {
+    request_stop();
+    true.into()
 }
 
 extern "C" fn on_frame(user: *mut c_void, shared_handle: *mut c_void, width: u32, height: u32, _timestamp_us: u64) {
