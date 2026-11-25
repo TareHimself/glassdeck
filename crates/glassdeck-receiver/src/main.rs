@@ -20,7 +20,7 @@ mod platform;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Sender, SyncSender};
 use std::thread;
@@ -51,8 +51,9 @@ const IDLE_POLL: Duration = Duration::from_millis(1);
 struct Cli {
     #[arg(long, default_value = platform::DEFAULT_LISTEN)]
     listen: SocketAddr,
-    #[arg(long, default_value = platform::DEFAULT_FONT)]
-    font: PathBuf,
+    /// A .ttf or .otf to draw labels and widgets with, instead of the built-in Noto Sans JP Bold
+    #[arg(long)]
+    font: Option<PathBuf>,
     /// Show the stream without key labels
     #[arg(long)]
     no_labels: bool,
@@ -87,7 +88,7 @@ impl From<KeyboardLayout> for Variant {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let font = load_font(&cli.font)?;
+    let font = load_font(cli.font.as_deref())?;
     let variant = Variant::from(cli.layout);
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
     let compositor = Compositor::open(labels)?;
@@ -106,9 +107,16 @@ fn main() -> Result<()> {
     compose_loop(&mailbox, &tiles, compositor)
 }
 
-pub(crate) fn load_font(path: &PathBuf) -> Result<Font> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
-    Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing font: {e}"))
+/// Noto Sans JP Bold (SIL Open Font License, `fonts/OFL.txt`): Latin, Cyrillic and Japanese, so labels
+/// and widgets look the same on the keyboard and in the Windows preview.
+const BUILT_IN_FONT: &[u8] = include_bytes!("../fonts/NotoSansJP-Bold.otf");
+
+pub(crate) fn load_font(path: Option<&Path>) -> Result<Font> {
+    let bytes = match path {
+        Some(path) => std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?,
+        None => BUILT_IN_FONT.to_vec(),
+    };
+    Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing the font: {e}"))
 }
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.

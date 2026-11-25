@@ -11,7 +11,7 @@ use glassdeck_luau::{LiveName, LuaResultExt, ResourceRef, Vm, decode, encode, fr
 use mlua::{Function, Table, Value};
 
 use super::Installed;
-use super::draw::{self, Align, Area, Color, Command, Images};
+use super::draw::{self, Align, Area, Color, Command, ResourceCache};
 use super::live::LiveCache;
 use super::ui::Ui;
 
@@ -28,7 +28,7 @@ pub struct Instance {
     pub settings: serde_json::Value,
     pub installed: Installed,
     run: Run,
-    images: Images,
+    images: ResourceCache,
     /// The error tile still has to be drawn.
     error_unshown: bool,
     measured: bool,
@@ -67,7 +67,7 @@ impl Instance {
             settings: widget.settings.clone(),
             installed,
             run,
-            images: Images::new(),
+            images: ResourceCache::new(),
             measured: false,
         }
     }
@@ -96,7 +96,7 @@ impl Instance {
 
     pub fn resize(&mut self, placement: Placement) {
         self.placement = placement;
-        self.images = Images::new();
+        self.images = ResourceCache::new();
         self.with_live(|live| {
             live.ui.resize(placement.w, placement.h);
             live.ui.request_redraw();
@@ -269,7 +269,7 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
     let (w, h) = (w as f32, h as f32);
     let mut commands = vec![
         Command::Rect { area: Area { x: 1.0, y: 1.0, w: w - 2.0, h: h - 2.0 }, fill: Some(color(ERROR_FILL)), stroke: Some((color(ERROR_STROKE), 2.0)), radius: 8.0 },
-        Command::Text { text: module.to_owned(), x: 8.0, y: 6.0, size: 14.0, color: Color::WHITE, align: Align::Left, width: Some(w - 16.0) },
+        Command::Text { text: module.to_owned(), x: 8.0, y: 6.0, size: 14.0, color: Color::WHITE, align: Align::Left, width: Some(w - 16.0), font: None },
     ];
     let per_line = ((w - 16.0) / ERROR_CHAR_WIDTH).max(1.0) as usize;
     let chars: Vec<char> = message.chars().collect();
@@ -279,10 +279,10 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
             break;
         }
         let text = line.iter().collect();
-        commands.push(Command::Text { text, x: 8.0, y, size: ERROR_TEXT_SIZE, color: color(ERROR_STROKE), align: Align::Left, width: Some(w - 16.0) });
+        commands.push(Command::Text { text, x: 8.0, y, size: ERROR_TEXT_SIZE, color: color(ERROR_STROKE), align: Align::Left, width: Some(w - 16.0), font: None });
     }
     let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { anyhow::bail!("the error tile has no {resource}") };
-    let tile = draw::render(&commands, (w as u32, h as u32), font, &mut Images::new(), &no_assets).expect("the error tile draws");
+    let tile = draw::render(&commands, (w as u32, h as u32), font, &mut ResourceCache::new(), &no_assets).expect("the error tile draws");
     DrawnTile { pixels: draw::to_argb(&tile) }
 }
 
@@ -312,7 +312,7 @@ mod tests {
     }
 
     /// A packed module whose folder also has `files`, as (path under assets/, contents).
-    fn module_with(name: &str, script: &str, files: &[(&str, &str)]) -> (Scratch, Installed) {
+    fn module_with(name: &str, script: &str, files: &[(&str, &[u8])]) -> (Scratch, Installed) {
         let dir = std::env::temp_dir().join(format!("glassdeck-widget-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -334,7 +334,7 @@ mod tests {
     }
 
     fn font() -> Font {
-        crate::load_font(&crate::platform::DEFAULT_FONT.into()).unwrap()
+        crate::load_font(None).unwrap()
     }
 
     fn opaque_pixels(tile: &DrawnTile) -> usize {
@@ -367,11 +367,37 @@ mod tests {
             local dot = keyboard.resource("icons/dot.svg")
             return { draw = function(state, ui) ui:image(dot, { x = 0, y = 0, w = 16, h = 16 }) end }
         "##;
-        let (_scratch, installed) = module_with("image", script, &[("keyboard/icons/dot.svg", svg)]);
+        let (_scratch, installed) = module_with("image", script, &[("keyboard/icons/dot.svg", svg.as_bytes())]);
         let mut instance = Instance::start(0, &widget(), installed, None);
         let tile = instance.draw(&font(), &LiveCache::default()).expect("the first draw");
         assert!(matches!(instance.run, Run::Running(_)));
         assert_eq!(opaque_pixels(&tile), 16 * 16);
+    }
+
+    #[test]
+    fn draws_text_in_a_font_the_module_bundles() {
+        let script = r##"
+            local noto = keyboard.resource("fonts/noto.otf")
+            return { draw = function(state, ui) ui:text("漢A", { size = 24, font = noto }) end }
+        "##;
+        let noto = include_bytes!("../../fonts/NotoSansJP-Bold.otf");
+        let (_scratch, installed) = module_with("font", script, &[("keyboard/fonts/noto.otf", noto)]);
+        let mut instance = Instance::start(0, &widget(), installed, None);
+        let tile = instance.draw(&font(), &LiveCache::default()).expect("the first draw");
+        assert!(matches!(instance.run, Run::Running(_)));
+        assert!(opaque_pixels(&tile) > 0);
+    }
+
+    #[test]
+    fn a_font_that_isnt_one_becomes_an_error_tile() {
+        let script = r##"
+            local bad = keyboard.resource("fonts/bad.ttf")
+            return { draw = function(state, ui) ui:text("A", { font = bad }) end }
+        "##;
+        let (_scratch, installed) = module_with("bad-font", script, &[("keyboard/fonts/bad.ttf", b"not a font")]);
+        let mut instance = Instance::start(0, &widget(), installed, None);
+        instance.draw(&font(), &LiveCache::default()).expect("an error tile");
+        assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("as a font")), "{:?}", match &instance.run { Run::Failed(m) => m.as_str(), Run::Running(_) => "running" });
     }
 
     #[test]

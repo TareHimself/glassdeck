@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 
 use anyhow::{Context, Result, anyhow, bail};
-use fontdue::Font;
+use fontdue::{Font, FontSettings};
+use glassdeck_package::Resource;
 use glassdeck_luau::ResourceRef;
 use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use resvg::usvg;
@@ -76,8 +77,9 @@ pub struct Area {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// `width` given: aligned within it and shrunk to fit. Otherwise aligned at `x`.
-    Text { text: String, x: f32, y: f32, size: f32, color: Color, align: Align, width: Option<f32> },
+    /// `width` given: aligned within it and shrunk to fit. Otherwise aligned at `x`. `font`: a
+    /// keyboard resource, or the built-in font when `None`.
+    Text { text: String, x: f32, y: f32, size: f32, color: Color, align: Align, width: Option<f32>, font: Option<Resource> },
     Rect { area: Area, fill: Option<Color>, stroke: Option<(Color, f32)>, radius: f32 },
     Bar { fraction: f32, area: Area, color: Color },
     Graph { values: Vec<f32>, area: Area, color: Color, min: Option<f32>, max: Option<f32> },
@@ -96,14 +98,25 @@ pub type ReadResource<'a> = &'a dyn Fn(&ResourceRef) -> Result<Option<Vec<u8>>>;
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// A module's images, decoded on first use.
-pub struct Images {
+/// A module's images and fonts, decoded on first use.
+pub struct ResourceCache {
     decoded: HashMap<ResourceRef, Image>,
+    fonts: HashMap<Resource, Font>,
 }
 
-impl Images {
+impl ResourceCache {
     pub fn new() -> Self {
-        Self { decoded: HashMap::new() }
+        Self { decoded: HashMap::new(), fonts: HashMap::new() }
+    }
+
+    fn font(&mut self, resource: &Resource, read: ReadResource) -> Result<&Font> {
+        if !self.fonts.contains_key(resource) {
+            let packaged = ResourceRef::Packaged(resource.clone());
+            let bytes = read(&packaged)?.with_context(|| format!("{resource} has no bytes"))?;
+            let font = Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing {resource} as a font: {e}"))?;
+            self.fonts.insert(resource.clone(), font);
+        }
+        Ok(&self.fonts[resource])
     }
 
     /// For a live resource that changed, so the next draw decodes the new bytes.
@@ -142,13 +155,17 @@ pub fn render(
     commands: &[Command],
     size: (u32, u32),
     font: &Font,
-    images: &mut Images,
+    images: &mut ResourceCache,
     read_resource: ReadResource,
 ) -> Result<Pixmap> {
     let mut pixmap = Pixmap::new(size.0, size.1).context("a tile can't be empty")?;
     for command in commands {
         match command {
-            Command::Text { text, x, y, size, color, align, width } => {
+            Command::Text { text, x, y, size, color, align, width, font: chosen } => {
+                let font = match chosen {
+                    Some(resource) => images.font(resource, read_resource)?,
+                    None => font,
+                };
                 draw_text(&mut pixmap, font, text, (*x, *y), *size, *color, *align, *width)
             }
             Command::Rect { area, fill, stroke, radius } => {
@@ -337,7 +354,7 @@ mod tests {
             radius: 0.0,
         }];
         let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
-        let tile = render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).unwrap();
+        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets).unwrap();
         let argb = to_argb(&tile);
         assert_eq!(argb[3 * 8 + 3], 0xFF_FF_00_00);
         assert_eq!(argb[0], 0);
@@ -349,7 +366,7 @@ mod tests {
         let missing = ResourceRef::Packaged(glassdeck_package::Resource { kind: glassdeck_package::ResourceKind::Keyboard, name });
         let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
         let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
-        assert!(render(&commands, (8, 8), &test_font(), &mut Images::new(), &no_assets).is_err());
+        assert!(render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets).is_err());
     }
 
     #[test]
@@ -357,7 +374,7 @@ mod tests {
         let cover = ResourceRef::Live(glassdeck_luau::LiveName::parse("cover").unwrap());
         let commands = [Command::Image { resource: cover, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
         let not_yet = |_: &ResourceRef| -> Result<Option<Vec<u8>>> { Ok(None) };
-        let tile = render(&commands, (8, 8), &test_font(), &mut Images::new(), &not_yet).unwrap();
+        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &not_yet).unwrap();
         assert!(tile.pixels().iter().all(|p| p.alpha() == 0));
     }
 
@@ -370,6 +387,15 @@ mod tests {
     }
 
     fn test_font() -> Font {
-        crate::load_font(&crate::platform::DEFAULT_FONT.into()).unwrap()
+        crate::load_font(None).unwrap()
+    }
+
+    #[test]
+    fn the_built_in_font_draws_latin_cyrillic_and_japanese() {
+        let font = test_font();
+        for c in ['A', 'ж', 'あ', '漢'] {
+            let (metrics, coverage) = font.rasterize(c, 24.0);
+            assert!(metrics.width > 0 && coverage.iter().any(|&a| a > 128), "{c} drew nothing");
+        }
     }
 }

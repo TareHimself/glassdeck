@@ -3,7 +3,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use glassdeck_luau::resource_of;
+use glassdeck_luau::{ResourceRef, resource_of};
+use glassdeck_package::Resource;
 use mlua::{AnyUserData, Function, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::draw::{Align, Area, Color, Command};
@@ -80,7 +81,7 @@ impl UserData for Ui {
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("text", |_, ui, (text, opts): (String, Option<Table>)| {
-            let o = Opts::new("text", opts, &["x", "y", "size", "color", "align", "w"])?;
+            let o = Opts::new("text", opts, &["x", "y", "size", "color", "align", "w", "font"])?;
             let align = o.string("align")?.map(|a| Align::parse(&a)).transpose().map_err(o.wrap())?.unwrap_or(Align::Left);
             let command = Command::Text {
                 text,
@@ -90,6 +91,7 @@ impl UserData for Ui {
                 color: o.color("color")?.unwrap_or(Color::WHITE),
                 align,
                 width: o.optional_number("w")?,
+                font: o.font()?,
             };
             ui.record("text", command)
         });
@@ -182,6 +184,17 @@ impl Opts {
 
     fn string(&self, key: &str) -> mlua::Result<Option<String>> {
         self.get::<String>(key)
+    }
+
+    /// `font`: a .ttf or .otf from `keyboard.resource(...)`.
+    fn font(&self) -> mlua::Result<Option<Resource>> {
+        match self.get::<AnyUserData>("font")? {
+            None => Ok(None),
+            Some(handle) => match resource_of(&handle)? {
+                ResourceRef::Packaged(resource) => Ok(Some(resource)),
+                live @ ResourceRef::Live(_) => Err(self.error(format!("font: {live} can't be a font; bundle it and use keyboard.resource(...)"))),
+            },
+        }
     }
 
     fn color(&self, key: &str) -> mlua::Result<Option<Color>> {

@@ -10,6 +10,8 @@ type TextOptions = {
     align: ("left" | "center" | "right")?,
     -- shrink the text to fit this width
     w: number?,
+    -- a .ttf or .otf the module bundles, from keyboard.resource(...); the built-in font otherwise
+    font: Resource?,
 }
 
 type RectOptions = { fill: string?, stroke: string?, stroke_width: number?, radius: number? }

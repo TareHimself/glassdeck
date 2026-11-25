@@ -4,7 +4,7 @@
 use anyhow::{Result, bail};
 use fontdue::Font;
 
-use super::draw::{self, Align, Area, Color, Command, Images};
+use super::draw::{self, Align, Area, Color, Command, ResourceCache};
 
 const PANEL: Color = Color { r: 0, g: 0, b: 0, a: 150 };
 const TRACK: Color = Color { r: 255, g: 255, b: 255, a: 60 };
@@ -44,11 +44,12 @@ impl Installing {
                 color: Color::WHITE,
                 align: Align::Center,
                 width: Some(w),
+                font: None,
             },
             Command::Rect { area: bar, fill: Some(TRACK), stroke: None, radius: BAR_HEIGHT / 2.0 },
             Command::Bar { fraction: self.fraction, area: bar, color: Color::WHITE },
         ];
-        let tile = draw::render(&commands, size, font, &mut Images::new(), &|name| bail!("the install panel has no asset {name}"))?;
+        let tile = draw::render(&commands, size, font, &mut ResourceCache::new(), &|name| bail!("the install panel has no asset {name}"))?;
         Ok(Some(draw::to_argb(&tile)))
     }
 }
