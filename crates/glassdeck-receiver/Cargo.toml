@@ -13,6 +13,7 @@ glassdeck-layout.workspace = true
 glassdeck-luau.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "serde"] }
 resvg = { version = "0.50.0", default-features = false, features = ["raster-images"] }
+serde.workspace = true
 serde_json.workspace = true
 fontdue.workspace = true
 

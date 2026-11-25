@@ -1,6 +1,8 @@
 use fontdue::Font;
 use glassdeck_layout::{Layout, PANEL_HEIGHT, PANEL_WIDTH, Variant};
 
+use crate::keymap::Keymap;
+
 const KEY_INSET: f32 = 4.0;
 const OUTLINE: usize = 2;
 const OUTLINE_COLOR: u32 = 0xFF_FF_FF;
@@ -20,30 +22,18 @@ pub struct Labels {
     pub variant: Variant,
 }
 
-/// Default labels, in the layout's key order, until profiles bring their own.
-const ANSI_LABELS: [&str; 85] = [
-    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "Delete",
-    "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home",
-    "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "End",
-    "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter", "PgUp",
-    "Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "\u{2191}", "PgDn",
-    "Ctrl", "Win", "Alt", "Alt", "Space", "Fn", "", "", "\u{2190}", "\u{2193}", "\u{2192}",
-];
+/// The ISO Enter key spans two of the layout's rectangles; only the upper one is labelled.
+const ISO_ENTER_LOWER_HALF: usize = 59;
 
-const ISO_LABELS: [&str; 87] = [
-    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "Delete",
-    "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home",
-    "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "Enter", "End",
-    "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "#", "", "PgUp",
-    "Shift", "\\", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "\u{2191}", "PgDn",
-    "Ctrl", "Win", "Alt", "Alt", "Space", "Fn", "", "", "\u{2190}", "\u{2193}", "\u{2192}",
-];
-
-fn default_labels(variant: Variant) -> &'static [&'static str] {
-    match variant {
-        Variant::Ansi => &ANSI_LABELS,
-        Variant::Iso => &ISO_LABELS,
-    }
+/// Labels from the keymap's base layer, in the layout's key order, until profiles bring their own.
+fn default_labels(variant: Variant) -> Vec<String> {
+    let keymap = Keymap::default_for(variant);
+    (0..keymap.keys())
+        .map(|key| match (variant, key) {
+            (Variant::Iso, ISO_ENTER_LOWER_HALF) => String::new(),
+            _ => keymap.label(0, key),
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +58,8 @@ impl Overlay {
         let mut canvas = Canvas { width, height, pixels: Vec::new() };
         let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
         let layout = Layout::new(variant);
-        for (key, &label) in layout.keys.iter().zip(default_labels(variant)) {
+        for (key, label) in layout.keys.iter().zip(default_labels(variant)) {
+            let label = label.as_str();
             let key = Rect {
                 x: (key.x * scale_x + KEY_INSET) as i32,
                 y: (key.y * scale_y + KEY_INSET) as i32,

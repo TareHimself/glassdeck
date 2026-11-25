@@ -1,0 +1,1768 @@
+{
+  "keymaps": {
+    "ansi": {
+      "defaultLayer": 0,
+      "frameLayoutType": "ansi",
+      "layers": [
+        {
+          "frameLayoutType": "ansi",
+          "id": "6f0c3a52-8e1d-4b7a-9c24-31d5e07a1b01",
+          "keyActions": [
+            {
+              "keyCode": "KC_ESCAPE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F1",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F2",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F3",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F4",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F5",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F6",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F7",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F8",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F9",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F10",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F11",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F12",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F13",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F14",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DELETE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_GRAVE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_1",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_2",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_3",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_4",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_5",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_6",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_7",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_8",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_9",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_0",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MINUS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_EQUAL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BACKSPACE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_HOME",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TAB",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Q",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_W",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_E",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_R",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_T",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Y",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_U",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_I",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_O",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_P",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_BRACKET",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_BRACKET",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BACKSLASH",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_END",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_CAPS_LOCK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_A",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_S",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_D",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_G",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_H",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_J",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_K",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_L",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SEMICOLON",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_QUOTE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_ENTER",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_PAGE_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_SHIFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Z",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_X",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_C",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_V",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_B",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_N",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_M",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_COMMA",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DOT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SLASH",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_SHIFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_PAGE_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_CTRL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_GUI",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_ALT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_GLOBE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SPACE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_ALT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "layerControlType": "momentaryLayer",
+              "targetLayer": 1,
+              "type": 2
+            },
+            {
+              "keyCode": "KC_RIGHT_CTRL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT",
+              "modifiers": null,
+              "type": 0
+            }
+          ],
+          "name": "Base"
+        },
+        {
+          "frameLayoutType": "ansi",
+          "id": "6f0c3a52-8e1d-4b7a-9c24-31d5e07a1b02",
+          "keyActions": [
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BRIGHTNESS_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BRIGHTNESS_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MISSION_CONTROL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LAUNCHPAD",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_PREV_TRACK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_PLAY_PAUSE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_NEXT_TRACK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_MUTE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_VOL_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_VOL_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_BRIGHTNESS_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_BRIGHTNESS_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PROFILE_CYCLE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PROFILE_CYCLE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_ACTUATION_MODE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_ACTUATION_MODE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_THEME_CYCLE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_THEME_CYCLE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_START_PAUSE_POMODORO",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_RESET_POMODORO",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_WINDOWS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_MACOS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_LINUX",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_AUTO_PROFILE_LOCK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            }
+          ],
+          "name": "FN"
+        }
+      ],
+      "name": "OpenFlux ANSI"
+    },
+    "iso": {
+      "defaultLayer": 0,
+      "frameLayoutType": "iso",
+      "layers": [
+        {
+          "frameLayoutType": "iso",
+          "id": "6f0c3a52-8e1d-4b7a-9c24-31d5e07a1b11",
+          "keyActions": [
+            {
+              "keyCode": "KC_ESCAPE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F1",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F2",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F3",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F4",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F5",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F6",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F7",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F8",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F9",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F10",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F11",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F12",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F13",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F14",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DELETE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_GRAVE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_1",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_2",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_3",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_4",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_5",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_6",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_7",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_8",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_9",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_0",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MINUS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_EQUAL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BACKSPACE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_HOME",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TAB",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Q",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_W",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_E",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_R",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_T",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Y",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_U",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_I",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_O",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_P",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_BRACKET",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_BRACKET",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_ENTER",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_END",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_CAPS_LOCK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_A",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_S",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_D",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_F",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_G",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_H",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_J",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_K",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_L",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SEMICOLON",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_QUOTE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_NONUS_HASH",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_ENTER",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_PAGE_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_SHIFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BACKSLASH",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_Z",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_X",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_C",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_V",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_B",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_N",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_M",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_COMMA",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DOT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SLASH",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_SHIFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_PAGE_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_CTRL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_GUI",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT_ALT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_GLOBE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_SPACE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT_ALT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "layerControlType": "momentaryLayer",
+              "targetLayer": 1,
+              "type": 2
+            },
+            {
+              "keyCode": "KC_RIGHT_CTRL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LEFT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_RIGHT",
+              "modifiers": null,
+              "type": 0
+            }
+          ],
+          "name": "Base"
+        },
+        {
+          "frameLayoutType": "iso",
+          "id": "6f0c3a52-8e1d-4b7a-9c24-31d5e07a1b12",
+          "keyActions": [
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BRIGHTNESS_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_BRIGHTNESS_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MISSION_CONTROL",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_LAUNCHPAD",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_PREV_TRACK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_PLAY_PAUSE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_MEDIA_NEXT_TRACK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_MUTE",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_VOL_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_AUDIO_VOL_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_BRIGHTNESS_DOWN",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_BRIGHTNESS_UP",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PROFILE_CYCLE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PROFILE_CYCLE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_ACTUATION_MODE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_ACTUATION_MODE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_THEME_CYCLE_PREV",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_THEME_CYCLE_NEXT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_START_PAUSE_POMODORO",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_RESET_POMODORO",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_WINDOWS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_MACOS",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_PLATFORM_LINUX",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_OF_AUTO_PROFILE_LOCK",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            },
+            {
+              "keyCode": "KC_TRANSPARENT",
+              "modifiers": null,
+              "type": 0
+            }
+          ],
+          "name": "FN"
+        }
+      ],
+      "name": "OpenFlux ISO"
+    }
+  },
+  "macros": {},
+  "selectedFrameLayoutType": "ansi"
+}

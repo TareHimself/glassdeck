@@ -1,4 +1,5 @@
 mod director;
+mod keymap;
 mod local;
 mod mailbox;
 mod mp4;
