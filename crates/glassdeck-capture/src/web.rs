@@ -1,10 +1,12 @@
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use glassdeck_deck::{Deck, Entry};
 use glassdeck_proto::unix_micros;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -22,12 +24,31 @@ use crate::gpu::GpuEncoder;
 use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat, request_stop, stop_requested};
 
 const POLL: Duration = Duration::from_millis(50);
+/// Pages inside a deck load from here; the shim serves each path from the deck's entry of that name.
+pub const DECK_ORIGIN: &str = "deck://wallpaper/";
 
 type FrameFn = extern "C" fn(user: *mut c_void, shared_handle: *mut c_void, width: u32, height: u32, timestamp_us: u64);
 
+#[repr(C)]
+struct DeckProvider {
+    user: *mut c_void,
+    lookup: extern "C" fn(*mut c_void, *const c_char, *mut u64, *mut u64, *mut c_char, u32) -> i32,
+    read: extern "C" fn(*mut c_void, u64, u64, u64, *mut c_void, u32) -> i64,
+}
+
 unsafe extern "C" {
     fn gd_web_subprocess() -> i32;
-    fn gd_web_start(url: *const i8, init_script: *const i8, width: u32, height: u32, fps: u32, cache_dir: *const i8, on_frame: FrameFn, user: *mut c_void) -> i32;
+    fn gd_web_start(
+        url: *const c_char,
+        init_script: *const c_char,
+        deck: *const DeckProvider,
+        width: u32,
+        height: u32,
+        fps: u32,
+        cache_dir: *const c_char,
+        on_frame: FrameFn,
+        user: *mut c_void,
+    ) -> i32;
     fn gd_web_stop();
 }
 
@@ -41,6 +62,7 @@ pub fn helper_process_exit_code() -> Option<i32> {
 pub struct WebSource {
     url: CString,
     init_script: CString,
+    deck: Option<Arc<Deck>>,
     format: VideoFormat,
     settings: EncoderSettings,
     duration: Option<Duration>,
@@ -51,6 +73,7 @@ impl WebSource {
         Ok(Self {
             url: CString::new(url).context("URL contains a NUL byte")?,
             init_script: CString::default(),
+            deck: None,
             format: VideoFormat {
                 codec: settings.codec,
                 width: u16::try_from(settings.width).context("page too wide")?,
@@ -64,6 +87,11 @@ impl WebSource {
     /// Runs `script` in the page before the page's own scripts, as Wallpaper Engine's hooks need.
     pub fn with_init_script(self, script: &str) -> Result<Self> {
         Ok(Self { init_script: CString::new(script).context("init script contains a NUL byte")?, ..self })
+    }
+
+    /// Serves `deck://wallpaper/<entry>` from the deck while the page runs.
+    pub fn with_deck(self, deck: Arc<Deck>) -> Self {
+        Self { deck: Some(deck), ..self }
     }
 }
 
@@ -85,8 +113,25 @@ impl FrameSource for WebSource {
 
         let cache = CString::new(std::env::temp_dir().join("glassdeck-cef").to_string_lossy().as_bytes())?;
         let user = (&*sink as *const Mutex<FrameSink>).cast_mut().cast();
-        let started =
-            unsafe { gd_web_start(self.url.as_ptr(), self.init_script.as_ptr(), width, height, self.settings.fps, cache.as_ptr(), on_frame, user) };
+        let provider = self.deck.as_ref().map(|deck| DeckProvider {
+            user: Arc::as_ptr(deck).cast_mut().cast(),
+            lookup: deck_lookup,
+            read: deck_read,
+        });
+        let provider_ptr = provider.as_ref().map_or(std::ptr::null(), |p| p as *const DeckProvider);
+        let started = unsafe {
+            gd_web_start(
+                self.url.as_ptr(),
+                self.init_script.as_ptr(),
+                provider_ptr,
+                width,
+                height,
+                self.settings.fps,
+                cache.as_ptr(),
+                on_frame,
+                user,
+            )
+        };
         ensure!(started == 0, "CEF failed to start (step {started})");
         // Chromium adds a console handler that quits at once; Windows asks the newest handler first.
         unsafe { SetConsoleCtrlHandler(Some(on_console_signal), true) }.context("installing the Ctrl+C handler")?;
@@ -217,6 +262,66 @@ impl FrameSink {
             println!("CEF frames are {:?}", source.Format);
             texture.context("CreateTexture2D returned nothing")
         }
+    }
+}
+
+extern "C" fn deck_lookup(user: *mut c_void, path: *const c_char, offset: *mut u64, len: *mut u64, mime: *mut c_char, mime_cap: u32) -> i32 {
+    let deck = unsafe { &*(user as *const Deck) };
+    let Ok(path) = unsafe { CStr::from_ptr(path) }.to_str() else { return 1 };
+    let Some(entry) = deck.entry(path) else {
+        eprintln!("deck: the page asked for {path:?}, which the deck does not hold");
+        return 1;
+    };
+    let kind = mime_type(path).as_bytes();
+    let n = kind.len().min(mime_cap.saturating_sub(1) as usize);
+    unsafe {
+        *offset = entry.offset;
+        *len = entry.len;
+        std::ptr::copy_nonoverlapping(kind.as_ptr(), mime.cast::<u8>(), n);
+        *mime.add(n) = 0;
+    }
+    0
+}
+
+extern "C" fn deck_read(user: *mut c_void, offset: u64, len: u64, at: u64, buf: *mut c_void, buf_len: u32) -> i64 {
+    let deck = unsafe { &*(user as *const Deck) };
+    let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_len as usize) };
+    match deck.read_range(Entry { offset, len }, at, buf) {
+        Ok(n) => n as i64,
+        Err(e) => {
+            eprintln!("deck: {e:#}");
+            -1
+        }
+    }
+}
+
+/// Content types by extension, for what web wallpapers load.
+fn mime_type(path: &str) -> &'static str {
+    let ext = path.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "html" | "htm" => "text/html",
+        "js" | "mjs" => "text/javascript",
+        "css" => "text/css",
+        "json" | "map" => "application/json",
+        "wasm" => "application/wasm",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "txt" => "text/plain",
+        "xml" => "application/xml",
+        _ => "application/octet-stream",
     }
 }
 

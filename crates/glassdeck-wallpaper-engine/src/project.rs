@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// A Wallpaper Engine item's `project.json`, parsed into what Glassdeck can act on.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,14 +110,12 @@ fn kind(declared: Option<String>, file: Option<String>, dependency: Option<Strin
     })
 }
 
-/// What WE passes to `applyUserProperties`: each property as `{ value }`, keyed by name.
-pub fn user_properties_json(properties: &BTreeMap<String, Property>) -> Value {
-    Value::Object(
-        properties
-            .iter()
-            .map(|(name, p)| (name.clone(), serde_json::json!({ "type": p.kind, "value": p.value })))
-            .collect(),
-    )
+/// What WE passes to `applyUserProperties`: each property as `{ type, value }`, keyed by name.
+pub fn user_properties(properties: &BTreeMap<String, Property>) -> Map<String, Value> {
+    properties
+        .iter()
+        .map(|(name, p)| (name.clone(), serde_json::json!({ "type": p.kind, "value": p.value })))
+        .collect()
 }
 
 #[cfg(test)]
@@ -154,7 +152,7 @@ mod tests {
     fn user_properties_carry_their_values() {
         let project = parse(br#"{"type":"web","file":"i.html","general":{"properties":{"speed":{"type":"slider","value":3}}}}"#).unwrap();
         assert_eq!(
-            user_properties_json(&project.properties),
+            Value::Object(user_properties(&project.properties)),
             serde_json::json!({ "speed": { "type": "slider", "value": 3 } })
         );
     }

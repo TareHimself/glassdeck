@@ -1,4 +1,6 @@
 mod clock;
+mod deck_source;
+mod deck_stream;
 mod desktop;
 mod gpu;
 mod link;
@@ -20,7 +22,8 @@ use clap::{Parser, Subcommand};
 use desktop::{DesktopSource, EncoderKind};
 use monitors::MonitorQuery;
 use pipeline::{EncoderSettings, LinkOptions, Source, VideoCodec};
-use play::FileSource;
+use deck_source::WebEncoding;
+use play::{FileSource, Media};
 use record::RecordOptions;
 use wallpaper::WallpaperAction;
 use web::WebSource;
@@ -52,15 +55,24 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         fps: u32,
     },
-    /// Send an H.264 or HEVC video file or a .deck bundle to a receiver, paced by its timestamps, without re-encoding
+    /// Send an H.264 or HEVC video file without re-encoding, or play a .deck (video or web)
     Play {
-        /// A video file, or a .deck folder
+        /// A video file, or a .deck
         file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:7878")]
         to: SocketAddr,
         /// Start over at the end, for wallpapers
         #[arg(long = "loop")]
         looping: bool,
+        /// Web decks: frames per second to render
+        #[arg(long, default_value_t = 60)]
+        fps: u32,
+        /// Web decks: encoder bitrate
+        #[arg(long, default_value_t = 12)]
+        mbps: u32,
+        /// Web decks: stop after this many seconds
+        #[arg(long)]
+        seconds: Option<u64>,
         /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
         #[arg(long, default_value_t = USB2_PRACTICAL_MBYTES_PER_SEC, conflicts_with = "unlimited_link")]
         link_mbytes: u64,
@@ -170,10 +182,14 @@ fn main() -> Result<()> {
             let source = WebSource::new(&url, settings, seconds.map(Duration::from_secs))?;
             pipeline::run(Source::Frames(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
-        Command::Play { file, to, looping, link_mbytes, unlimited_link } => {
-            let video = if glassdeck_deck::is_deck(&file) { glassdeck_deck::Deck::open(&file)?.video() } else { file };
-            let source = FileSource::open(&video, looping)?;
-            pipeline::run(Source::Encoded(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
+        Command::Play { file, to, looping, fps, mbps, seconds, link_mbytes, unlimited_link } => {
+            let source = if glassdeck_deck::is_deck(&file) {
+                let web = WebEncoding { fps, bitrate: mbps * 1_000_000, duration: seconds.map(Duration::from_secs) };
+                deck_source::open(glassdeck_deck::Deck::open(&file)?, looping, web)?
+            } else {
+                Source::Encoded(Box::new(FileSource::open(Media::File(file), looping)?))
+            };
+            pipeline::run(source, link_options(to, link_mbytes, unlimited_link))
         }
         Command::Wallpaper { action } => wallpaper::run(action),
         Command::Stream {

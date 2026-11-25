@@ -1,18 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+use glassdeck_deck::{Deck, Entry};
 use glassdeck_proto::Codec;
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, IMFSourceReader, MF_E_ATTRIBUTENOTFOUND, MF_MT_FRAME_SIZE, MF_MT_MINIMUM_DISPLAY_APERTURE,
     MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE, MFVideoArea,
     MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
-    MF_VERSION, MFCreateSourceReaderFromURL, MFSTARTUP_FULL, MFSampleExtension_CleanPoint,
+    MF_VERSION, MFCreateSourceReaderFromByteStream, MFCreateSourceReaderFromURL, MFSTARTUP_FULL, MFSampleExtension_CleanPoint,
     MFStartup, MFVideoFormat_H264, MFVideoFormat_HEVC,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::HSTRING;
 
+use crate::deck_stream::mp4_byte_stream;
 use crate::pipeline::{EncodedFrame, EncodedSource, VideoFormat};
 
 const HUNDRED_NS_PER_US: i64 = 10;
@@ -33,9 +37,24 @@ struct Sample {
     data: Vec<u8>,
 }
 
-/// A video file sent as it is, never re-encoded: a paced, encoded source.
+/// Where an MP4 comes from: a file of its own, or an entry read in place from a deck.
+pub enum Media {
+    File(PathBuf),
+    DeckEntry { deck: Arc<Deck>, entry: Entry },
+}
+
+impl fmt::Display for Media {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::DeckEntry { deck, .. } => write!(f, "{}", deck.path().display()),
+        }
+    }
+}
+
+/// A video sent as it is, never re-encoded: a paced, encoded source.
 pub struct FileSource {
-    path: PathBuf,
+    media: Media,
     looping: bool,
     file: VideoFile,
     format: VideoFormat,
@@ -45,12 +64,12 @@ pub struct FileSource {
 }
 
 impl FileSource {
-    pub fn open(path: &Path, looping: bool) -> Result<Self> {
+    pub fn open(media: Media, looping: bool) -> Result<Self> {
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
             MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
         }
-        let file = VideoFile::open(path)?;
+        let file = VideoFile::open(&media)?;
         if (file.width, file.height) != PANEL {
             bail!(
                 "{}x{} needs re-encoding to {}x{}, which play does not do yet",
@@ -58,8 +77,8 @@ impl FileSource {
             );
         }
         let format = VideoFormat { codec: file.codec, width: file.width as u16, height: file.height as u16 };
-        println!("Playing {} ({:?} {}x{}) without re-encoding", path.display(), file.codec, file.width, file.height);
-        Ok(Self { path: path.to_path_buf(), looping, file, format, seq: 0, loop_offset_us: 0, last_pts_us: 0 })
+        println!("Playing {media} ({:?} {}x{}) without re-encoding", file.codec, file.width, file.height);
+        Ok(Self { media, looping, file, format, seq: 0, loop_offset_us: 0, last_pts_us: 0 })
     }
 }
 
@@ -72,11 +91,11 @@ impl EncodedSource for FileSource {
         let sample = match self.file.next_sample()? {
             Some(sample) => sample,
             None if self.looping => {
-                self.file = VideoFile::open(&self.path)?;
+                self.file = VideoFile::open(&self.media)?;
                 self.loop_offset_us = self.last_pts_us + 1;
                 match self.file.next_sample()? {
                     Some(sample) => sample,
-                    None => bail!("{} has no frames", self.path.display()),
+                    None => bail!("{} has no frames", self.media),
                 }
             }
             None => return Ok(None),
@@ -90,10 +109,18 @@ impl EncodedSource for FileSource {
 }
 
 impl VideoFile {
-    fn open(path: &Path) -> Result<Self> {
-        let url = HSTRING::from(std::path::absolute(path).context("finding the video file")?.as_os_str());
+    fn open(media: &Media) -> Result<Self> {
         unsafe {
-            let reader = MFCreateSourceReaderFromURL(&url, None).context("opening the video file")?;
+            let reader = match media {
+                Media::File(path) => {
+                    let url = HSTRING::from(std::path::absolute(path).context("finding the video file")?.as_os_str());
+                    MFCreateSourceReaderFromURL(&url, None).context("opening the video file")?
+                }
+                Media::DeckEntry { deck, entry } => {
+                    let bytes = mp4_byte_stream(deck.clone(), *entry)?;
+                    MFCreateSourceReaderFromByteStream(&bytes, None).context("opening the deck's video")?
+                }
+            };
             reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
             reader.SetStreamSelection(VIDEO, true)?;
             let native: IMFMediaType = reader.GetNativeMediaType(VIDEO, 0).context("the file has no video stream")?;
