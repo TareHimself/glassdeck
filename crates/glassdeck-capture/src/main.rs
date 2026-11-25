@@ -1,12 +1,11 @@
 mod clock;
+mod desktop;
 mod gpu;
 mod link;
 mod monitors;
 mod play;
 mod record;
 mod software;
-mod stream;
-mod transport;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -18,7 +17,7 @@ use clap::{Parser, Subcommand};
 use monitors::MonitorQuery;
 use play::PlayOptions;
 use record::RecordOptions;
-use stream::{EncoderKind, StreamOptions, VideoCodec};
+use desktop::{EncoderKind, StreamOptions, VideoCodec};
 
 const USB2_PRACTICAL_MBYTES_PER_SEC: u64 = 35;
 
@@ -139,7 +138,7 @@ fn main() -> Result<()> {
             let found = monitors::find(&monitor)?;
             let link_bytes_per_sec = (!unlimited_link).then_some(link_mbytes * 1_000_000);
             println!("Streaming {} to {to}", found.info);
-            stream::run(
+            desktop::run(
                 found,
                 StreamOptions {
                     to,

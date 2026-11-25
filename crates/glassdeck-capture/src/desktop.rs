@@ -16,7 +16,7 @@ use windows_capture::settings::{
 };
 
 use crate::gpu::GpuEncoder;
-use crate::transport::{Transport, new_stream_id};
+use crate::link::{Link, new_stream_id};
 use crate::monitors::FoundMonitor;
 use crate::software::SoftwareEncoder;
 
@@ -92,7 +92,7 @@ enum Backend {
     Software(SoftwareEncoder),
 }
 
-struct Streamer {
+struct DesktopSource {
     backend: Backend,
     size: (u32, u32),
     duration: Option<Duration>,
@@ -101,7 +101,7 @@ struct Streamer {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-impl GraphicsCaptureApiHandler for Streamer {
+impl GraphicsCaptureApiHandler for DesktopSource {
     type Flags = Flags;
     type Error = BoxError;
 
@@ -147,8 +147,8 @@ impl GraphicsCaptureApiHandler for Streamer {
 }
 
 pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
-    let mut transport = Transport::connect(options.to, options.link_bytes_per_sec)?;
-    let clock = transport.sync_clock()?;
+    let mut link = Link::connect(options.to, options.link_bytes_per_sec)?;
+    let clock = link.sync_clock()?;
     println!(
         "Receiver clock is {:+.1} ms from ours (probe round trip {:.1} ms)",
         clock.offset_us() as f64 / 1000.0,
@@ -163,7 +163,7 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
     };
 
     let (tx, rx) = mpsc::sync_channel(QUEUED_FRAMES);
-    let network = thread::spawn(move || send_loop(transport, info, rx));
+    let network = thread::spawn(move || send_loop(link, info, rx));
 
     let flags = Flags {
         tx,
@@ -190,19 +190,19 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
         flags,
     );
 
-    let capture = Streamer::start(settings);
+    let capture = DesktopSource::start(settings);
     let network = network.join().expect("network thread panicked");
     network.context("sending to receiver")?;
     capture.map_err(|e| anyhow!("capture failed: {e}"))
 }
 
-fn send_loop(mut transport: Transport, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
-    transport.send(&Message::StreamStart(info))?;
+fn send_loop(mut link: Link, info: StreamInfo, rx: Receiver<EncodedFrame>) -> Result<()> {
+    link.send(&Message::StreamStart(info))?;
     let mut stats = SendStats::new(Instant::now());
 
     for frame in rx {
         let sent = SentFrame { bytes: frame.data.len(), keyframe: frame.keyframe, encode_time: frame.encode_time };
-        let link_wait = transport.send(&Message::Frame(Frame {
+        let link_wait = link.send(&Message::Frame(Frame {
             stream_id: info.stream_id,
             seq: frame.seq,
             time_us: frame.capture_us,
@@ -217,7 +217,7 @@ fn send_loop(mut transport: Transport, info: StreamInfo, rx: Receiver<EncodedFra
             stats = SendStats::new(now);
         }
     }
-    transport.send(&Message::StreamEnd { stream_id: info.stream_id })?;
+    link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
     Ok(())
 }
 

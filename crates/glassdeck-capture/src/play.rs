@@ -14,7 +14,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::HSTRING;
 
-use crate::transport::{Transport, new_stream_id};
+use crate::link::{Link, new_stream_id};
 
 /// Frames go out this far ahead of their presentation time, inside the receiver's playout delay.
 const SEND_AHEAD: Duration = Duration::from_millis(100);
@@ -63,8 +63,8 @@ pub fn run(path: &Path, options: PlayOptions) -> Result<()> {
     };
     println!("Playing {} ({:?} {}x{}) without re-encoding", path.display(), file.codec, file.width, file.height);
 
-    let mut transport = Transport::connect(options.to, options.link_bytes_per_sec)?;
-    transport.send(&Message::StreamStart(info))?;
+    let mut link = Link::connect(options.to, options.link_bytes_per_sec)?;
+    link.send(&Message::StreamStart(info))?;
 
     let started = Instant::now();
     let mut seq = 0;
@@ -86,7 +86,7 @@ pub fn run(path: &Path, options: PlayOptions) -> Result<()> {
         let send_at = started + Duration::from_micros(pts_us.saturating_sub(first));
         thread::sleep(send_at.saturating_duration_since(Instant::now() + SEND_AHEAD));
 
-        transport.send(&Message::Frame(Frame {
+        link.send(&Message::Frame(Frame {
             stream_id: info.stream_id,
             seq,
             time_us: pts_us,
@@ -95,7 +95,7 @@ pub fn run(path: &Path, options: PlayOptions) -> Result<()> {
         }))?;
         seq += 1;
     }
-    transport.send(&Message::StreamEnd { stream_id: info.stream_id })?;
+    link.send(&Message::StreamEnd { stream_id: info.stream_id })?;
     println!("Sent {seq} frames");
     Ok(())
 }

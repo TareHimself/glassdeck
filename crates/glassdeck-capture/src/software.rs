@@ -12,7 +12,7 @@ use windows_capture::frame::Frame;
 
 use glassdeck_proto::Codec;
 
-use crate::stream::{EncodedFrame, EncoderSettings};
+use crate::desktop::{EncodedFrame, EncoderSettings};
 
 pub struct SoftwareEncoder {
     output: SyncSender<EncodedFrame>,

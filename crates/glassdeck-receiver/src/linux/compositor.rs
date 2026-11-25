@@ -49,7 +49,7 @@ struct ColorProperties {
 
 /// Drives the screen directly: decoded pictures are scanned out of the decoder's buffers by a
 /// video plane, and the key labels sit on the primary plane above it, blended by the display controller.
-pub struct Display {
+pub struct Compositor {
     card: Card,
     crtc: crtc::Handle,
     video_plane: plane::Handle,
@@ -60,7 +60,7 @@ pub struct Display {
     _labels: Surface,
 }
 
-impl Display {
+impl Compositor {
     pub fn open(font: Option<Font>) -> Result<Self> {
         let card = Card(OpenOptions::new().read(true).write(true).open(CARD).with_context(|| format!("opening {CARD}"))?);
         card.set_client_capability(ClientCapability::UniversalPlanes, true)

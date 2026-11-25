@@ -42,7 +42,7 @@ use windows::Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::System::Variant::{VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4};
 use windows::core::{GUID, Interface, PWSTR};
 
-use crate::stream::{EncodedFrame, EncoderSettings};
+use crate::desktop::{EncodedFrame, EncoderSettings};
 
 const QUEUED_FRAMES: usize = 2;
 const HUNDRED_NS_PER_US: u64 = 10;

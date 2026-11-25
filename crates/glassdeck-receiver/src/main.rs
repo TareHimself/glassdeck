@@ -21,7 +21,7 @@ use clap::Parser;
 use fontdue::{Font, FontSettings};
 use glassdeck_proto::{Action, Message, Mode, SessionState, StreamInfo, step, unix_micros};
 
-use platform::{Decoder, Display, Picture};
+use platform::{Compositor, Decoder, Picture};
 use playout::PlayoutClock;
 use stats::{FrameTimes, LatencyStats};
 
@@ -76,14 +76,14 @@ impl Mailbox {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let font = if cli.no_labels { None } else { Some(load_font(&cli.font)?) };
-    let display = Display::open(font)?;
+    let compositor = Compositor::open(font)?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer))?;
-    display_loop(&mailbox, display)
+    compose_loop(&mailbox, compositor)
 }
 
 fn load_font(path: &PathBuf) -> Result<Font> {
@@ -175,17 +175,17 @@ fn wait_until(due_us: u64) -> u64 {
     }
 }
 
-fn display_loop(mailbox: &Mailbox, mut display: Display) -> Result<()> {
+fn compose_loop(mailbox: &Mailbox, mut compositor: Compositor) -> Result<()> {
     let mut stats = LatencyStats::default();
     let mut stats_since = Instant::now();
 
-    while display.is_open() {
+    while compositor.is_open() {
         let (frame, replaced) = mailbox.take();
         stats = stats.replaced(replaced);
 
         match frame {
             Some(ShownFrame { picture, timing }) => {
-                display.show(picture)?;
+                compositor.show(picture)?;
                 stats = match timing {
                     Timing::Live { capture_us, received_us, decoded_us } => stats.record(FrameTimes {
                         capture_us,
@@ -197,7 +197,7 @@ fn display_loop(mailbox: &Mailbox, mut display: Display) -> Result<()> {
                 };
             }
             None => {
-                display.idle();
+                compositor.idle();
                 thread::sleep(IDLE_POLL);
             }
         }
@@ -205,7 +205,7 @@ fn display_loop(mailbox: &Mailbox, mut display: Display) -> Result<()> {
         if stats_since.elapsed() >= STATS_INTERVAL {
             if let Some(summary) = stats.summary(stats_since.elapsed().as_secs_f64()) {
                 println!("recv: {summary}");
-                display.set_status(&summary);
+                compositor.set_status(&summary);
             }
             stats = LatencyStats::default();
             stats_since = Instant::now();

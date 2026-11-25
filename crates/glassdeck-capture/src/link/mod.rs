@@ -6,31 +6,34 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use glassdeck_proto::{Message, unix_micros};
 
+mod simulated;
+
 use crate::clock::{ClockSample, best_sample};
-use crate::link::SimulatedLink;
+use simulated::SimulatedLink;
 
 const CLOCK_PROBES: usize = 8;
 
-pub struct Transport {
+/// The sender's end of the link: the protocol over a socket, optionally throttled like USB 2.0.
+pub struct Link {
     socket: TcpStream,
-    link: Option<SimulatedLink>,
+    simulated: Option<SimulatedLink>,
 }
 
-impl Transport {
+impl Link {
     pub fn connect(to: SocketAddr, link_bytes_per_sec: Option<u64>) -> Result<Self> {
         let socket = TcpStream::connect(to).with_context(|| format!("connecting to receiver at {to}"))?;
         socket.set_nodelay(true)?;
-        let link = link_bytes_per_sec.map(|rate| SimulatedLink::new(rate, Instant::now()));
-        Ok(Self { socket, link })
+        let simulated = link_bytes_per_sec.map(|rate| SimulatedLink::new(rate, Instant::now()));
+        Ok(Self { socket, simulated })
     }
 
     /// Sends one message, first waiting as long as the simulated link would take. Returns that wait.
     pub fn send(&mut self, message: &Message) -> Result<Duration> {
         let bytes = message.encode();
-        let wait = match self.link {
-            Some(link) => {
-                let (next, done) = link.transfer(bytes.len(), Instant::now());
-                self.link = Some(next);
+        let wait = match self.simulated {
+            Some(simulated) => {
+                let (next, done) = simulated.transfer(bytes.len(), Instant::now());
+                self.simulated = Some(next);
                 let wait = done.saturating_duration_since(Instant::now());
                 thread::sleep(wait);
                 wait
@@ -42,7 +45,7 @@ impl Transport {
     }
 }
 
-impl Transport {
+impl Link {
     /// Probes the receiver's clock before a live stream; the result goes in `Mode::Live`.
     pub fn sync_clock(&mut self) -> Result<ClockSample> {
         let mut samples = Vec::with_capacity(CLOCK_PROBES);

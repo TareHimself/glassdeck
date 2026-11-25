@@ -1,9 +1,9 @@
-mod display;
+mod compositor;
 mod mpp;
 
 use anyhow::Result;
 
-pub use display::Display;
+pub use compositor::Compositor;
 pub use mpp::{Decoder, Picture};
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";

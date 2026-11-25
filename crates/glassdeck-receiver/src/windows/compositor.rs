@@ -8,13 +8,13 @@ use crate::overlay::Overlay;
 const UNTHROTTLED: usize = 0;
 
 /// A desktop window standing in for the keyboard panel; key labels are blended on the CPU.
-pub struct Display {
+pub struct Compositor {
     font: Option<Font>,
     window: Option<Window>,
     overlay: Option<Overlay>,
 }
 
-impl Display {
+impl Compositor {
     pub fn open(font: Option<Font>) -> Result<Self> {
         Ok(Self { font, window: None, overlay: None })
     }
