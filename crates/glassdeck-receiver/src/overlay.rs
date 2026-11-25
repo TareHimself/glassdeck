@@ -60,15 +60,28 @@ impl Overlay {
         Self { width, height, pixels: canvas.pixels }
     }
 
+    #[cfg(windows)]
     pub fn fits(&self, width: usize, height: usize) -> bool {
         (self.width, self.height) == (width, height)
     }
 
+    #[cfg(windows)]
     pub fn composite_onto(&self, frame: &mut [u32]) {
         for p in &self.pixels {
             let dst = &mut frame[p.index as usize];
             *dst = blend(*dst, p.color, p.alpha);
         }
+    }
+
+    /// The labels as a premultiplied-alpha ARGB image, for a display plane that blends in hardware.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn premultiplied_argb(&self) -> Vec<u32> {
+        let mut image = vec![0u32; self.width * self.height];
+        for p in &self.pixels {
+            let dst = &mut image[p.index as usize];
+            *dst = over_premultiplied(*dst, p.color, p.alpha);
+        }
+        image
     }
 }
 
@@ -130,6 +143,7 @@ impl Canvas {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn blend(dst: u32, src: u32, alpha: u8) -> u32 {
     let a = alpha as u32;
     let mix = |shift: u32| {
@@ -138,6 +152,16 @@ fn blend(dst: u32, src: u32, alpha: u8) -> u32 {
         ((s * a + d * (255 - a) + 127) / 255) << shift
     };
     mix(16) | mix(8) | mix(0)
+}
+
+/// Porter-Duff "source over" for a straight-alpha source onto a premultiplied ARGB destination.
+#[cfg_attr(windows, allow(dead_code))]
+fn over_premultiplied(dst: u32, color: u32, alpha: u8) -> u32 {
+    let a = alpha as u32;
+    let keep = 255 - a;
+    let scale = |v: u32| (v * keep + 127) / 255;
+    let channel = |shift: u32| ((((color >> shift) & 0xFF) * a + 127) / 255 + scale((dst >> shift) & 0xFF)) << shift;
+    (a + scale(dst >> 24)) << 24 | channel(16) | channel(8) | channel(0)
 }
 
 #[cfg(test)]
@@ -157,6 +181,22 @@ mod tests {
     #[test]
     fn half_blend_mixes_each_channel() {
         assert_eq!(blend(0x00_00_00, 0xFE_FE_FE, 128), 0x7F_7F_7F);
+    }
+
+    #[test]
+    fn opaque_label_pixel_is_stored_as_is() {
+        assert_eq!(over_premultiplied(0, 0xAB_CD_EF, 255), 0xFF_AB_CD_EF);
+    }
+
+    #[test]
+    fn translucent_label_pixel_is_premultiplied() {
+        assert_eq!(over_premultiplied(0, 0xFF_FF_FF, 128), 0x80_80_80_80);
+    }
+
+    #[test]
+    fn label_over_shadow_stays_opaque_where_the_shadow_was() {
+        let shadow = over_premultiplied(0, 0x00_00_00, 255);
+        assert_eq!(over_premultiplied(shadow, 0xFF_FF_FF, 128), 0xFF_80_80_80);
     }
 
     #[test]

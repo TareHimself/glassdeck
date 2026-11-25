@@ -1,8 +1,13 @@
-mod decode;
 mod overlay;
 mod playout;
 mod stats;
-mod yuv;
+
+#[cfg(target_os = "linux")]
+#[path = "linux/mod.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "windows/mod.rs"]
+mod platform;
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -14,23 +19,20 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use fontdue::{Font, FontSettings};
 use glassdeck_proto::{Action, Message, Mode, SessionState, StreamInfo, step, unix_micros};
-use minifb::{Key, Window, WindowOptions};
 
-use decode::{Decoder, Picture};
-use overlay::Overlay;
+use platform::{Decoder, Display, Picture};
 use playout::PlayoutClock;
 use stats::{FrameTimes, LatencyStats};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_POLL: Duration = Duration::from_millis(1);
-const UNTHROTTLED: usize = 0;
 
 #[derive(Parser)]
 #[command(about = "Stand-in for the keyboard: decode streams and show them with key labels")]
 struct Cli {
-    #[arg(long, default_value = "127.0.0.1:7878")]
+    #[arg(long, default_value = platform::DEFAULT_LISTEN)]
     listen: SocketAddr,
-    #[arg(long, default_value = r"C:\Windows\Fonts\segoeuib.ttf")]
+    #[arg(long, default_value = platform::DEFAULT_FONT)]
     font: PathBuf,
     /// Show the stream without key labels
     #[arg(long)]
@@ -73,13 +75,14 @@ impl Mailbox {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let font = if cli.no_labels { None } else { Some(load_font(&cli.font)?) };
+    let display = Display::open(font)?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer))?;
-    display_loop(&mailbox, font.as_ref())
+    display_loop(&mailbox, display)
 }
 
 fn load_font(path: &PathBuf) -> Result<Font> {
@@ -89,8 +92,8 @@ fn load_font(path: &PathBuf) -> Result<Font> {
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
 fn accept_loop(listener: TcpListener, mailbox: &Mailbox) {
-    if let Err(e) = decode::init_media_foundation() {
-        eprintln!("error: starting Media Foundation: {e:#}");
+    if let Err(e) = platform::init_decoder_thread() {
+        eprintln!("error: starting the decoder: {e:#}");
         std::process::exit(1);
     }
     for connection in listener.incoming() {
@@ -122,7 +125,7 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
         state = next;
         match action {
             Action::Begin(info) => {
-                let decoder = Decoder::new(info.codec, info.mode, info.width as usize, info.height as usize)?;
+                let decoder = Decoder::new(&info)?;
                 println!(
                     "Stream {}: {:?} {}x{} {:?} via {}",
                     info.stream_id, info.codec, info.width, info.height, info.mode, decoder.name
@@ -167,29 +170,17 @@ fn wait_until(due_us: u64) -> u64 {
     }
 }
 
-fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
-    let mut window: Option<Window> = None;
-    let mut overlay: Option<Overlay> = None;
+fn display_loop(mailbox: &Mailbox, mut display: Display) -> Result<()> {
     let mut stats = LatencyStats::default();
     let mut stats_since = Instant::now();
 
-    loop {
+    while display.is_open() {
         let (frame, replaced) = mailbox.take();
         stats = stats.replaced(replaced);
 
         match frame {
-            Some(ShownFrame { mut picture, timing }) => {
-                if let Some(font) = font {
-                    if !overlay.as_ref().is_some_and(|o| o.fits(picture.width, picture.height)) {
-                        overlay = Some(Overlay::build(font, picture.width, picture.height));
-                    }
-                    overlay.as_ref().expect("overlay built").composite_onto(&mut picture.pixels);
-                }
-                let win = match window.as_mut() {
-                    Some(win) => win,
-                    None => window.insert(open_window(picture.width, picture.height)?),
-                };
-                win.update_with_buffer(&picture.pixels, picture.width, picture.height)?;
+            Some(ShownFrame { picture, timing }) => {
+                display.show(picture)?;
                 stats = match timing {
                     Timing::Live { capture_us, received_us, decoded_us } => stats.record(FrameTimes {
                         capture_us,
@@ -201,31 +192,19 @@ fn display_loop(mailbox: &Mailbox, font: Option<&Font>) -> Result<()> {
                 };
             }
             None => {
-                if let Some(win) = window.as_mut() {
-                    win.update();
-                }
+                display.idle();
                 thread::sleep(IDLE_POLL);
             }
         }
 
-        if let Some(win) = window.as_mut() {
-            if !win.is_open() || win.is_key_down(Key::Escape) {
-                return Ok(());
+        if stats_since.elapsed() >= STATS_INTERVAL {
+            if let Some(summary) = stats.summary(stats_since.elapsed().as_secs_f64()) {
+                println!("recv: {summary}");
+                display.set_status(&summary);
             }
-            if stats_since.elapsed() >= STATS_INTERVAL {
-                if let Some(summary) = stats.summary(stats_since.elapsed().as_secs_f64()) {
-                    println!("recv: {summary}");
-                    win.set_title(&format!("glassdeck-receiver | {summary}"));
-                }
-                stats = LatencyStats::default();
-                stats_since = Instant::now();
-            }
+            stats = LatencyStats::default();
+            stats_since = Instant::now();
         }
     }
-}
-
-fn open_window(width: usize, height: usize) -> Result<Window> {
-    let mut window = Window::new("glassdeck-receiver", width, height, WindowOptions::default())?;
-    window.set_target_fps(UNTHROTTLED);
-    Ok(window)
+    Ok(())
 }

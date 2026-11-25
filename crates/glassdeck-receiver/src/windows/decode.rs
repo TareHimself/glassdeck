@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 
 use anyhow::{Context, Result, anyhow, bail};
-use glassdeck_proto::{Codec, Mode};
+use glassdeck_proto::{Codec, Mode, StreamInfo};
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFMediaType, IMFTransform,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE,
@@ -17,7 +17,7 @@ use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMe
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
 use windows::core::{Interface, PWSTR};
 
-use crate::yuv::{Matrix, Nv12, nv12_to_xrgb};
+use super::yuv::{Matrix, Nv12, nv12_to_xrgb};
 
 const HUNDRED_NS_PER_US: i64 = 10;
 
@@ -45,7 +45,7 @@ pub struct Decoder {
     pub name: String,
 }
 
-pub fn init_media_foundation() -> Result<()> {
+pub fn init_decoder_thread() -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
         MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
@@ -54,12 +54,13 @@ pub fn init_media_foundation() -> Result<()> {
 }
 
 impl Decoder {
-    pub fn new(codec: Codec, mode: Mode, width: usize, height: usize) -> Result<Self> {
+    pub fn new(info: &StreamInfo) -> Result<Self> {
+        let (codec, width, height) = (info.codec, info.width as usize, info.height as usize);
         unsafe {
             let (activate, name) = find_decoder(codec)?;
             let transform: IMFTransform = activate.ActivateObject()?;
             // Low-latency mode skips B-frame reordering, which paced files need.
-            if mode == Mode::Live {
+            if info.mode == Mode::Live {
                 transform
                     .cast::<ICodecAPI>()?
                     .SetValue(&CODECAPI_AVLowLatencyMode, &variant_u32(1))
@@ -73,13 +74,13 @@ impl Decoder {
             transform.SetInputType(0, &input, 0).context("decoder refused the input type")?;
             let output = select_nv12_output(&transform)?;
 
-            let info = transform.GetOutputStreamInfo(0)?;
+            let stream = transform.GetOutputStreamInfo(0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
             Ok(Self {
                 transform,
                 output,
-                provides_samples: info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
+                provides_samples: stream.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
                 visible: (width, height),
                 name,
             })
