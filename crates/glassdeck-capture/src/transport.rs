@@ -3,10 +3,13 @@ use std::net::{SocketAddr, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use glassdeck_proto::{Message, unix_micros};
 
+use crate::clock::{ClockSample, best_sample};
 use crate::link::SimulatedLink;
+
+const CLOCK_PROBES: usize = 8;
 
 pub struct Transport {
     socket: TcpStream,
@@ -36,6 +39,27 @@ impl Transport {
         };
         self.socket.write_all(&bytes).context("sending to receiver")?;
         Ok(wait)
+    }
+}
+
+impl Transport {
+    /// Probes the receiver's clock before a live stream; the result goes in `Mode::Live`.
+    pub fn sync_clock(&mut self) -> Result<ClockSample> {
+        let mut samples = Vec::with_capacity(CLOCK_PROBES);
+        for _ in 0..CLOCK_PROBES {
+            let sent_us = unix_micros();
+            self.socket.write_all(&Message::ClockProbe { sent_us }.encode()).context("sending a clock probe")?;
+            let reply = Message::read_from(&mut self.socket).context("reading a clock reply")?;
+            let returned_us = unix_micros();
+            match reply {
+                Some(Message::ClockReply { probe_sent_us, received_us }) if probe_sent_us == sent_us => {
+                    samples.push(ClockSample { sent_us, received_us, returned_us });
+                }
+                Some(other) => bail!("expected a clock reply, got {other:?}"),
+                None => bail!("receiver closed the connection during clock sync"),
+            }
+        }
+        Ok(best_sample(&samples).expect("at least one probe"))
     }
 }
 

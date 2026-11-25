@@ -10,6 +10,8 @@ use openh264::encoder::{
 use openh264::formats::{BgraSliceU8, YUVBuffer};
 use windows_capture::frame::Frame;
 
+use glassdeck_proto::Codec;
+
 use crate::stream::{EncodedFrame, EncoderSettings};
 
 pub struct SoftwareEncoder {
@@ -23,6 +25,9 @@ pub struct SoftwareEncoder {
 
 impl SoftwareEncoder {
     pub fn new(settings: EncoderSettings, output: SyncSender<EncodedFrame>) -> Result<Self> {
+        if settings.codec != Codec::H264 {
+            bail!("openh264 only encodes H.264; use --codec h264 or the GPU encoder");
+        }
         if settings.vbv_frames.is_some() {
             bail!("--vbv-frames needs the GPU encoder");
         }

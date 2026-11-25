@@ -59,7 +59,7 @@ unsafe impl Send for Decoder {}
 
 impl Decoder {
     pub fn new(info: &StreamInfo) -> Result<Self> {
-        let live = info.mode == Mode::Live;
+        let live = matches!(info.mode, Mode::Live { .. });
         let mut raw = null_mut();
         let ret = unsafe { gd_mpp_open((info.codec == Codec::Hevc) as i32, live as i32, &mut raw) };
         ensure!(ret == 0, "MPP refused to open a {:?} decoder (error {ret})", info.codec);

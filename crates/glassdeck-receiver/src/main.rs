@@ -9,6 +9,7 @@ mod platform;
 #[path = "windows/mod.rs"]
 mod platform;
 
+use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -136,8 +137,8 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
                 let playback = playback.as_mut().expect("session is streaming");
                 for picture in playback.decoder.decode(&frame.payload, frame.time_us)? {
                     let timing = match playback.info.mode {
-                        Mode::Live => Timing::Live {
-                            capture_us: picture.time_us,
+                        Mode::Live { clock_offset_us } => Timing::Live {
+                            capture_us: picture.time_us.saturating_add_signed(clock_offset_us),
                             received_us,
                             decoded_us: unix_micros(),
                         },
@@ -152,6 +153,10 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox) -> Result<()> {
             Action::End => {
                 println!("Stream ended");
                 playback = None;
+            }
+            Action::AnswerProbe { probe_sent_us } => {
+                let reply = Message::ClockReply { probe_sent_us, received_us };
+                socket.write_all(&reply.encode()).context("answering a clock probe")?;
             }
         }
     }

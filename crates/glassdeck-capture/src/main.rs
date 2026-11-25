@@ -1,3 +1,4 @@
+mod clock;
 mod gpu;
 mod link;
 mod monitors;
@@ -17,7 +18,7 @@ use clap::{Parser, Subcommand};
 use monitors::MonitorQuery;
 use play::PlayOptions;
 use record::RecordOptions;
-use stream::{EncoderKind, StreamOptions};
+use stream::{EncoderKind, StreamOptions, VideoCodec};
 
 const USB2_PRACTICAL_MBYTES_PER_SEC: u64 = 35;
 
@@ -61,7 +62,7 @@ enum Command {
         #[arg(long)]
         unlimited_link: bool,
     },
-    /// Stream a monitor as raw H.264 frames to a receiver
+    /// Stream a monitor live to a receiver
     Stream {
         /// Monitor EDID name (case-insensitive) or index from `list`
         #[arg(long)]
@@ -73,6 +74,8 @@ enum Command {
         seconds: Option<u64>,
         #[arg(long, value_enum, default_value_t = EncoderKind::Gpu)]
         encoder: EncoderKind,
+        #[arg(long, value_enum, default_value_t = VideoCodec::Hevc)]
+        codec: VideoCodec,
         #[arg(long, default_value_t = 15)]
         mbps: u32,
         #[arg(long, default_value_t = 60)]
@@ -125,6 +128,7 @@ fn main() -> Result<()> {
             to,
             seconds,
             encoder,
+            codec,
             mbps,
             fps,
             keyframe_every,
@@ -141,6 +145,7 @@ fn main() -> Result<()> {
                     to,
                     duration: seconds.map(Duration::from_secs),
                     encoder,
+                    codec: codec.into(),
                     bitrate: mbps * 1_000_000,
                     fps,
                     keyframe_every,

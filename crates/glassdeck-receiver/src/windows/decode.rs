@@ -60,7 +60,7 @@ impl Decoder {
             let (activate, name) = find_decoder(codec)?;
             let transform: IMFTransform = activate.ActivateObject()?;
             // Low-latency mode skips B-frame reordering, which paced files need.
-            if info.mode == Mode::Live {
+            if matches!(info.mode, Mode::Live { .. }) {
                 transform
                     .cast::<ICodecAPI>()?
                     .SetValue(&CODECAPI_AVLowLatencyMode, &variant_u32(1))

@@ -8,16 +8,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
 const KIND_STREAM_START: u8 = 1;
 const KIND_FRAME: u8 = 2;
 const KIND_STREAM_END: u8 = 3;
-const STREAM_START_LEN: usize = 12;
+const KIND_CLOCK_PROBE: u8 = 4;
+const KIND_CLOCK_REPLY: u8 = 5;
+const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
+const CLOCK_PROBE_LEN: usize = 8;
+const CLOCK_REPLY_LEN: usize = 16;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,8 +33,9 @@ pub enum Codec {
 /// How the receiver times frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Show each frame on arrival and drop stale ones. `time_us` is the sender's wall-clock capture time.
-    Live,
+    /// Show each frame on arrival and drop stale ones. `time_us` is the sender's wall-clock capture time;
+    /// adding `clock_offset_us` (receiver clock minus sender clock) puts it on the receiver's clock.
+    Live { clock_offset_us: i64 },
     /// Show each frame at its presentation time. `time_us` is microseconds from the start of the stream.
     Paced,
 }
@@ -58,6 +63,10 @@ pub enum Message {
     StreamStart(StreamInfo),
     Frame(Frame),
     StreamEnd { stream_id: u32 },
+    /// Sender to receiver, before a stream: "my clock reads `sent_us`".
+    ClockProbe { sent_us: u64 },
+    /// Receiver to sender: the probe's `sent_us`, and the receiver's clock when the probe arrived.
+    ClockReply { probe_sent_us: u64, received_us: u64 },
 }
 
 #[derive(Debug)]
@@ -111,16 +120,16 @@ impl Codec {
 }
 
 impl Mode {
-    const fn to_wire(self) -> u8 {
+    const fn to_wire(self) -> (u8, i64) {
         match self {
-            Self::Live => 1,
-            Self::Paced => 2,
+            Self::Live { clock_offset_us } => (1, clock_offset_us),
+            Self::Paced => (2, 0),
         }
     }
 
-    const fn from_wire(v: u8) -> Result<Self, ProtoError> {
+    const fn from_wire(v: u8, clock_offset_us: i64) -> Result<Self, ProtoError> {
         match v {
-            1 => Ok(Self::Live),
+            1 => Ok(Self::Live { clock_offset_us }),
             2 => Ok(Self::Paced),
             other => Err(ProtoError::UnknownMode(other)),
         }
@@ -131,13 +140,15 @@ impl Message {
     pub fn encode(&self) -> Vec<u8> {
         let (kind, body) = match self {
             Self::StreamStart(info) => {
+                let (mode, clock_offset_us) = info.mode.to_wire();
                 let mut body = Vec::with_capacity(STREAM_START_LEN);
                 body.extend_from_slice(&info.stream_id.to_le_bytes());
                 body.push(info.codec.to_wire());
-                body.push(info.mode.to_wire());
+                body.push(mode);
                 body.extend_from_slice(&[0, 0]);
                 body.extend_from_slice(&info.width.to_le_bytes());
                 body.extend_from_slice(&info.height.to_le_bytes());
+                body.extend_from_slice(&clock_offset_us.to_le_bytes());
                 (KIND_STREAM_START, body)
             }
             Self::Frame(frame) => {
@@ -151,6 +162,10 @@ impl Message {
                 (KIND_FRAME, body)
             }
             Self::StreamEnd { stream_id } => (KIND_STREAM_END, stream_id.to_le_bytes().to_vec()),
+            Self::ClockProbe { sent_us } => (KIND_CLOCK_PROBE, sent_us.to_le_bytes().to_vec()),
+            Self::ClockReply { probe_sent_us, received_us } => {
+                (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
+            }
         };
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.push(VERSION);
@@ -180,7 +195,7 @@ impl Message {
             KIND_STREAM_START if body.len() == STREAM_START_LEN => Ok(Self::StreamStart(StreamInfo {
                 stream_id: u32_at(&body, 0),
                 codec: Codec::from_wire(body[4])?,
-                mode: Mode::from_wire(body[5])?,
+                mode: Mode::from_wire(body[5], u64_at(&body, 12) as i64)?,
                 width: u16::from_le_bytes([body[8], body[9]]),
                 height: u16::from_le_bytes([body[10], body[11]]),
             })),
@@ -190,13 +205,17 @@ impl Message {
                 Ok(Self::Frame(Frame {
                     stream_id: u32_at(&body, 0),
                     seq: u32_at(&body, 4),
-                    time_us: u64::from_le_bytes(body[8..16].try_into().expect("8 bytes")),
+                    time_us: u64_at(&body, 8),
                     keyframe: body[16] & FLAG_KEYFRAME != 0,
                     payload,
                 }))
             }
             KIND_STREAM_END if body.len() == STREAM_END_LEN => Ok(Self::StreamEnd { stream_id: u32_at(&body, 0) }),
-            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END => Err(bad_length()),
+            KIND_CLOCK_PROBE if body.len() == CLOCK_PROBE_LEN => Ok(Self::ClockProbe { sent_us: u64_at(&body, 0) }),
+            KIND_CLOCK_REPLY if body.len() == CLOCK_REPLY_LEN => {
+                Ok(Self::ClockReply { probe_sent_us: u64_at(&body, 0), received_us: u64_at(&body, 8) })
+            }
+            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY => Err(bad_length()),
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
@@ -217,8 +236,11 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"))
 }
 
-/// Wall-clock microseconds. Live-mode latency figures compare sender and receiver clocks,
-/// so they are only meaningful while both run on the same machine.
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"))
+}
+
+/// Wall-clock microseconds. Comparing two machines' readings needs the offset from clock sync.
 pub fn unix_micros() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -245,6 +267,13 @@ mod tests {
             width: 1920,
             height: 1080,
         }));
+        round_trip(Message::StreamStart(StreamInfo {
+            stream_id: 4,
+            codec: Codec::H264,
+            mode: Mode::Live { clock_offset_us: -1_093_250 },
+            width: 1920,
+            height: 1080,
+        }));
         round_trip(Message::Frame(Frame {
             stream_id: 3,
             seq: 9,
@@ -253,6 +282,8 @@ mod tests {
             payload: vec![0, 0, 0, 1, 0x65],
         }));
         round_trip(Message::StreamEnd { stream_id: 3 });
+        round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
+        round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
     }
 
     #[test]
@@ -276,7 +307,7 @@ mod tests {
         let mut start = Message::StreamStart(StreamInfo {
             stream_id: 1,
             codec: Codec::H264,
-            mode: Mode::Live,
+            mode: Mode::Live { clock_offset_us: 0 },
             width: 2,
             height: 2,
         })

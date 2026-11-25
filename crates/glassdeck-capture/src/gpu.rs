@@ -4,7 +4,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use glassdeck_proto::unix_micros;
+use glassdeck_proto::{Codec, unix_micros};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
@@ -34,8 +34,8 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_FRIENDLY_NAME_Attribute,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264, MFVideoFormat_NV12,
-    MFNominalRange_16_235, MFVideoInterlace_Progressive, MFVideoTransferMatrix_BT709, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High,
+    MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
+    MFNominalRange_16_235, MFVideoInterlace_Progressive, MFVideoTransferMatrix_BT709, eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High, eAVEncH265VProfile_Main_420_8,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE};
@@ -52,6 +52,14 @@ const BT709_LIMITED_YUV: D3D11_VIDEO_PROCESSOR_COLOR_SPACE = D3D11_VIDEO_PROCESS
     _bitfield: 1 << 2 | (D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235.0 as u32) << 4,
 };
 const H264_PROFILE: u32 = eAVEncH264VProfile_High.0 as u32;
+const HEVC_PROFILE: u32 = eAVEncH265VProfile_Main_420_8.0 as u32;
+
+fn subtype_and_profile(codec: Codec) -> (GUID, u32) {
+    match codec {
+        Codec::H264 => (MFVideoFormat_H264, H264_PROFILE),
+        Codec::Hevc => (MFVideoFormat_HEVC, HEVC_PROFILE),
+    }
+}
 
 struct GpuFrame {
     texture: ID3D11Texture2D,
@@ -248,7 +256,7 @@ impl HardwareEncoder {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
             MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
 
-            let (activate, name) = find_hardware_encoder(device)?;
+            let (activate, name) = find_hardware_encoder(device, config.codec)?;
             let transform: IMFTransform = activate.ActivateObject()?;
             transform.GetAttributes()?.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
 
@@ -372,7 +380,7 @@ impl HardwareEncoder {
     }
 }
 
-unsafe fn find_hardware_encoder(device: &ID3D11Device) -> Result<(IMFActivate, String)> {
+unsafe fn find_hardware_encoder(device: &ID3D11Device, codec: Codec) -> Result<(IMFActivate, String)> {
     unsafe {
         let luid = device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()?.AdapterLuid;
         let mut attributes: Option<IMFAttributes> = None;
@@ -382,7 +390,7 @@ unsafe fn find_hardware_encoder(device: &ID3D11Device) -> Result<(IMFActivate, S
         attributes.SetBlob(&MFT_ENUM_ADAPTER_LUID, luid_bytes)?;
 
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
-        let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+        let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype_and_profile(codec).0 };
         let mut list = std::ptr::null_mut();
         let mut count = 0;
         MFTEnum2(
@@ -400,7 +408,7 @@ unsafe fn find_hardware_encoder(device: &ID3D11Device) -> Result<(IMFActivate, S
 
         let activate = activates.into_iter().flatten().next();
         let Some(activate) = activate else {
-            bail!("this GPU has no hardware H.264 encoder");
+            bail!("this GPU has no hardware {codec:?} encoder");
         };
         Ok((activate.clone(), friendly_name(&activate)?))
     }
@@ -478,13 +486,14 @@ unsafe fn output_type(config: EncoderSettings) -> Result<IMFMediaType> {
     unsafe {
         let t = MFCreateMediaType()?;
         t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-        t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+        let (subtype, profile) = subtype_and_profile(config.codec);
+        t.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
         t.SetUINT32(&MF_MT_AVG_BITRATE, config.bitrate)?;
         t.SetUINT64(&MF_MT_FRAME_SIZE, pack(config.width, config.height))?;
         t.SetUINT64(&MF_MT_FRAME_RATE, pack(config.fps, 1))?;
         t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))?;
         t.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-        t.SetUINT32(&MF_MT_MPEG2_PROFILE, H264_PROFILE)?;
+        t.SetUINT32(&MF_MT_MPEG2_PROFILE, profile)?;
         t.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
         t.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;
         Ok(t)
@@ -594,6 +603,7 @@ mod tests {
         let settings = EncoderSettings {
             width: SIZE,
             height: SIZE,
+            codec: Codec::H264,
             fps: 60,
             bitrate: 1_000_000,
             keyframe_every: 60,
@@ -623,6 +633,7 @@ mod tests {
         let config = EncoderSettings {
             width: 1920,
             height: 1080,
+            codec: Codec::H264,
             fps: 60,
             bitrate: 15_000_000,
             keyframe_every: 120,

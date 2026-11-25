@@ -25,16 +25,34 @@ const QUEUED_FRAMES: usize = 4;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum EncoderKind {
-    /// Hardware H.264 through Media Foundation, frames stay on the GPU
+    /// Hardware H.264 or HEVC through Media Foundation, frames stay on the GPU
     Gpu,
-    /// openh264 on the CPU
+    /// openh264 on the CPU, H.264 only
     Software,
+}
+
+/// Codec choice on the command line.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum VideoCodec {
+    /// Fewer bits for the same picture, and the RK3566 decodes it faster
+    Hevc,
+    H264,
+}
+
+impl From<VideoCodec> for Codec {
+    fn from(codec: VideoCodec) -> Self {
+        match codec {
+            VideoCodec::Hevc => Codec::Hevc,
+            VideoCodec::H264 => Codec::H264,
+        }
+    }
 }
 
 pub struct StreamOptions {
     pub to: SocketAddr,
     pub duration: Option<Duration>,
     pub encoder: EncoderKind,
+    pub codec: Codec,
     pub bitrate: u32,
     pub fps: u32,
     pub keyframe_every: u32,
@@ -46,6 +64,7 @@ pub struct StreamOptions {
 pub struct EncoderSettings {
     pub width: u32,
     pub height: u32,
+    pub codec: Codec,
     pub fps: u32,
     pub bitrate: u32,
     pub keyframe_every: u32,
@@ -128,11 +147,17 @@ impl GraphicsCaptureApiHandler for Streamer {
 }
 
 pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
-    let transport = Transport::connect(options.to, options.link_bytes_per_sec)?;
+    let mut transport = Transport::connect(options.to, options.link_bytes_per_sec)?;
+    let clock = transport.sync_clock()?;
+    println!(
+        "Receiver clock is {:+.1} ms from ours (probe round trip {:.1} ms)",
+        clock.offset_us() as f64 / 1000.0,
+        clock.round_trip_us() as f64 / 1000.0
+    );
     let info = StreamInfo {
         stream_id: new_stream_id(),
-        codec: Codec::H264,
-        mode: Mode::Live,
+        codec: options.codec,
+        mode: Mode::Live { clock_offset_us: clock.offset_us() },
         width: u16::try_from(found.info.width).context("monitor too wide")?,
         height: u16::try_from(found.info.height).context("monitor too tall")?,
     };
@@ -146,6 +171,7 @@ pub fn run(found: FoundMonitor, options: StreamOptions) -> Result<()> {
         settings: EncoderSettings {
             width: found.info.width,
             height: found.info.height,
+            codec: options.codec,
             fps: options.fps,
             bitrate: options.bitrate,
             keyframe_every: options.keyframe_every,

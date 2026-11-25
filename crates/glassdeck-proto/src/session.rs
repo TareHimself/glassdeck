@@ -16,6 +16,8 @@ pub enum Action<'a> {
     Begin(StreamInfo),
     Decode(&'a Frame),
     End,
+    /// Reply to a clock probe at once with `ClockReply`, stamped with the probe's arrival time.
+    AnswerProbe { probe_sent_us: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub enum SessionError {
     FrameWithoutStream,
     EndWithoutStream,
     WrongStream { current: u32, got: u32 },
+    ProbeWhileStreaming,
+    UnexpectedReply,
 }
 
 impl fmt::Display for SessionError {
@@ -31,6 +35,8 @@ impl fmt::Display for SessionError {
             Self::FrameWithoutStream => write!(f, "frame received before StreamStart"),
             Self::EndWithoutStream => write!(f, "StreamEnd received with no stream open"),
             Self::WrongStream { current, got } => write!(f, "message for stream {got} while stream {current} is open"),
+            Self::ProbeWhileStreaming => write!(f, "clock probe received while a stream is open"),
+            Self::UnexpectedReply => write!(f, "clock replies only travel from receiver to sender"),
         }
     }
 }
@@ -41,6 +47,9 @@ impl std::error::Error for SessionError {}
 pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionState, Action<'a>), SessionError> {
     match (state, message) {
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
+        (_, Message::ClockReply { .. }) => Err(SessionError::UnexpectedReply),
+        (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
+        (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
         (SessionState::Idle, Message::Frame(_)) => Err(SessionError::FrameWithoutStream),
         (SessionState::Idle, Message::StreamEnd { .. }) => Err(SessionError::EndWithoutStream),
         (SessionState::Streaming(info), Message::Frame(frame)) => {
@@ -67,7 +76,7 @@ mod tests {
     use crate::{Codec, Mode};
 
     fn info(stream_id: u32) -> StreamInfo {
-        StreamInfo { stream_id, codec: Codec::H264, mode: Mode::Live, width: 2, height: 2 }
+        StreamInfo { stream_id, codec: Codec::H264, mode: Mode::Live { clock_offset_us: 0 }, width: 2, height: 2 }
     }
 
     fn frame(stream_id: u32) -> Message {
@@ -85,6 +94,7 @@ mod tests {
             Ok((next, Action::Begin(_))) => Expect::Moves(next, "begin"),
             Ok((next, Action::Decode(_))) => Expect::Moves(next, "decode"),
             Ok((next, Action::End)) => Expect::Moves(next, "end"),
+            Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -94,7 +104,13 @@ mod tests {
         use SessionState::{Idle, Streaming};
         let a = info(1);
         let b = info(2);
+        let probe = Message::ClockProbe { sent_us: 5 };
+        let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
         let table = [
+            (Idle, probe.clone(), Expect::Moves(Idle, "answer probe")),
+            (Idle, reply.clone(), Expect::Refused(SessionError::UnexpectedReply)),
+            (Streaming(a), probe, Expect::Refused(SessionError::ProbeWhileStreaming)),
+            (Streaming(a), reply, Expect::Refused(SessionError::UnexpectedReply)),
             (Idle, Message::StreamStart(b), Expect::Moves(Streaming(b), "begin")),
             (Idle, frame(1), Expect::Refused(SessionError::FrameWithoutStream)),
             (Idle, Message::StreamEnd { stream_id: 1 }, Expect::Refused(SessionError::EndWithoutStream)),
