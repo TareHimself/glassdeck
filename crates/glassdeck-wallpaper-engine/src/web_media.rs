@@ -1,6 +1,8 @@
 //! Media inside web wallpapers. Videos must decode in hardware in stock CEF on the PC and in WebKit on the
 //! RK3566: VP8 and VP9 do, anything else becomes VP9. Wallpapers are silent, so audio tracks are dropped and
-//! audio files become silence of the same length, keeping every file name the page refers to. Needs ffmpeg.
+//! audio files become silence of the same length, keeping every file name the page refers to. Silence is FLAC
+//! wherever the container allows, the cheapest to decode on the keyboard; .mp3 and .webm keep codecs of their own.
+//! Needs ffmpeg.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -117,14 +119,13 @@ pub fn ffmpeg_args(plan: Plan, src: &Path, dst: &Path, pass: Pass, log: &Path) -
         Plan::Silence { seconds } => {
             push(&mut args, &["-f", "lavfi", "-t", &format!("{seconds:.3}"), "-i", "anullsrc=r=48000:cl=mono"]);
             let encoding: &[&str] = match ext.as_str() {
-                "mp3" => &["-ar", "24000", "-c:a", "libmp3lame", "-b:a", "8k", "-f", "mp3"],
-                "ogg" | "oga" | "opus" => &["-c:a", "libopus", "-b:a", "6k", "-f", "ogg"],
-                "weba" | "webm" => &["-c:a", "libopus", "-b:a", "6k", "-f", "webm"],
-                "m4a" | "aac" | "mp4" | "m4v" | "mov" => &["-c:a", "libopus", "-b:a", "6k", "-f", "mp4"],
-                "mkv" => &["-c:a", "libopus", "-b:a", "6k", "-f", "matroska"],
-                "ogv" => &["-c:a", "libopus", "-b:a", "6k", "-f", "ogg"],
-                "wav" => &["-ar", "8000", "-c:a", "pcm_u8", "-f", "wav"],
                 "flac" => &["-ar", "8000", "-c:a", "flac", "-f", "flac"],
+                "ogg" | "oga" | "opus" | "ogv" => &["-ar", "8000", "-c:a", "flac", "-f", "ogg"],
+                "m4a" | "aac" | "mp4" | "m4v" | "mov" => &["-ar", "8000", "-c:a", "flac", "-f", "mp4"],
+                "mkv" => &["-ar", "8000", "-c:a", "flac", "-f", "matroska"],
+                "weba" | "webm" => &["-ar", "8000", "-c:a", "libvorbis", "-q:a", "-1", "-f", "webm"],
+                "mp3" => &["-ar", "24000", "-c:a", "libmp3lame", "-b:a", "8k", "-f", "mp3"],
+                "wav" => &["-ar", "8000", "-c:a", "pcm_u8", "-f", "wav"],
                 other => bail!("no silent stand-in for .{other}"),
             };
             push(&mut args, encoding);
@@ -259,7 +260,10 @@ mod tests {
         assert_eq!(silence, Plan::Silence { seconds: 183.25 });
         let mp3 = joined(silence, "song.mp3", Pass::Encode);
         assert!(mp3.contains("-t 183.250") && mp3.contains("anullsrc") && mp3.ends_with("-f mp3 song.mp3"), "{mp3}");
-        assert!(joined(silence, "loop.ogg", Pass::Encode).ends_with("-f ogg loop.ogg"));
+        let ogg = joined(silence, "loop.ogg", Pass::Encode);
+        assert!(ogg.contains("-c:a flac") && ogg.ends_with("-f ogg loop.ogg"), "{ogg}");
+        assert!(joined(silence, "song.m4a", Pass::Encode).contains("-c:a flac"));
+        assert!(joined(silence, "song.weba", Pass::Encode).contains("libvorbis"));
         assert!(joined(silence, "hit.wav", Pass::Encode).contains("pcm_u8"));
     }
 
