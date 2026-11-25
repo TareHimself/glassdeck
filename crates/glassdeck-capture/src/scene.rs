@@ -15,6 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_capture::window::Window;
 
+use crate::audio_mute::ProcessMuted;
 use crate::desktop::{EncoderKind, capture_live};
 use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
 
@@ -61,8 +62,9 @@ impl FrameSource for SceneSource {
 
     fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
         let engine = Engine { exe: &self.engine };
-        let _muted = engine.mute()?;
         let scene = engine.open(&self.project, &self.window_name, (self.settings.width, self.settings.height))?;
+        // The keyboard has no speakers. Wallpaper Engine's own mute skips windowed wallpapers, so mute its process instead.
+        let _muted = ProcessMuted::start(scene.window.process_id().context("finding Wallpaper Engine's process")?);
         capture_live(Window::from_raw_hwnd(scene.window.as_raw_hwnd()), EncoderKind::Gpu, self.settings, self.duration, out)
     }
 }
@@ -83,12 +85,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// The keyboard has no speakers, so scenes play silently. Wallpaper Engine can only mute everything it plays.
-    fn mute(&self) -> Result<Muted<'_>> {
-        self.control(&["mute"])?;
-        Ok(Muted { engine: self })
-    }
-
     fn open(&self, project: &Path, name: &str, size: (u32, u32)) -> Result<OpenScene<'_>> {
         let (width, height) = (size.0.to_string(), size.1.to_string());
         let project = project.to_str().context("scene path is not UTF-8")?;
@@ -96,18 +92,6 @@ impl Engine<'_> {
         let scene = OpenScene { engine: self, name: name.to_owned(), window: find_window(name)? };
         hide(scene.window, size)?;
         Ok(scene)
-    }
-}
-
-struct Muted<'a> {
-    engine: &'a Engine<'a>,
-}
-
-impl Drop for Muted<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = self.engine.control(&["unmute"]) {
-            eprintln!("error: unmuting Wallpaper Engine: {e:#}");
-        }
     }
 }
 

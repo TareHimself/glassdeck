@@ -1,3 +1,4 @@
+mod audio_mute;
 mod clock;
 mod deck_source;
 mod deck_stream;
