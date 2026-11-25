@@ -19,14 +19,15 @@
 #include <wpe/webkit.h>
 
 #include "compositor.h"
-#include "deck.h"
+#include "background.h"
 
 #define PANEL_WIDTH 1920
 #define PANEL_HEIGHT 1080
 #define INSIDE_FLAG "--inside-sandbox"
 #define SANDBOXED_SELF "/app/glassdeck-local-web"
-#define SANDBOXED_DECK "/app/wallpaper.deck"
-#define DECK_ORIGIN "deck://wallpaper/"
+#define SANDBOXED_BACKGROUND "/app/wallpaper.deckbg"
+#define BACKGROUND_ORIGIN "background://wallpaper/"
+#define BACKGROUND_FLAG "--background="
 #define DISPLAY_DRIVER "rockchip"
 #define MAX_CARDS 16
 
@@ -44,11 +45,11 @@ enum output_kind {
   OUTPUT_COMPOSITOR,
 };
 
-// What to show: a page by URI (for tests), or a web .deck, served to WebKit as deck://.
+// What to show: a page by URI (for tests), or a web .deckbg, served to WebKit as background://.
 enum content_kind {
   CONTENT_NONE,
   CONTENT_URI,
-  CONTENT_DECK,
+  CONTENT_BACKGROUND,
 };
 
 struct options {
@@ -61,7 +62,7 @@ struct options {
 };
 
 static int usage(void) {
-  fprintf(stderr, "usage: glassdeck-local-web [--seconds=N] [--display | --compositor-fd=N] (--deck=PATH | <uri>)\n");
+  fprintf(stderr, "usage: glassdeck-local-web [--seconds=N] [--display | --compositor-fd=N] (--background=PATH | <uri>)\n");
   return 2;
 }
 
@@ -69,9 +70,9 @@ static gboolean parse_options(int argc, char** argv, struct options* o) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], INSIDE_FLAG) == 0) {
       o->inside = TRUE;
-    } else if (strncmp(argv[i], "--deck=", 7) == 0 && o->content == CONTENT_NONE) {
-      o->content = CONTENT_DECK;
-      o->location = argv[i] + 7;
+    } else if (g_str_has_prefix(argv[i], BACKGROUND_FLAG) && o->content == CONTENT_NONE) {
+      o->content = CONTENT_BACKGROUND;
+      o->location = argv[i] + strlen(BACKGROUND_FLAG);
     } else if (strcmp(argv[i], "--display") == 0 && o->output == OUTPUT_HEADLESS) {
       o->output = OUTPUT_DISPLAY;
     } else if (strncmp(argv[i], "--compositor-fd=", 16) == 0 && o->output == OUTPUT_HEADLESS) {
@@ -126,14 +127,14 @@ static int exec_in_sandbox(const struct options* o) {
   for (size_t i = 0; i < G_N_ELEMENTS(DEVICES); i++) add(args, "--dev-bind", DEVICES[i], DEVICES[i], NULL);
   add(args, "--tmpfs", "/tmp", "--tmpfs", "/run", "--dir", "/tmp/runtime", NULL);
   g_autofree char* content = NULL;
-  g_autofree char* deck_flag = NULL;
-  if (o->content == CONTENT_DECK) {
+  g_autofree char* background_flag = NULL;
+  if (o->content == CONTENT_BACKGROUND) {
     content = realpath(o->location, NULL);
     if (!content) return fprintf(stderr, "glassdeck-local-web: cannot find %s: %s\n", o->location, strerror(errno)), 1;
-    add(args, "--ro-bind", content, SANDBOXED_DECK, NULL);
-    // Media in the page reaches the deck through our GStreamer source, which reads this
-    add(args, "--setenv", "GLASSDECK_DECK", SANDBOXED_DECK, "--setenv", "GST_PLUGIN_PATH", GST_DECK_PLUGIN_DIR, NULL);
-    deck_flag = g_strdup("--deck=" SANDBOXED_DECK);
+    add(args, "--ro-bind", content, SANDBOXED_BACKGROUND, NULL);
+    // Media in the page reaches the background through our GStreamer source, which reads this
+    add(args, "--setenv", "GLASSDECK_BACKGROUND", SANDBOXED_BACKGROUND, "--setenv", "GST_PLUGIN_PATH", GST_BACKGROUND_PLUGIN_DIR, NULL);
+    background_flag = g_strdup(BACKGROUND_FLAG SANDBOXED_BACKGROUND);
   } else {
     content = content_dir(o->location);
     if (content) add(args, "--ro-bind", content, content, NULL);
@@ -153,7 +154,7 @@ static int exec_in_sandbox(const struct options* o) {
     g_autofree char* seconds = g_strdup_printf("--seconds=%u", o->seconds);
     add(args, seconds, NULL);
   }
-  add(args, deck_flag ? deck_flag : o->location, NULL);
+  add(args, background_flag ? background_flag : o->location, NULL);
   g_ptr_array_add(args, NULL);
 
   execvp("bwrap", (char**)args->pdata);
@@ -495,7 +496,7 @@ static int fail(const char* message) {
   return 1;
 }
 
-// Content types by extension, for what web wallpapers load (the same table as the PC's deck:// handler).
+// Content types by extension, for what web wallpapers load (the same table as the PC's background:// handler).
 static const char* mime_type(const char* path) {
   static const char* const TYPES[][2] = {
       {".html", "text/html"}, {".htm", "text/html"}, {".js", "text/javascript"}, {".mjs", "text/javascript"},
@@ -556,15 +557,15 @@ static gboolean parse_range(const char* header, uint64_t len, uint64_t* start, u
   return *start < *end;
 }
 
-// Serves deck://wallpaper/<entry> straight from the mapped deck, honouring Range so media can seek.
-static void on_deck_request(WebKitURISchemeRequest* request, gpointer data) {
-  const struct deck* d = data;
+// Serves background://wallpaper/<entry> straight from the mapped background, honouring Range so media can seek.
+static void on_background_request(WebKitURISchemeRequest* request, gpointer data) {
+  const struct background* d = data;
   g_autofree char* path = g_uri_unescape_string(webkit_uri_scheme_request_get_path(request), NULL);
   const char* name = path && path[0] == '/' ? path + 1 : path;
-  struct deck_entry entry;
-  if (!name || !deck_find(d, name, &entry)) {
-    fprintf(stderr, "glassdeck-local-web: the page asked for \"%s\", which the deck does not hold\n", name ? name : "");
-    GError* error = g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "not in the deck: %s", name ? name : "");
+  struct background_entry entry;
+  if (!name || !background_find(d, name, &entry)) {
+    fprintf(stderr, "glassdeck-local-web: the page asked for \"%s\", which the background does not hold\n", name ? name : "");
+    GError* error = g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "not in the background: %s", name ? name : "");
     webkit_uri_scheme_request_finish_error(request, error);
     g_error_free(error);
     return;
@@ -579,7 +580,7 @@ static void on_deck_request(WebKitURISchemeRequest* request, gpointer data) {
     g_error_free(error);
     return;
   }
-  g_autoptr(GBytes) bytes = deck_bytes(d, entry, start, end);
+  g_autoptr(GBytes) bytes = background_bytes(d, entry, start, end);
   g_autoptr(GInputStream) stream = g_memory_input_stream_new_from_bytes(bytes);
   g_autoptr(WebKitURISchemeResponse) response = webkit_uri_scheme_response_new(stream, (gint64)(end - start));
   webkit_uri_scheme_response_set_content_type(response, mime_type(name));
@@ -640,9 +641,9 @@ static gboolean enable_features(WebKitSettings* settings) {
   return TRUE;
 }
 
-static char* deck_page_uri(const char* entry) {
+static char* background_page_uri(const char* entry) {
   g_autofree char* escaped = g_uri_escape_string(entry, "/", FALSE);
-  return g_strconcat(DECK_ORIGIN, escaped, NULL);
+  return g_strconcat(BACKGROUND_ORIGIN, escaped, NULL);
 }
 
 static int render(const struct options* o) {
@@ -690,21 +691,21 @@ static int render(const struct options* o) {
   webkit_user_content_manager_register_script_message_handler(scripts, "glassdeck", NULL);
   g_signal_connect(scripts, "script-message-received::glassdeck", G_CALLBACK(on_page_message), NULL);
   add_start_script(scripts, PAGE_ERRORS_SCRIPT);
-  struct deck* deck = NULL;
+  struct background* background = NULL;
   g_autofree char* uri = NULL;
-  if (o->content == CONTENT_DECK) {
+  if (o->content == CONTENT_BACKGROUND) {
     g_autoptr(GError) error = NULL;
-    struct deck_web web = {0};
-    deck = deck_open(o->location, &error);
-    if (!deck || !deck_web_content(deck, &web, &error)) return fail(error->message);
-    webkit_web_context_register_uri_scheme(context, "deck", on_deck_request, deck, NULL);
+    struct background_web web = {0};
+    background = background_open(o->location, &error);
+    if (!background || !background_web_content(background, &web, &error)) return fail(error->message);
+    webkit_web_context_register_uri_scheme(context, "background", on_background_request, background, NULL);
     WebKitSecurityManager* security = webkit_web_context_get_security_manager(context);
-    webkit_security_manager_register_uri_scheme_as_secure(security, "deck");
-    webkit_security_manager_register_uri_scheme_as_cors_enabled(security, "deck");
+    webkit_security_manager_register_uri_scheme_as_secure(security, "background");
+    webkit_security_manager_register_uri_scheme_as_cors_enabled(security, "background");
     g_autofree char* init = wallpaper_init_script(web.properties_json);
     add_start_script(scripts, init);
-    uri = deck_page_uri(web.entry);
-    deck_web_clear(&web);
+    uri = background_page_uri(web.entry);
+    background_web_clear(&web);
   } else {
     uri = g_strdup(o->location);
   }
@@ -741,7 +742,7 @@ static int render(const struct options* o) {
   g_object_unref(session);
   g_object_unref(scripts);
   g_object_unref(context);
-  if (deck) deck_free(deck);
+  if (background) background_free(background);
   g_main_loop_unref(r.loop);
   for (guint i = 0; i < r.entries->len; i++) free_entry(&r, g_ptr_array_index(r.entries, i));
   g_ptr_array_unref(r.entries);

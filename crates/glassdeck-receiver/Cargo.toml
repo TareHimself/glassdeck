@@ -8,7 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 glassdeck-proto.workspace = true
-glassdeck-deck.workspace = true
+glassdeck-package.workspace = true
 glassdeck-layout.workspace = true
 glassdeck-luau.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "serde"] }

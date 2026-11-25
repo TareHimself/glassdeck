@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use glassdeck_deck::Deck;
+use glassdeck_package::Background;
 use glassdeck_wallpaper_engine::{self as we, EncodeSettings, Item, Kind, Project};
 
-use crate::deck_source::{self, WebEncoding};
+use crate::background_source::{self, WebEncoding};
 use crate::pipeline::{self, EncoderSettings, Source};
 use crate::scene::SceneSource;
 use crate::{USB2_PRACTICAL_MBYTES_PER_SEC, link_options};
@@ -16,24 +16,24 @@ use crate::{USB2_PRACTICAL_MBYTES_PER_SEC, link_options};
 pub enum WallpaperAction {
     /// List subscribed items with their type
     List,
-    /// Convert a video or web wallpaper into a .deck (a video is stored as is if it meets the deck spec, re-encoded otherwise)
-    Deck {
+    /// Convert a video or web wallpaper into a .deckbg (a video is stored as is if it meets the background spec, re-encoded otherwise)
+    Background {
         /// Workshop ID, or a folder holding a project.json
         item: String,
-        /// Deck file (default: %LOCALAPPDATA%\Glassdeck\decks\we-<id>.deck)
+        /// Background file (default: %LOCALAPPDATA%\Glassdeck\backgrounds\we-<id>.deckbg)
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when re-encoding
         #[arg(long, default_value_t = 12)]
         mbps: u32,
     },
-    /// Stream a wallpaper: video and web on a loop from its .deck (built on first use), scenes live from Wallpaper Engine
+    /// Stream a wallpaper: video and web on a loop from its .deckbg (built on first use), scenes live from Wallpaper Engine
     Play {
         /// Workshop ID, or a folder holding a project.json
         item: String,
         #[arg(long, default_value = "127.0.0.1:7878")]
         to: SocketAddr,
-        /// Build the .deck again even if one exists
+        /// Build the .deckbg again even if one exists
         #[arg(long)]
         rebuild: bool,
         /// Bitrate when encoding (re-encoded videos and web pages)
@@ -57,15 +57,15 @@ pub enum WallpaperAction {
 pub fn run(action: WallpaperAction) -> Result<()> {
     match action {
         WallpaperAction::List => list(),
-        WallpaperAction::Deck { item, out, mbps } => {
+        WallpaperAction::Background { item, out, mbps } => {
             let item = we::find(&item)?;
             let project = item.project()?;
             let out = match out {
                 Some(out) => out,
-                None => we::deck_path(&we::default_decks_dir()?, &item),
+                None => we::background_path(&we::default_backgrounds_dir()?, &item),
             };
-            let deck = convert(&item, &project, &out, mbps)?;
-            println!("Wrote {}", deck.path().display());
+            let background = convert(&item, &project, &out, mbps)?;
+            println!("Wrote {}", background.path().display());
             Ok(())
         }
         WallpaperAction::Play { item, to, rebuild, mbps, fps, seconds, link_mbytes, unlimited_link } => {
@@ -77,17 +77,17 @@ pub fn run(action: WallpaperAction) -> Result<()> {
                 let source = SceneSource::new(&item, scene_settings(mbps, fps), seconds.map(Duration::from_secs))?;
                 return pipeline::run(Source::Frames(Box::new(source)), link);
             }
-            let path = we::deck_path(&we::default_decks_dir()?, &item);
-            let deck = if glassdeck_deck::is_deck(&path) && !rebuild { Deck::open(&path)? } else { convert(&item, &project, &path, mbps)? };
+            let path = we::background_path(&we::default_backgrounds_dir()?, &item);
+            let background = if glassdeck_package::is_background(&path) && !rebuild { Background::open(&path)? } else { convert(&item, &project, &path, mbps)? };
             let web = WebEncoding { fps, bitrate: mbps * 1_000_000, duration: seconds.map(Duration::from_secs) };
-            pipeline::run(deck_source::open(deck, true, web)?, link)
+            pipeline::run(background_source::open(background, true, web)?, link)
         }
     }
 }
 
 /// Scenes stream at the panel's size, so Wallpaper Engine renders exactly what the keyboard shows.
 fn scene_settings(mbps: u32, fps: u32) -> EncoderSettings {
-    let (width, height) = glassdeck_deck::PANEL;
+    let (width, height) = glassdeck_package::PANEL;
     EncoderSettings {
         width: width.into(),
         height: height.into(),
@@ -99,7 +99,7 @@ fn scene_settings(mbps: u32, fps: u32) -> EncoderSettings {
     }
 }
 
-fn convert(item: &Item, project: &Project, out: &Path, mbps: u32) -> Result<Deck> {
+fn convert(item: &Item, project: &Project, out: &Path, mbps: u32) -> Result<Background> {
     if let Some(why) = why_unsupported(&project.kind) {
         bail!("{}: {why}", item.id);
     }
@@ -109,7 +109,7 @@ fn convert(item: &Item, project: &Project, out: &Path, mbps: u32) -> Result<Deck
 fn why_unsupported(kind: &Kind) -> Option<String> {
     Some(match kind {
         Kind::Video { .. } | Kind::Web { .. } => return None,
-        Kind::Scene => "scenes have no deck yet; `wallpaper play` streams them live from Wallpaper Engine".into(),
+        Kind::Scene => "scenes have no background yet; `wallpaper play` streams them live from Wallpaper Engine".into(),
         Kind::Application => "application wallpapers run a program and are not supported".into(),
         Kind::Preset { base_id } => format!("a preset for workshop item {base_id}; presets are not supported yet"),
         Kind::Unknown { declared: Some(t) } => format!("unknown wallpaper type {t:?}"),

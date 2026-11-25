@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_deck::{ModulePackage, is_module};
+use glassdeck_package::{ModulePackage, is_module};
 use glassdeck_luau::profile::{Placement, Profile, WidgetArea};
 
 use instance::Instance;

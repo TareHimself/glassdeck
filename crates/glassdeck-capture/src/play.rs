@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use glassdeck_deck::{Deck, Entry};
+use glassdeck_package::{Background, Entry};
 use glassdeck_proto::Codec;
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, IMFSourceReader, MF_E_ATTRIBUTENOTFOUND, MF_MT_FRAME_SIZE, MF_MT_MINIMUM_DISPLAY_APERTURE,
@@ -16,7 +16,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::HSTRING;
 
-use crate::deck_stream::mp4_byte_stream;
+use crate::background_stream::mp4_byte_stream;
 use crate::pipeline::{EncodedFrame, EncodedSource, VideoFormat};
 
 const HUNDRED_NS_PER_US: i64 = 10;
@@ -37,17 +37,17 @@ struct Sample {
     data: Vec<u8>,
 }
 
-/// Where an MP4 comes from: a file of its own, or an entry read in place from a deck.
+/// Where an MP4 comes from: a file of its own, or an entry read in place from a background.
 pub enum Media {
     File(PathBuf),
-    DeckEntry { deck: Arc<Deck>, entry: Entry },
+    BackgroundEntry { background: Arc<Background>, entry: Entry },
 }
 
 impl fmt::Display for Media {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(path) => write!(f, "{}", path.display()),
-            Self::DeckEntry { deck, .. } => write!(f, "{}", deck.path().display()),
+            Self::BackgroundEntry { background, .. } => write!(f, "{}", background.path().display()),
         }
     }
 }
@@ -116,9 +116,9 @@ impl VideoFile {
                     let url = HSTRING::from(std::path::absolute(path).context("finding the video file")?.as_os_str());
                     MFCreateSourceReaderFromURL(&url, None).context("opening the video file")?
                 }
-                Media::DeckEntry { deck, entry } => {
-                    let bytes = mp4_byte_stream(deck.clone(), *entry)?;
-                    MFCreateSourceReaderFromByteStream(&bytes, None).context("opening the deck's video")?
+                Media::BackgroundEntry { background, entry } => {
+                    let bytes = mp4_byte_stream(background.clone(), *entry)?;
+                    MFCreateSourceReaderFromByteStream(&bytes, None).context("opening the background's video")?
                 }
             };
             reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;

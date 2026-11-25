@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_deck::ModulePackage;
+use glassdeck_package::ModulePackage;
 use glassdeck_luau::profile::{Placement, Widget};
 use glassdeck_luau::{LuaResultExt, Vm, decode, encode, from_json};
 use mlua::{Function, Table, Value};
@@ -268,7 +268,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use glassdeck_deck::pack_folder;
+    use glassdeck_package::pack_folder;
 
     use super::*;
 

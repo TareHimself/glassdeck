@@ -1,7 +1,7 @@
 mod audio_mute;
 mod clock;
-mod deck_source;
-mod deck_stream;
+mod background_source;
+mod background_stream;
 mod desktop;
 mod gpu;
 mod link;
@@ -27,7 +27,7 @@ use link::Link;
 use desktop::{DesktopSource, EncoderKind};
 use monitors::MonitorQuery;
 use pipeline::{EncoderSettings, LinkOptions, Source, VideoCodec};
-use deck_source::WebEncoding;
+use background_source::WebEncoding;
 use play::{FileSource, Media};
 use record::RecordOptions;
 use wallpaper::WallpaperAction;
@@ -60,22 +60,22 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         fps: u32,
     },
-    /// Send an H.264 or HEVC video file without re-encoding, or play a .deck (video or web)
+    /// Send an H.264 or HEVC video file without re-encoding, or play a .deckbg (video or web)
     Play {
-        /// A video file, or a .deck
+        /// A video file, or a .deckbg
         file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:7878")]
         to: SocketAddr,
         /// Start over at the end, for wallpapers
         #[arg(long = "loop")]
         looping: bool,
-        /// Web decks: frames per second to render
+        /// Web backgrounds: frames per second to render
         #[arg(long, default_value_t = 60)]
         fps: u32,
-        /// Web decks: encoder bitrate
+        /// Web backgrounds: encoder bitrate
         #[arg(long, default_value_t = 12)]
         mbps: u32,
-        /// Web decks: stop after this many seconds
+        /// Web backgrounds: stop after this many seconds
         #[arg(long)]
         seconds: Option<u64>,
         /// Simulated link speed in MB/s (default is realistic USB 2.0 bulk)
@@ -122,9 +122,9 @@ enum Command {
         #[command(subcommand)]
         action: modules::ModuleAction,
     },
-    /// Choose the deck the keyboard plays from its own deck folder whenever no stream is open
-    SelectDeck {
-        /// File name in the keyboard's deck folder, such as we-2970107491.deck
+    /// Choose the background the keyboard plays from its own background folder whenever no stream is open
+    SelectBackground {
+        /// File name in the keyboard's background folder, such as we-2970107491.deckbg
         name: String,
         #[arg(long, default_value = "127.0.0.1:7878")]
         to: SocketAddr,
@@ -200,9 +200,9 @@ fn main() -> Result<()> {
             pipeline::run(Source::Frames(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
         Command::Play { file, to, looping, fps, mbps, seconds, link_mbytes, unlimited_link } => {
-            let source = if glassdeck_deck::is_deck(&file) {
+            let source = if glassdeck_package::is_background(&file) {
                 let web = WebEncoding { fps, bitrate: mbps * 1_000_000, duration: seconds.map(Duration::from_secs) };
-                deck_source::open(glassdeck_deck::Deck::open(&file)?, looping, web)?
+                background_source::open(glassdeck_package::Background::open(&file)?, looping, web)?
             } else {
                 Source::Encoded(Box::new(FileSource::open(Media::File(file), looping)?))
             };
@@ -210,8 +210,8 @@ fn main() -> Result<()> {
         }
         Command::Wallpaper { action } => wallpaper::run(action),
         Command::Module { action } => modules::run(action),
-        Command::SelectDeck { name, to } => {
-            Link::connect(to, None)?.send(&Message::SelectDeck { name: name.clone() })?;
+        Command::SelectBackground { name, to } => {
+            Link::connect(to, None)?.send(&Message::SelectBackground { name: name.clone() })?;
             println!("Asked {to} to play {name}");
             Ok(())
         }

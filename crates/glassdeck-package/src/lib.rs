@@ -1,5 +1,5 @@
-//! A `.deck`: one ZIP file of stored entries, each aligned to 4 KB and read in place, never extracted.
-//! The PC streams from it, and the keyboard keeps a copy to play on its own. Decks are replaced whole.
+//! A `.deckbg`: one ZIP file of stored entries, each aligned to 4 KB and read in place, never extracted.
+//! The PC streams from it, and the keyboard keeps a copy to play on its own. Backgrounds are replaced whole.
 
 mod manifest;
 mod module;
@@ -19,26 +19,26 @@ pub use module::{
 };
 pub use zip::{ALIGNMENT, Entry, check_name};
 
-pub const EXTENSION: &str = "deck";
+pub const EXTENSION: &str = "deckbg";
 pub const MANIFEST: &str = "manifest.json";
 pub const FORMAT_VERSION: u32 = 2;
-/// The Flux panel; every deck video is exactly this size, so nothing scales on the keyboard.
+/// The Flux panel; every background video is exactly this size, so nothing scales on the keyboard.
 pub const PANEL: (u16, u16) = (1920, 1080);
 const MAX_MANIFEST_LEN: u64 = 16 << 20;
 
-/// An opened deck whose manifest parsed and whose named entries are all present.
-pub struct Deck {
+/// An opened background whose manifest parsed and whose named entries are all present.
+pub struct Background {
     path: PathBuf,
     file: File,
     manifest: Manifest,
     entries: HashMap<String, Entry>,
 }
 
-impl Deck {
+impl Background {
     pub fn open(path: &Path) -> Result<Self> {
         let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let entries = zip::read_directory(&mut file).with_context(|| format!("reading {}", path.display()))?;
-        ensure!(!entries.contains_key(MODULE_MANIFEST), "{} is a module, not a deck", path.display());
+        ensure!(!entries.contains_key(MODULE_MANIFEST), "{} is a module, not a background", path.display());
         let raw = entries.get(MANIFEST).copied().with_context(|| format!("{} has no {MANIFEST}", path.display()))?;
         ensure!(raw.len <= MAX_MANIFEST_LEN, "{MANIFEST} is too large");
         let mut text = vec![0; raw.len as usize];
@@ -81,14 +81,14 @@ impl Deck {
 }
 
 /// Builds `<path>.tmp` with the manifest first, then renames it over `path`.
-pub struct DeckWriter {
+pub struct BackgroundWriter {
     path: PathBuf,
     staging: PathBuf,
     manifest: Manifest,
     zip: zip::ZipWriter,
 }
 
-impl DeckWriter {
+impl BackgroundWriter {
     pub fn create(path: &Path, manifest: Manifest) -> Result<Self> {
         ensure!(manifest.format == FORMAT_VERSION, "manifests are written as format {FORMAT_VERSION}");
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -110,16 +110,16 @@ impl DeckWriter {
         self.zip.add(name, &mut file).with_context(|| format!("adding {}", source.display()))
     }
 
-    /// Checks the manifest's entries were all added, then replaces any deck at the path.
-    pub fn finish(self) -> Result<Deck> {
+    /// Checks the manifest's entries were all added, then replaces any background at the path.
+    pub fn finish(self) -> Result<Background> {
         let names: Vec<&str> = self.zip.names().collect();
         self.manifest.validate(|name| names.contains(&name))?;
         drop(self.zip.finish()?);
         if self.path.is_dir() {
-            bail!("{} is a folder (an old-style deck); delete it and convert again", self.path.display());
+            bail!("{} is a folder (an old-style background); delete it and convert again", self.path.display());
         }
         fs::rename(&self.staging, &self.path).with_context(|| format!("moving {} into place", self.path.display()))?;
-        Deck::open(&self.path)
+        Background::open(&self.path)
     }
 }
 
@@ -131,7 +131,7 @@ pub fn preview_name(source: &Path) -> String {
     }
 }
 
-pub fn is_deck(path: &Path) -> bool {
+pub fn is_background(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
 }
 
@@ -163,20 +163,20 @@ fn read_at(file: &File, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
 
 /// Reads all of `entry` through `read_range`, in pieces, for callers holding only a reader.
 pub struct EntryReader<'a> {
-    deck: &'a Deck,
+    background: &'a Background,
     entry: Entry,
     at: u64,
 }
 
 impl<'a> EntryReader<'a> {
-    pub fn new(deck: &'a Deck, entry: Entry) -> Self {
-        Self { deck, entry, at: 0 }
+    pub fn new(background: &'a Background, entry: Entry) -> Self {
+        Self { background, entry, at: 0 }
     }
 }
 
 impl Read for EntryReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.deck.read_range(self.entry, self.at, buf).map_err(std::io::Error::other)?;
+        let n = self.background.read_range(self.entry, self.at, buf).map_err(std::io::Error::other)?;
         self.at += n as u64;
         Ok(n)
     }
@@ -197,7 +197,7 @@ mod tests {
 
     impl Scratch {
         pub(crate) fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("glassdeck-deck-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("glassdeck-package-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -239,45 +239,45 @@ mod tests {
     #[test]
     fn round_trip_keeps_manifest_and_bytes_at_aligned_offsets() {
         let scratch = Scratch::new("round-trip");
-        let path = scratch.0.join("late.deck");
+        let path = scratch.0.join("late.deckbg");
         let video: Vec<u8> = (0..10_000u32).map(|i| i as u8).collect();
-        let mut w = DeckWriter::create(&path, video_manifest()).unwrap();
+        let mut w = BackgroundWriter::create(&path, video_manifest()).unwrap();
         w.add_bytes("preview.jpg", b"jpeg").unwrap();
         w.add_bytes("video.mp4", &video).unwrap();
-        let deck = w.finish().unwrap();
+        let background = w.finish().unwrap();
 
-        assert_eq!(deck.manifest(), &video_manifest());
+        assert_eq!(background.manifest(), &video_manifest());
         for name in [MANIFEST, "preview.jpg", "video.mp4"] {
-            assert_eq!(deck.entry(name).unwrap().offset % ALIGNMENT, 0, "{name}");
+            assert_eq!(background.entry(name).unwrap().offset % ALIGNMENT, 0, "{name}");
         }
-        assert_eq!(deck.read_entry(deck.entry("video.mp4").unwrap()).unwrap(), video);
-        assert!(!scratch.0.join("late.deck.tmp").exists());
+        assert_eq!(background.read_entry(background.entry("video.mp4").unwrap()).unwrap(), video);
+        assert!(!scratch.0.join("late.deckbg.tmp").exists());
     }
 
     #[test]
     fn range_reads_stop_at_the_entry_end() {
         let scratch = Scratch::new("range");
-        let path = scratch.0.join("web.deck");
-        let mut w = DeckWriter::create(&path, web_manifest()).unwrap();
+        let path = scratch.0.join("web.deckbg");
+        let mut w = BackgroundWriter::create(&path, web_manifest()).unwrap();
         w.add_bytes("web/index.html", b"<html>hello</html>").unwrap();
         w.add_bytes("web/next.txt", b"NEXT").unwrap();
-        let deck = w.finish().unwrap();
+        let background = w.finish().unwrap();
 
-        let page = deck.entry("web/index.html").unwrap();
+        let page = background.entry("web/index.html").unwrap();
         let mut buf = [0u8; 64];
-        let n = deck.read_range(page, 6, &mut buf).unwrap();
+        let n = background.read_range(page, 6, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"hello</html>");
-        assert_eq!(deck.read_range(page, page.len, &mut buf).unwrap(), 0);
+        assert_eq!(background.read_range(page, page.len, &mut buf).unwrap(), 0);
         let mut small = [0u8; 4];
-        assert_eq!(deck.read_range(page, 1, &mut small).unwrap(), 4);
+        assert_eq!(background.read_range(page, 1, &mut small).unwrap(), 4);
         assert_eq!(&small, b"html");
     }
 
     #[test]
     fn a_manifest_naming_a_missing_entry_is_refused_before_replacing() {
         let scratch = Scratch::new("missing");
-        let path = scratch.0.join("late.deck");
-        let w = DeckWriter::create(&path, video_manifest()).unwrap();
+        let path = scratch.0.join("late.deckbg");
+        let w = BackgroundWriter::create(&path, video_manifest()).unwrap();
         assert!(w.finish().is_err());
         assert!(!path.exists());
     }
@@ -285,8 +285,8 @@ mod tests {
     #[test]
     fn a_deflated_entry_is_refused_by_name() {
         let scratch = Scratch::new("deflated");
-        let path = scratch.0.join("late.deck");
-        let mut w = DeckWriter::create(&path, web_manifest()).unwrap();
+        let path = scratch.0.join("late.deckbg");
+        let mut w = BackgroundWriter::create(&path, web_manifest()).unwrap();
         w.add_bytes("web/index.html", b"<html></html>").unwrap();
         w.finish().unwrap();
 
@@ -295,20 +295,20 @@ mod tests {
         bytes[central + 10] = 8;
         File::create(&path).unwrap().write_all(&bytes).unwrap();
 
-        let error = format!("{:#}", Deck::open(&path).err().unwrap());
+        let error = format!("{:#}", Background::open(&path).err().unwrap());
         assert!(error.contains("web/index.html") && error.contains("compressed"), "{error}");
     }
 
     #[test]
-    fn writing_replaces_an_existing_deck() {
+    fn writing_replaces_an_existing_background() {
         let scratch = Scratch::new("replace");
-        let path = scratch.0.join("web.deck");
+        let path = scratch.0.join("web.deckbg");
         for body in [&b"first"[..], b"second"] {
-            let mut w = DeckWriter::create(&path, web_manifest()).unwrap();
+            let mut w = BackgroundWriter::create(&path, web_manifest()).unwrap();
             w.add_bytes("web/index.html", body).unwrap();
             w.finish().unwrap();
         }
-        let deck = Deck::open(&path).unwrap();
-        assert_eq!(deck.read_entry(deck.entry("web/index.html").unwrap()).unwrap(), b"second");
+        let background = Background::open(&path).unwrap();
+        assert_eq!(background.read_entry(background.entry("web/index.html").unwrap()).unwrap(), b"second");
     }
 }

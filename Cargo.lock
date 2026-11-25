@@ -578,8 +578,8 @@ dependencies = [
  "cc",
  "clap",
  "ctrlc",
- "glassdeck-deck",
  "glassdeck-luau",
+ "glassdeck-package",
  "glassdeck-proto",
  "glassdeck-wallpaper-engine",
  "mlua",
@@ -592,17 +592,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glassdeck-deck"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glassdeck-proto",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "glassdeck-layout"
 version = "0.1.0"
 
@@ -611,12 +600,23 @@ name = "glassdeck-luau"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "glassdeck-deck",
  "glassdeck-layout",
+ "glassdeck-package",
  "mlua",
  "rmpv",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "glassdeck-package"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glassdeck-proto",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -632,9 +632,9 @@ dependencies = [
  "clap",
  "drm",
  "fontdue",
- "glassdeck-deck",
  "glassdeck-layout",
  "glassdeck-luau",
+ "glassdeck-package",
  "glassdeck-proto",
  "minifb",
  "mlua",
@@ -650,7 +650,7 @@ name = "glassdeck-wallpaper-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "glassdeck-deck",
+ "glassdeck-package",
  "glassdeck-proto",
  "serde",
  "serde_json",

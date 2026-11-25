@@ -2,16 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use glassdeck_deck::{Content, Deck, PANEL};
+use glassdeck_package::{Content, Background, PANEL};
 use glassdeck_proto::Codec;
 
 use crate::pipeline::{EncoderSettings, Source};
 use crate::play::{FileSource, Media};
-use crate::web::{DECK_ORIGIN, WebSource};
+use crate::web::{BACKGROUND_ORIGIN, WebSource};
 
 const WEB_KEYFRAME_SECONDS: u32 = 2;
 
-/// How a web deck is rendered and encoded; video decks are sent as they are.
+/// How a web background is rendered and encoded; video backgrounds are sent as they are.
 #[derive(Clone, Copy, Debug)]
 pub struct WebEncoding {
     pub fps: u32,
@@ -19,14 +19,14 @@ pub struct WebEncoding {
     pub duration: Option<Duration>,
 }
 
-/// A video deck streams its MP4 entry in place; a web deck renders through CEF from `deck://`.
-pub fn open(deck: Deck, looping: bool, web: WebEncoding) -> Result<Source> {
-    let deck = Arc::new(deck);
-    println!("{} ({})", deck.manifest().title, deck.path().display());
-    match deck.manifest().content.clone() {
+/// A video background streams its MP4 entry in place; a web background renders through CEF from `background://`.
+pub fn open(background: Background, looping: bool, web: WebEncoding) -> Result<Source> {
+    let background = Arc::new(background);
+    println!("{} ({})", background.manifest().title, background.path().display());
+    match background.manifest().content.clone() {
         Content::Video { file, .. } => {
-            let entry = deck.entry(&file).with_context(|| format!("the deck has no {file}"))?;
-            Ok(Source::Encoded(Box::new(FileSource::open(Media::DeckEntry { deck, entry }, looping)?)))
+            let entry = background.entry(&file).with_context(|| format!("the background has no {file}"))?;
+            Ok(Source::Encoded(Box::new(FileSource::open(Media::BackgroundEntry { background, entry }, looping)?)))
         }
         Content::Web { entry, properties } => {
             let settings = EncoderSettings {
@@ -38,10 +38,10 @@ pub fn open(deck: Deck, looping: bool, web: WebEncoding) -> Result<Source> {
                 keyframe_every: web.fps * WEB_KEYFRAME_SECONDS,
                 vbv_frames: None,
             };
-            let url = format!("{DECK_ORIGIN}{}", url_path(&entry));
+            let url = format!("{BACKGROUND_ORIGIN}{}", url_path(&entry));
             let source = WebSource::new(&url, settings, web.duration)?
                 .with_init_script(&glassdeck_wallpaper_engine::init_script(&properties))?
-                .with_deck(deck);
+                .with_background(background);
             Ok(Source::Frames(Box::new(source)))
         }
     }

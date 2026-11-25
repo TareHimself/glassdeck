@@ -1,4 +1,4 @@
-//! The slice of ZIP a deck uses: stored entries only, data aligned to 4 KB, no ZIP64.
+//! The slice of ZIP a background uses: stored entries only, data aligned to 4 KB, no ZIP64.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,7 +25,7 @@ const ALIGNMENT_EXTRA_MIN_LEN: u64 = 6;
 /// 1980-01-01 00:00 in DOS time: entries carry no meaningful timestamps.
 const DOS_DATE_1980: u16 = (1 << 5) | 1;
 
-/// An entry's data as a byte range of the deck file.
+/// An entry's data as a byte range of the background file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub offset: u64,
@@ -70,7 +70,7 @@ pub fn read_directory(file: &mut File) -> Result<HashMap<String, Entry>> {
         at = name_at + name_len + extra_len + comment_len;
 
         if method != STORED {
-            bail!("entry {name:?} is compressed (method {method}); a deck holds stored entries only");
+            bail!("entry {name:?} is compressed (method {method}); a background holds stored entries only");
         }
         ensure!(flags & FLAG_ENCRYPTED == 0, "entry {name:?} is encrypted");
         ensure!(compressed == size, "entry {name:?} has different stored and real sizes");
@@ -144,7 +144,7 @@ impl ZipWriter {
             len += n as u64;
         }
         let len = u32::try_from(len).with_context(|| format!("entry {name:?} is over 4 GB"))?;
-        let local_offset = u32::try_from(local_offset).context("the deck is over 4 GB")?;
+        let local_offset = u32::try_from(local_offset).context("the background is over 4 GB")?;
         let end = self.file.stream_position()?;
         self.file.seek(SeekFrom::Start(local_offset as u64))?;
         self.file.write_all(&local_header(name, extra_len, crc.value(), len))?;
@@ -173,14 +173,14 @@ impl ZipWriter {
             directory.extend_from_slice(&w.local_offset.to_le_bytes());
             directory.extend_from_slice(w.name.as_bytes());
         }
-        let count = u16::try_from(self.written.len()).context("a deck holds at most 65535 entries")?;
+        let count = u16::try_from(self.written.len()).context("a background holds at most 65535 entries")?;
         let mut end = Vec::with_capacity(END_RECORD_LEN);
         end.extend_from_slice(&END_SIGNATURE.to_le_bytes());
         end.extend_from_slice(&[0; 4]);
         end.extend_from_slice(&count.to_le_bytes());
         end.extend_from_slice(&count.to_le_bytes());
         end.extend_from_slice(&(directory.len() as u32).to_le_bytes());
-        end.extend_from_slice(&u32::try_from(directory_offset).context("the deck is over 4 GB")?.to_le_bytes());
+        end.extend_from_slice(&u32::try_from(directory_offset).context("the background is over 4 GB")?.to_le_bytes());
         end.extend_from_slice(&0u16.to_le_bytes());
         self.file.write_all(&directory)?;
         self.file.write_all(&end)?;

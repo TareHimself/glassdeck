@@ -1,5 +1,5 @@
-//! A `.deckmod`: a widget module in the same stored-zip container as a deck, with `module.toml` as
-//! its manifest. Modules and decks refuse each other's files.
+//! A `.deckmod`: a widget module in the same stored-zip container as a background, with `module.toml` as
+//! its manifest. Modules and backgrounds refuse each other's files.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -89,7 +89,7 @@ impl ModulePackage {
     pub fn open(path: &Path) -> Result<Self> {
         let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let entries = zip::read_directory(&mut file).with_context(|| format!("reading {}", path.display()))?;
-        ensure!(!entries.contains_key(MANIFEST), "{} is a deck, not a module", path.display());
+        ensure!(!entries.contains_key(MANIFEST), "{} is a background, not a module", path.display());
         let manifest = entries.get(MODULE_MANIFEST).copied().with_context(|| format!("{} has no {MODULE_MANIFEST}", path.display()))?;
         let text = read_text(&file, manifest).with_context(|| format!("reading {}", path.display()))?;
         let manifest = ModuleManifest::parse(&text).with_context(|| format!("checking {}", path.display()))?;
@@ -168,7 +168,7 @@ impl ModuleWriter {
     }
 
     pub fn add_file(&mut self, name: &str, source: &Path) -> Result<()> {
-        ensure!(name != MANIFEST, "a module can't contain {MANIFEST}, which marks a deck");
+        ensure!(name != MANIFEST, "a module can't contain {MANIFEST}, which marks a background");
         let mut file = File::open(source).with_context(|| format!("opening {}", source.display()))?;
         self.zip.add(name, &mut file).with_context(|| format!("adding {}", source.display()))
     }
@@ -273,19 +273,19 @@ max = { w = 480, h = 240 }
     }
 
     #[test]
-    fn decks_and_modules_refuse_each_other() {
-        let scratch = Scratch::new("module-vs-deck");
-        let deck = scratch.0.join("web.deck");
-        let mut w = crate::DeckWriter::create(&deck, web_manifest()).unwrap();
+    fn backgrounds_and_modules_refuse_each_other() {
+        let scratch = Scratch::new("module-vs-background");
+        let background = scratch.0.join("web.deckbg");
+        let mut w = crate::BackgroundWriter::create(&background, web_manifest()).unwrap();
         w.add_bytes("web/index.html", b"<html></html>").unwrap();
         w.finish().unwrap();
-        assert!(format!("{:#}", ModulePackage::open(&deck).err().unwrap()).contains("is a deck"));
+        assert!(format!("{:#}", ModulePackage::open(&background).err().unwrap()).contains("is a background"));
 
         let folder = scratch.0.join("clock");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join(MODULE_MANIFEST), CLOCK).unwrap();
         fs::write(folder.join(KEYBOARD_SCRIPT), "return {}").unwrap();
         let module = pack_folder(&folder, &scratch.0.join("clock.deckmod")).unwrap();
-        assert!(format!("{:#}", crate::Deck::open(module.path()).err().unwrap()).contains("is a module"));
+        assert!(format!("{:#}", crate::Background::open(module.path()).err().unwrap()).contains("is a module"));
     }
 }

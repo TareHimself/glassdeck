@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use glassdeck_deck::{Deck, Entry};
+use glassdeck_package::{Background, Entry};
 use glassdeck_proto::unix_micros;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -24,13 +24,13 @@ use crate::gpu::GpuEncoder;
 use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat, request_stop, stop_requested};
 
 const POLL: Duration = Duration::from_millis(50);
-/// Pages inside a deck load from here; the shim serves each path from the deck's entry of that name.
-pub const DECK_ORIGIN: &str = "deck://wallpaper/";
+/// Pages inside a background load from here; the shim serves each path from the background's entry of that name.
+pub const BACKGROUND_ORIGIN: &str = "background://wallpaper/";
 
 type FrameFn = extern "C" fn(user: *mut c_void, shared_handle: *mut c_void, width: u32, height: u32, timestamp_us: u64);
 
 #[repr(C)]
-struct DeckProvider {
+struct BackgroundProvider {
     user: *mut c_void,
     lookup: extern "C" fn(*mut c_void, *const c_char, *mut u64, *mut u64, *mut c_char, u32) -> i32,
     read: extern "C" fn(*mut c_void, u64, u64, u64, *mut c_void, u32) -> i64,
@@ -41,7 +41,7 @@ unsafe extern "C" {
     fn gd_web_start(
         url: *const c_char,
         init_script: *const c_char,
-        deck: *const DeckProvider,
+        background: *const BackgroundProvider,
         width: u32,
         height: u32,
         fps: u32,
@@ -62,7 +62,7 @@ pub fn helper_process_exit_code() -> Option<i32> {
 pub struct WebSource {
     url: CString,
     init_script: CString,
-    deck: Option<Arc<Deck>>,
+    background: Option<Arc<Background>>,
     format: VideoFormat,
     settings: EncoderSettings,
     duration: Option<Duration>,
@@ -73,7 +73,7 @@ impl WebSource {
         Ok(Self {
             url: CString::new(url).context("URL contains a NUL byte")?,
             init_script: CString::default(),
-            deck: None,
+            background: None,
             format: VideoFormat {
                 codec: settings.codec,
                 width: u16::try_from(settings.width).context("page too wide")?,
@@ -89,9 +89,9 @@ impl WebSource {
         Ok(Self { init_script: CString::new(script).context("init script contains a NUL byte")?, ..self })
     }
 
-    /// Serves `deck://wallpaper/<entry>` from the deck while the page runs.
-    pub fn with_deck(self, deck: Arc<Deck>) -> Self {
-        Self { deck: Some(deck), ..self }
+    /// Serves `background://wallpaper/<entry>` from the background while the page runs.
+    pub fn with_background(self, background: Arc<Background>) -> Self {
+        Self { background: Some(background), ..self }
     }
 }
 
@@ -113,12 +113,12 @@ impl FrameSource for WebSource {
 
         let cache = CString::new(std::env::temp_dir().join("glassdeck-cef").to_string_lossy().as_bytes())?;
         let user = (&*sink as *const Mutex<FrameSink>).cast_mut().cast();
-        let provider = self.deck.as_ref().map(|deck| DeckProvider {
-            user: Arc::as_ptr(deck).cast_mut().cast(),
-            lookup: deck_lookup,
-            read: deck_read,
+        let provider = self.background.as_ref().map(|background| BackgroundProvider {
+            user: Arc::as_ptr(background).cast_mut().cast(),
+            lookup: background_lookup,
+            read: background_read,
         });
-        let provider_ptr = provider.as_ref().map_or(std::ptr::null(), |p| p as *const DeckProvider);
+        let provider_ptr = provider.as_ref().map_or(std::ptr::null(), |p| p as *const BackgroundProvider);
         let started = unsafe {
             gd_web_start(
                 self.url.as_ptr(),
@@ -265,11 +265,11 @@ impl FrameSink {
     }
 }
 
-extern "C" fn deck_lookup(user: *mut c_void, path: *const c_char, offset: *mut u64, len: *mut u64, mime: *mut c_char, mime_cap: u32) -> i32 {
-    let deck = unsafe { &*(user as *const Deck) };
+extern "C" fn background_lookup(user: *mut c_void, path: *const c_char, offset: *mut u64, len: *mut u64, mime: *mut c_char, mime_cap: u32) -> i32 {
+    let background = unsafe { &*(user as *const Background) };
     let Ok(path) = unsafe { CStr::from_ptr(path) }.to_str() else { return 1 };
-    let Some(entry) = deck.entry(path) else {
-        eprintln!("deck: the page asked for {path:?}, which the deck does not hold");
+    let Some(entry) = background.entry(path) else {
+        eprintln!("background: the page asked for {path:?}, which the background does not hold");
         return 1;
     };
     let kind = mime_type(path).as_bytes();
@@ -283,13 +283,13 @@ extern "C" fn deck_lookup(user: *mut c_void, path: *const c_char, offset: *mut u
     0
 }
 
-extern "C" fn deck_read(user: *mut c_void, offset: u64, len: u64, at: u64, buf: *mut c_void, buf_len: u32) -> i64 {
-    let deck = unsafe { &*(user as *const Deck) };
+extern "C" fn background_read(user: *mut c_void, offset: u64, len: u64, at: u64, buf: *mut c_void, buf_len: u32) -> i64 {
+    let background = unsafe { &*(user as *const Background) };
     let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_len as usize) };
-    match deck.read_range(Entry { offset, len }, at, buf) {
+    match background.read_range(Entry { offset, len }, at, buf) {
         Ok(n) => n as i64,
         Err(e) => {
-            eprintln!("deck: {e:#}");
+            eprintln!("background: {e:#}");
             -1
         }
     }

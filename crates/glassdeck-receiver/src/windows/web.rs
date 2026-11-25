@@ -9,17 +9,17 @@ use crate::mailbox::Mailbox;
 #[derive(Clone)]
 pub struct Registrar;
 
-/// Web decks render on the keyboard; on the PC, `glassdeck-capture play` renders them with CEF instead.
-pub enum WebDeck {}
+/// Web backgrounds render on the keyboard; on the PC, `glassdeck-capture play` renders them with CEF instead.
+pub enum WebBackground {}
 
-impl WebDeck {
+impl WebBackground {
     pub fn start(
-        _deck: &Path,
+        _background: &Path,
         _registrar: Registrar,
         _mailbox: Arc<Mailbox>,
         _stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        bail!("web decks play only on the keyboard; stream them from the PC with `glassdeck-capture play`")
+        bail!("web backgrounds play only on the keyboard; stream them from the PC with `glassdeck-capture play`")
     }
 
     pub fn stop(self) {

@@ -1,4 +1,4 @@
-//! Web decks: glassdeck-local-web renders them into its own scanout buffers and presents them over a socket.
+//! Web backgrounds: glassdeck-local-web renders them into its own scanout buffers and presents them over a socket.
 
 use std::collections::HashMap;
 use std::io::IoSliceMut;
@@ -59,16 +59,16 @@ fn send(socket: &OwnedFd, message: &FromCompositor) -> Result<(), RendererGone> 
     }
 }
 
-pub struct WebDeck {
+pub struct WebBackground {
     stop: Arc<AtomicBool>,
     socket: Arc<OwnedFd>,
     renderer: Pid,
     thread: JoinHandle<()>,
 }
 
-impl WebDeck {
+impl WebBackground {
     pub fn start(
-        deck: &Path,
+        background: &Path,
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
@@ -82,7 +82,7 @@ impl WebDeck {
         command
             .args(["-u", RENDERER_USER, "--", RENDERER])
             .arg(format!("--compositor-fd={RENDERER_SOCKET_FD}"))
-            .arg(format!("--deck={}", deck.display()));
+            .arg(format!("--background={}", background.display()));
         // SAFETY: dup2 is async-signal-safe, and nothing else runs between fork and exec.
         unsafe {
             command.pre_exec(move || match dup2(theirs_raw, RENDERER_SOCKET_FD) {
@@ -93,13 +93,13 @@ impl WebDeck {
         let mut child = command.spawn().with_context(|| format!("starting {RENDERER}"))?;
         let renderer = Pid::from_child(&child);
         drop(theirs);
-        println!("Local deck {}: web, rendered by {RENDERER} (pid {})", deck.display(), child.id());
+        println!("Local background {}: web, rendered by {RENDERER} (pid {})", background.display(), child.id());
 
         let stop = Arc::new(AtomicBool::new(false));
         let socket = Arc::new(ours);
         let thread = {
             let (stop, socket) = (Arc::clone(&stop), Arc::clone(&socket));
-            thread::Builder::new().name("web deck".into()).spawn(move || {
+            thread::Builder::new().name("web background".into()).spawn(move || {
                 let served = serve(&socket, &registrar, &mailbox);
                 let status = child.wait();
                 if stop.load(Ordering::Relaxed) {
@@ -125,7 +125,7 @@ impl WebDeck {
             eprintln!("error: closing the compositor socket: {e}");
         }
         if self.thread.join().is_err() {
-            eprintln!("error: the web deck thread panicked");
+            eprintln!("error: the web background thread panicked");
         }
     }
 }

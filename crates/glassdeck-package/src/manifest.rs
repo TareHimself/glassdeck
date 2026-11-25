@@ -43,7 +43,7 @@ pub enum Content {
 impl Manifest {
     /// Checks the format, the video spec, and that every entry the manifest names exists.
     pub fn validate(&self, has_entry: impl Fn(&str) -> bool) -> Result<()> {
-        ensure!(self.format == FORMAT_VERSION, "deck format {} is not the {FORMAT_VERSION} this build reads", self.format);
+        ensure!(self.format == FORMAT_VERSION, "background format {} is not the {FORMAT_VERSION} this build reads", self.format);
         let named = match &self.content {
             Content::Video { file, format } => {
                 if (format.width, format.height) != PANEL {
@@ -55,7 +55,7 @@ impl Manifest {
         };
         for name in std::iter::once(named).chain(&self.preview) {
             check_name(name)?;
-            ensure!(has_entry(name), "the manifest names {name:?}, which the deck does not hold");
+            ensure!(has_entry(name), "the manifest names {name:?}, which the background does not hold");
         }
         Ok(())
     }
@@ -82,7 +82,7 @@ impl FrameRate {
     }
 }
 
-/// Why a video cannot go into a deck as it is.
+/// Why a video cannot go into a background as it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpecMismatch {
     Codec,
@@ -113,7 +113,7 @@ pub struct ProbedVideo {
     pub frame_rate: FrameRate,
 }
 
-/// The deck video spec: H.264 or HEVC at the panel's size.
+/// The background video spec: H.264 or HEVC at the panel's size.
 pub fn check(video: ProbedVideo) -> Result<VideoFormat, SpecMismatch> {
     let ProbedCodec::Known(codec) = video.codec else {
         return Err(SpecMismatch::Codec);

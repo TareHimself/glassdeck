@@ -1,5 +1,5 @@
 //! Wallpaper Engine import, "bring your own install": reads items already in the local Steam workshop folder.
-//! Nothing is downloaded, and converted decks stay on this PC and its keyboard.
+//! Nothing is downloaded, and converted backgrounds stay on this PC and its keyboard.
 
 pub mod library;
 pub mod project;
@@ -10,7 +10,7 @@ pub mod web_media;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use glassdeck_deck::{Content, Deck, DeckWriter, FORMAT_VERSION, Manifest, Origin, PANEL, VideoFormat};
+use glassdeck_package::{Content, Background, BackgroundWriter, FORMAT_VERSION, Manifest, Origin, PANEL, VideoFormat};
 use glassdeck_proto::Codec;
 use serde_json::{Map, Value};
 
@@ -21,34 +21,34 @@ pub use video::EncodeSettings;
 pub const WEB_ROOT: &str = "web";
 const VIDEO_ENTRY: &str = "video.mp4";
 
-/// Where converted decks go unless told otherwise: `%LOCALAPPDATA%\Glassdeck\decks`.
-pub fn default_decks_dir() -> Result<PathBuf> {
+/// Where converted backgrounds go unless told otherwise: `%LOCALAPPDATA%\Glassdeck\backgrounds`.
+pub fn default_backgrounds_dir() -> Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    Ok(PathBuf::from(local).join("Glassdeck").join("decks"))
+    Ok(PathBuf::from(local).join("Glassdeck").join("backgrounds"))
 }
 
-pub fn deck_path(decks_dir: &Path, item: &Item) -> PathBuf {
-    decks_dir.join(format!("we-{}.{}", item.id, glassdeck_deck::EXTENSION))
+pub fn background_path(backgrounds_dir: &Path, item: &Item) -> PathBuf {
+    backgrounds_dir.join(format!("we-{}.{}", item.id, glassdeck_package::EXTENSION))
 }
 
-/// Converts a video or web item into a deck at `out`; other kinds are refused.
-pub fn convert(item: &Item, project: &Project, out: &Path, settings: EncodeSettings) -> Result<Deck> {
+/// Converts a video or web item into a background at `out`; other kinds are refused.
+pub fn convert(item: &Item, project: &Project, out: &Path, settings: EncodeSettings) -> Result<Background> {
     match &project.kind {
         Kind::Video { file } => convert_video(item, project, file, out, settings),
         Kind::Web { file } => convert_web(item, project, file, out),
-        other => bail!("{} is a {other} wallpaper; only video and web wallpapers convert to a deck", item.id),
+        other => bail!("{} is a {other} wallpaper; only video and web wallpapers convert to a background", item.id),
     }
 }
 
-/// A video goes in as it is when it meets the deck spec, and is re-encoded otherwise.
-pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, settings: EncodeSettings) -> Result<Deck> {
+/// A video goes in as it is when it meets the background spec, and is re-encoded otherwise.
+pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, settings: EncodeSettings) -> Result<Background> {
     video::start_media_foundation()?;
     let source = item.dir.join(file);
     let content = |format| Content::Video { file: VIDEO_ENTRY.into(), format };
-    match glassdeck_deck::check(video::probe(&source)?) {
+    match glassdeck_package::check(video::probe(&source)?) {
         Ok(format) => {
-            println!("{file} already meets the deck spec ({:?} {}x{}); storing it as is", format.codec, format.width, format.height);
-            write_deck(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &source))
+            println!("{file} already meets the background spec ({:?} {}x{}); storing it as is", format.codec, format.width, format.height);
+            write_background(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &source))
         }
         Err(why) => {
             println!("Re-encoding {file} to HEVC {}x{}: {why}", PANEL.0, PANEL.1);
@@ -58,16 +58,16 @@ pub fn convert_video(item: &Item, project: &Project, file: &str, out: &Path, set
             }
             let frame_rate = video::transcode(&source, &encoded, settings)?;
             let format = VideoFormat { codec: Codec::Hevc, width: PANEL.0, height: PANEL.1, frame_rate };
-            let deck = write_deck(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &encoded));
+            let background = write_background(item, project, content(format), out, |w| w.add_file(VIDEO_ENTRY, &encoded));
             std::fs::remove_file(&encoded).with_context(|| format!("removing {}", encoded.display()))?;
-            deck
+            background
         }
     }
 }
 
-/// The item's whole folder goes under `web/`, so its relative URLs keep working from `deck://`.
+/// The item's whole folder goes under `web/`, so its relative URLs keep working from `background://`.
 /// Media goes through `web_media` first: VP9 where needed, and no sound.
-pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Result<Deck> {
+pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Result<Background> {
     let files = folder_files(&item.dir)?;
     let content = Content::Web {
         entry: format!("{WEB_ROOT}/{}", file.replace('\\', "/")),
@@ -76,7 +76,7 @@ pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Re
     let converted_dir = out.with_extension("media");
     let sources = web_sources(item, &files, &converted_dir)?;
     println!("Packing {} files from {}", files.len(), item.dir.display());
-    let deck = write_deck(item, project, content, out, |w| {
+    let background = write_background(item, project, content, out, |w| {
         for (relative, source) in files.iter().zip(&sources) {
             w.add_file(&format!("{WEB_ROOT}/{relative}"), source)?;
         }
@@ -85,7 +85,7 @@ pub fn convert_web(item: &Item, project: &Project, file: &str, out: &Path) -> Re
     if converted_dir.exists() {
         std::fs::remove_dir_all(&converted_dir).with_context(|| format!("removing {}", converted_dir.display()))?;
     }
-    deck
+    background
 }
 
 /// Where each file's bytes come from: the item folder, or a converted copy under `converted_dir`.
@@ -113,15 +113,15 @@ fn web_sources(item: &Item, files: &[String], converted_dir: &Path) -> Result<Ve
     Ok(sources)
 }
 
-fn write_deck(
+fn write_background(
     item: &Item,
     project: &Project,
     content: Content,
     out: &Path,
-    add_content: impl FnOnce(&mut DeckWriter) -> Result<()>,
-) -> Result<Deck> {
+    add_content: impl FnOnce(&mut BackgroundWriter) -> Result<()>,
+) -> Result<Background> {
     let preview = project.preview.as_ref().map(|name| item.dir.join(name)).filter(|p| p.is_file());
-    let preview_name = preview.as_deref().map(glassdeck_deck::preview_name);
+    let preview_name = preview.as_deref().map(glassdeck_package::preview_name);
     let manifest = Manifest {
         format: FORMAT_VERSION,
         title: project.title.clone(),
@@ -129,7 +129,7 @@ fn write_deck(
         content,
         preview: preview_name.clone(),
     };
-    let mut writer = DeckWriter::create(out, manifest)?;
+    let mut writer = BackgroundWriter::create(out, manifest)?;
     if let (Some(path), Some(name)) = (&preview, &preview_name) {
         writer.add_file(name, path)?;
     }

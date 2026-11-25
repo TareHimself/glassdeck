@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use glassdeck_deck::{ModulePackage, is_module, pack_folder};
+use glassdeck_package::{ModulePackage, is_module, pack_folder};
 use glassdeck_luau::profile::{Profile, WidgetArea};
 use glassdeck_luau::{LuaResultExt, Vm, encode};
 use glassdeck_proto::Message;
@@ -49,7 +49,7 @@ pub enum ModuleAction {
 pub fn run(action: ModuleAction) -> Result<()> {
     match action {
         ModuleAction::Pack { folder, out } => {
-            let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_deck::MODULE_EXTENSION));
+            let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
             let package = pack_folder(&folder, &out)?;
             println!("Packed {} into {}", package.manifest().id, out.display());
             Ok(())

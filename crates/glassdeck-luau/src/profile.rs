@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use glassdeck_deck::{ModuleManifest, Size};
+use glassdeck_package::{ModuleManifest, Size};
 use glassdeck_layout::{Layout, Variant};
 use serde::Deserialize;
 
@@ -106,7 +106,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glassdeck_deck::Resize;
+    use glassdeck_package::Resize;
 
     const AREA: Size = Size { w: 1903, h: 256 };
 

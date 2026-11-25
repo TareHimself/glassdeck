@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 5;
+pub const VERSION: u8 = 6;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
@@ -24,7 +24,7 @@ const KIND_FRAME: u8 = 2;
 const KIND_STREAM_END: u8 = 3;
 const KIND_CLOCK_PROBE: u8 = 4;
 const KIND_CLOCK_REPLY: u8 = 5;
-const KIND_SELECT_DECK: u8 = 6;
+const KIND_SELECT_BACKGROUND: u8 = 6;
 const KIND_MODULE_DATA: u8 = 7;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
@@ -77,9 +77,9 @@ pub enum Message {
     ClockProbe { sent_us: u64 },
     /// Receiver to sender: the probe's `sent_us`, and the receiver's clock when the probe arrived.
     ClockReply { probe_sent_us: u64, received_us: u64 },
-    /// Sender to receiver: play this deck from the keyboard's deck folder whenever no stream is open,
+    /// Sender to receiver: play this background from the keyboard's background folder whenever no stream is open,
     /// and remember it across restarts.
-    SelectDeck { name: String },
+    SelectBackground { name: String },
     /// PC to keyboard: what a widget's `pc.luau` sent, for the instance numbered by its place in
     /// the profile's widget list. `payload` is MessagePack.
     ModuleData { instance: u16, payload: Vec<u8> },
@@ -93,7 +93,7 @@ pub enum ProtoError {
     BadBodyLength { kind: u8, len: usize },
     UnknownCodec(u8),
     UnknownMode(u8),
-    DeckNameNotUtf8,
+    BackgroundNameNotUtf8,
     Io(io::Error),
 }
 
@@ -106,7 +106,7 @@ impl fmt::Display for ProtoError {
             Self::BadBodyLength { kind, len } => write!(f, "message kind {kind} has invalid body length {len}"),
             Self::UnknownCodec(c) => write!(f, "unknown codec {c}"),
             Self::UnknownMode(m) => write!(f, "unknown mode {m}"),
-            Self::DeckNameNotUtf8 => write!(f, "deck name is not UTF-8"),
+            Self::BackgroundNameNotUtf8 => write!(f, "background name is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -184,7 +184,7 @@ impl Message {
             Self::ClockReply { probe_sent_us, received_us } => {
                 (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
             }
-            Self::SelectDeck { name } => (KIND_SELECT_DECK, name.as_bytes().to_vec()),
+            Self::SelectBackground { name } => (KIND_SELECT_BACKGROUND, name.as_bytes().to_vec()),
             Self::ModuleData { instance, payload } => {
                 (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat())
             }
@@ -237,9 +237,9 @@ impl Message {
             KIND_CLOCK_REPLY if body.len() == CLOCK_REPLY_LEN => {
                 Ok(Self::ClockReply { probe_sent_us: u64_at(&body, 0), received_us: u64_at(&body, 8) })
             }
-            KIND_SELECT_DECK => {
-                let name = String::from_utf8(body).map_err(|_| ProtoError::DeckNameNotUtf8)?;
-                Ok(Self::SelectDeck { name })
+            KIND_SELECT_BACKGROUND => {
+                let name = String::from_utf8(body).map_err(|_| ProtoError::BackgroundNameNotUtf8)?;
+                Ok(Self::SelectBackground { name })
             }
             KIND_MODULE_DATA if body.len() >= MODULE_DATA_FIXED_LEN => {
                 let mut body = body;
@@ -317,7 +317,7 @@ mod tests {
         round_trip(Message::StreamEnd { stream_id: 3 });
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
-        round_trip(Message::SelectDeck { name: "late-night.deck".into() });
+        round_trip(Message::SelectBackground { name: "late-night.deckbg".into() });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
     }
 

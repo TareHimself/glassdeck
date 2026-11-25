@@ -1,4 +1,4 @@
-//! Decks played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web.
+//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,43 +6,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
-use glassdeck_deck::{Content, Deck, Entry};
+use glassdeck_package::{Content, Background, Entry};
 use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
-use crate::platform::{self, Decoder, Registrar, WebDeck};
+use crate::platform::{self, Decoder, Registrar, WebBackground};
 use crate::playout::{PlayoutClock, wait_until};
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
 const LOCAL_PLAYOUT_DELAY_US: u64 = 100_000;
 
-/// A deck playing until stopped or failed.
-pub enum LocalDeck {
+/// A background playing until stopped or failed.
+pub enum LocalBackground {
     /// Decoded on its own thread
     Video { stop: Arc<AtomicBool>, thread: JoinHandle<()> },
     /// Rendered by glassdeck-local-web
-    Web(WebDeck),
+    Web(WebBackground),
 }
 
-impl LocalDeck {
-    /// `stopped` runs if the deck ends by itself, never after `stop`.
+impl LocalBackground {
+    /// `stopped` runs if the background ends by itself, never after `stop`.
     pub fn start(
         path: &Path,
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        let deck = Deck::open(path)?;
-        let entry = match &deck.manifest().content {
-            Content::Video { file, .. } => deck.entry(file).context("the deck's video is missing")?,
-            Content::Web { .. } => return WebDeck::start(path, registrar, mailbox, stopped).map(Self::Web),
+        let background = Background::open(path)?;
+        let entry = match &background.manifest().content {
+            Content::Video { file, .. } => background.entry(file).context("the background's video is missing")?,
+            Content::Web { .. } => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
-        let thread = thread::Builder::new().name("local deck".into()).spawn(move || {
-            let error = match play_video(&deck, entry, &mailbox, &asked) {
-                Ok(()) => anyhow!("the deck stopped without being asked"),
+        let thread = thread::Builder::new().name("local background".into()).spawn(move || {
+            let error = match play_video(&background, entry, &mailbox, &asked) {
+                Ok(()) => anyhow!("the background stopped without being asked"),
                 Err(e) => e,
             };
             if !asked.load(Ordering::Relaxed) {
@@ -57,7 +57,7 @@ impl LocalDeck {
             Self::Video { stop, thread } => {
                 stop.store(true, Ordering::Relaxed);
                 if thread.join().is_err() {
-                    eprintln!("error: the local deck thread panicked");
+                    eprintln!("error: the local background thread panicked");
                 }
             }
             Self::Web(web) => web.stop(),
@@ -65,12 +65,12 @@ impl LocalDeck {
     }
 }
 
-struct DeckEntry<'a> {
-    deck: &'a Deck,
+struct BackgroundEntry<'a> {
+    background: &'a Background,
     entry: Entry,
 }
 
-impl ReadAt for DeckEntry<'_> {
+impl ReadAt for BackgroundEntry<'_> {
     fn len(&self) -> u64 {
         self.entry.len
     }
@@ -78,8 +78,8 @@ impl ReadAt for DeckEntry<'_> {
     fn read_at(&self, at: u64, buf: &mut [u8]) -> Result<()> {
         let mut done = 0;
         while done < buf.len() {
-            let n = self.deck.read_range(self.entry, at + done as u64, &mut buf[done..])?;
-            anyhow::ensure!(n > 0, "the deck's video ends early");
+            let n = self.background.read_range(self.entry, at + done as u64, &mut buf[done..])?;
+            anyhow::ensure!(n > 0, "the background's video ends early");
             done += n;
         }
         Ok(())
@@ -87,16 +87,16 @@ impl ReadAt for DeckEntry<'_> {
 }
 
 /// Loops the video forever; presentation times keep rising across loops so the decoder and clock never rewind.
-fn play_video(deck: &Deck, entry: Entry, mailbox: &Mailbox, stop: &AtomicBool) -> Result<()> {
+fn play_video(background: &Background, entry: Entry, mailbox: &Mailbox, stop: &AtomicBool) -> Result<()> {
     platform::init_decoder_thread()?;
-    let video = DeckEntry { deck, entry };
-    let track = VideoTrack::read(&video).context("reading the deck's video")?;
+    let video = BackgroundEntry { background, entry };
+    let track = VideoTrack::read(&video).context("reading the background's video")?;
     let info =
         StreamInfo { stream_id: 0, codec: track.codec, mode: Mode::Paced, width: track.width, height: track.height };
     let mut decoder = Decoder::new(&info)?;
     println!(
-        "Local deck {}: {:?} {}x{}, {} frames, {:.1} s via {}",
-        deck.path().display(),
+        "Local background {}: {:?} {}x{}, {} frames, {:.1} s via {}",
+        background.path().display(),
         track.codec,
         track.width,
         track.height,

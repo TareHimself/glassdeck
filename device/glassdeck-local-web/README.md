@@ -14,10 +14,10 @@ useradd --system --no-create-home --shell /usr/sbin/nologin --groups video,rende
 runuser -u glassdeck-local-web -- glassdeck-local-web --seconds=15 file:///path/to/index.html
 # with no receiver running, --display previews straight on the screen
 runuser -u glassdeck-local-web -- glassdeck-local-web --display file:///path/to/index.html
-# a web .deck, as the receiver runs it: it spawns this as glassdeck-local-web with its socket end as fd 3
-runuser -u glassdeck-local-web -- glassdeck-local-web --compositor-fd=3 --deck=/var/lib/glassdeck/decks/name.deck
+# a web .deckbg, as the receiver runs it: it spawns this as glassdeck-local-web with its socket end as fd 3
+runuser -u glassdeck-local-web -- glassdeck-local-web --compositor-fd=3 --background=/var/lib/glassdeck/backgrounds/name.deckbg
 ```
 
 Outputs: none (headless test), `--display` (drives the screen; only while no receiver runs), or
 `--compositor-fd=N` (the receiver's compositor socket, glassdeck-proto's `compositor` module).
-Media inside a deck plays through the `decksrc` GStreamer element, installed beside the launcher.
+Media inside a background plays through the `backgroundsrc` GStreamer element, installed beside the launcher.

@@ -18,8 +18,8 @@ pub enum Action<'a> {
     End,
     /// Reply to a clock probe at once with `ClockReply`, stamped with the probe's arrival time.
     AnswerProbe { probe_sent_us: u64 },
-    /// Make this the deck shown when no stream is open; the session itself doesn't change.
-    SelectDeck(&'a str),
+    /// Make this the background shown when no stream is open; the session itself doesn't change.
+    SelectBackground(&'a str),
     /// Hand a widget instance what its PC half sent; widgets run whether or not a stream is open.
     ModuleData { instance: u16, payload: &'a [u8] },
 }
@@ -52,7 +52,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
     match (state, message) {
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
         (_, Message::ClockReply { .. }) => Err(SessionError::UnexpectedReply),
-        (_, Message::SelectDeck { name }) => Ok((state, Action::SelectDeck(name))),
+        (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
         (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
@@ -101,7 +101,7 @@ mod tests {
             Ok((next, Action::Decode(_))) => Expect::Moves(next, "decode"),
             Ok((next, Action::End)) => Expect::Moves(next, "end"),
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
-            Ok((next, Action::SelectDeck(_))) => Expect::Moves(next, "select deck"),
+            Ok((next, Action::SelectBackground(_))) => Expect::Moves(next, "select background"),
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Err(e) => Expect::Refused(e),
         }
@@ -114,13 +114,13 @@ mod tests {
         let b = info(2);
         let probe = Message::ClockProbe { sent_us: 5 };
         let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
-        let select = Message::SelectDeck { name: "a.deck".into() };
+        let select = Message::SelectBackground { name: "a.deckbg".into() };
         let data = Message::ModuleData { instance: 0, payload: vec![0xc0] };
         let table = [
             (Idle, data.clone(), Expect::Moves(Idle, "module data")),
             (Streaming(a), data, Expect::Moves(Streaming(a), "module data")),
-            (Idle, select.clone(), Expect::Moves(Idle, "select deck")),
-            (Streaming(a), select, Expect::Moves(Streaming(a), "select deck")),
+            (Idle, select.clone(), Expect::Moves(Idle, "select background")),
+            (Streaming(a), select, Expect::Moves(Streaming(a), "select background")),
             (Idle, probe.clone(), Expect::Moves(Idle, "answer probe")),
             (Idle, reply.clone(), Expect::Refused(SessionError::UnexpectedReply)),
             (Streaming(a), probe, Expect::Refused(SessionError::ProbeWhileStreaming)),

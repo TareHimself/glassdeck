@@ -57,9 +57,9 @@ struct Cli {
     /// The keyboard's physical layout, which places the key labels
     #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
     layout: KeyboardLayout,
-    /// Where the keyboard keeps decks it plays with the PC off
-    #[arg(long, default_value = platform::DEFAULT_DECKS)]
-    decks: PathBuf,
+    /// Where the keyboard keeps backgrounds it plays with the PC off
+    #[arg(long, default_value = platform::DEFAULT_BACKGROUNDS)]
+    backgrounds: PathBuf,
     /// Installed widget modules (.deckmod files)
     #[arg(long, default_value = platform::DEFAULT_MODULES)]
     modules: PathBuf,
@@ -95,7 +95,7 @@ fn main() -> Result<()> {
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
-    let director = Director::start(cli.decks, compositor.registrar(), Arc::clone(&mailbox))?;
+    let director = Director::start(cli.backgrounds, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets))?;
     compose_loop(&mailbox, &tiles, compositor)
@@ -182,7 +182,7 @@ fn serve(
                 playback = None;
                 lock(director).handle(Event::StreamEnded)?;
             }
-            Action::SelectDeck(name) => report(lock(director).select(name)),
+            Action::SelectBackground(name) => report(lock(director).select(name)),
             Action::ModuleData { instance, payload } => widgets
                 .send(Input::Data { instance, payload: payload.to_vec() })
                 .context("the widget thread has stopped")?,

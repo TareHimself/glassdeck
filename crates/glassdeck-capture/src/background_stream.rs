@@ -1,10 +1,10 @@
-//! Media Foundation reads a deck's video entry in place: an `IStream` over its byte range, no copy.
+//! Media Foundation reads a background's video entry in place: an `IStream` over its byte range, no copy.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
-use glassdeck_deck::{Deck, Entry};
+use glassdeck_package::{Background, Entry};
 use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION};
 use windows::Win32::Media::MediaFoundation::{IMFAttributes, IMFByteStream, MF_BYTESTREAM_CONTENT_TYPE, MFCreateMFByteStreamOnStream};
 use windows::Win32::System::Com::{
@@ -13,10 +13,10 @@ use windows::Win32::System::Com::{
 };
 use windows::core::{HRESULT, Interface, Ref, implement, w};
 
-pub fn mp4_byte_stream(deck: Arc<Deck>, entry: Entry) -> Result<IMFByteStream> {
-    let stream: IStream = RangeStream { deck, entry, position: AtomicU64::new(0) }.into();
+pub fn mp4_byte_stream(background: Arc<Background>, entry: Entry) -> Result<IMFByteStream> {
+    let stream: IStream = RangeStream { background, entry, position: AtomicU64::new(0) }.into();
     unsafe {
-        let bytes = MFCreateMFByteStreamOnStream(&stream).context("wrapping the deck's video for Media Foundation")?;
+        let bytes = MFCreateMFByteStreamOnStream(&stream).context("wrapping the background's video for Media Foundation")?;
         bytes.cast::<IMFAttributes>()?.SetString(&MF_BYTESTREAM_CONTENT_TYPE, w!("video/mp4"))?;
         Ok(bytes)
     }
@@ -24,7 +24,7 @@ pub fn mp4_byte_stream(deck: Arc<Deck>, entry: Entry) -> Result<IMFByteStream> {
 
 #[implement(IStream)]
 struct RangeStream {
-    deck: Arc<Deck>,
+    background: Arc<Background>,
     entry: Entry,
     position: AtomicU64,
 }
@@ -35,11 +35,11 @@ impl ISequentialStream_Impl for RangeStream_Impl {
         let start = self.position.load(Ordering::Acquire);
         let mut filled = 0;
         while filled < buf.len() {
-            match self.deck.read_range(self.entry, start + filled as u64, &mut buf[filled..]) {
+            match self.background.read_range(self.entry, start + filled as u64, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
                 Err(e) => {
-                    eprintln!("reading the deck's video: {e:#}");
+                    eprintln!("reading the background's video: {e:#}");
                     return E_FAIL;
                 }
             }
@@ -105,6 +105,6 @@ impl IStream_Impl for RangeStream_Impl {
 
     fn Clone(&self) -> windows::core::Result<IStream> {
         let position = AtomicU64::new(self.position.load(Ordering::Acquire));
-        Ok(RangeStream { deck: self.deck.clone(), entry: self.entry, position }.into())
+        Ok(RangeStream { background: self.background.clone(), entry: self.entry, position }.into())
     }
 }

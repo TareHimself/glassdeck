@@ -1,4 +1,4 @@
-//! Just enough MP4 to play a deck's video: one H.264 or HEVC track, its sample table, and its
+//! Just enough MP4 to play a background's video: one H.264 or HEVC track, its sample table, and its
 //! parameter sets, with samples turned into Annex-B access units for the decoder.
 
 use anyhow::{Context, Result, bail, ensure};
@@ -6,12 +6,12 @@ use glassdeck_proto::Codec;
 
 const BOX_HEADER: usize = 8;
 const LARGE_BOX_HEADER: usize = 16;
-/// Moov for a long 1080p wallpaper is a few hundred KB; anything far larger isn't a deck video.
+/// Moov for a long 1080p wallpaper is a few hundred KB; anything far larger isn't a background video.
 const MAX_MOOV_LEN: u64 = 64 << 20;
 const VISUAL_SAMPLE_ENTRY_LEN: usize = 78;
 const ANNEX_B_START: [u8; 4] = [0, 0, 0, 1];
 
-/// Reads bytes at an offset; a deck entry or a plain file.
+/// Reads bytes at an offset; a background entry or a plain file.
 pub trait ReadAt {
     fn len(&self) -> u64;
     fn read_at(&self, at: u64, buf: &mut [u8]) -> Result<()>;

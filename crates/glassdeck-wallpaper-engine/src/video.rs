@@ -1,11 +1,11 @@
-//! Media Foundation: probe a video, and re-encode one into the deck spec (HEVC at the panel's size).
+//! Media Foundation: probe a video, and re-encode one into the background spec (HEVC at the panel's size).
 
 use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use glassdeck_deck::{FrameRate, PANEL, ProbedCodec, ProbedVideo};
+use glassdeck_package::{FrameRate, PANEL, ProbedCodec, ProbedVideo};
 use glassdeck_proto::Codec;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Media::MediaFoundation::{
