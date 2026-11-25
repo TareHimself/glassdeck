@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::atomic::AtomicModeReq;
 use drm::control::dumbbuffer::DumbBuffer;
@@ -23,9 +23,10 @@ use rustix::time::{ClockId, clock_gettime};
 
 use super::Picture;
 use super::mpp::{Color, Encoding, Range};
-use super::scanout::{Effect, Event, Scanout, step};
+use super::scanout::{Effect, Event, Scanout, Update, step};
 use crate::overlay::{Labels, Overlay};
 use crate::presentation::Outcome;
+use crate::widgets::Tile;
 
 const CARD: &str = "/dev/dri/card0";
 /// The keyboard's panel; a monitor offering this mode shows exactly what the keyboard would.
@@ -46,10 +47,73 @@ impl AsFd for Card {
 impl Device for Card {}
 impl ControlDevice for Card {}
 
-/// The key labels, drawn once by the CPU; transparent wherever there is no label.
+/// One of the key layer's two buffers.
 struct Surface {
-    _buffer: DumbBuffer,
+    buffer: DumbBuffer,
     fb: framebuffer::Handle,
+}
+
+/// A rectangle of the panel, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Region {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+/// The key layer: labels plus widget tiles, double-buffered so a frame is never drawn into the
+/// buffer on screen. `mirror` holds the latest content; each buffer lists the regions it lacks.
+struct KeyLayer {
+    plane: plane::Handle,
+    fb_id: property::Handle,
+    buffers: [Surface; 2],
+    front: usize,
+    mirror: Vec<u32>,
+    width: u32,
+    stale: [Vec<Region>; 2],
+}
+
+impl KeyLayer {
+    fn write(&mut self, tiles: Vec<Tile>) -> Result<()> {
+        let height = self.mirror.len() as u32 / self.width;
+        for tile in tiles {
+            let region = Region { x: tile.x, y: tile.y, w: tile.w, h: tile.h };
+            ensure!(
+                region.x + region.w <= self.width && region.y + region.h <= height && tile.pixels.len() == (region.w * region.h) as usize,
+                "a widget tile at {region:?} doesn't fit the {}x{height} key layer",
+                self.width
+            );
+            for (row, pixels) in tile.pixels.chunks_exact(region.w as usize).enumerate() {
+                let at = (region.y as usize + row) * self.width as usize + region.x as usize;
+                self.mirror[at..at + pixels.len()].copy_from_slice(pixels);
+            }
+            for stale in &mut self.stale {
+                stale.push(region);
+            }
+        }
+        Ok(())
+    }
+
+    /// Brings the back buffer up to date and returns its framebuffer, to be committed.
+    fn prepare_back(&mut self, card: &Card) -> Result<framebuffer::Handle> {
+        let back = 1 - self.front;
+        let regions = std::mem::take(&mut self.stale[back]);
+        let surface = &mut self.buffers[back];
+        let pitch = surface.buffer.pitch() as usize;
+        let mut mapping = card.map_dumb_buffer(&mut surface.buffer).context("mapping the key layer")?;
+        for region in regions {
+            for row in region.y..region.y + region.h {
+                let at = row as usize * self.width as usize + region.x as usize;
+                let pixels = &self.mirror[at..at + region.w as usize];
+                let dst = &mut mapping[row as usize * pitch + region.x as usize * 4..][..pixels.len() * 4];
+                for (bytes, pixel) in dst.chunks_exact_mut(4).zip(pixels) {
+                    bytes.copy_from_slice(&pixel.to_le_bytes());
+                }
+            }
+        }
+        Ok(surface.fb)
+    }
 }
 
 /// The video plane's properties, for atomic commits.
@@ -78,7 +142,7 @@ pub struct Compositor {
     /// Framebuffers made for decoded pictures; shared buffers keep theirs for their whole life.
     framebuffers: HashMap<u64, framebuffer::Handle>,
     outcomes: Vec<Outcome>,
-    _labels: Surface,
+    keys: KeyLayer,
 }
 
 impl Compositor {
@@ -130,9 +194,18 @@ impl Compositor {
             Some(labels) => Overlay::build(&labels, size.0 as usize, size.1 as usize).premultiplied_argb(),
             None => vec![0; size.0 as usize * size.1 as usize],
         };
-        let labels = Surface::new(&card, size, &image)?;
-        card.set_crtc(crtc, Some(labels.fb), (0, 0), &[connector.handle()], Some(mode))
+        let buffers = [Surface::new(&card, size, &image)?, Surface::new(&card, size, &image)?];
+        card.set_crtc(crtc, Some(buffers[0].fb), (0, 0), &[connector.handle()], Some(mode))
             .context("setting the display mode")?;
+        let keys = KeyLayer {
+            plane: label_plane,
+            fb_id: property_handle(&card, label_plane, "FB_ID")?,
+            buffers,
+            front: 0,
+            mirror: image,
+            width: size.0,
+            stale: [Vec::new(), Vec::new()],
+        };
         println!("Display: {}x{}@{} via CRTC {crtc:?}, video plane {video_plane:?}", size.0, size.1, mode.vrefresh());
 
         Ok(Self {
@@ -145,7 +218,7 @@ impl Compositor {
             pictures: HashMap::new(),
             framebuffers: HashMap::new(),
             outcomes: Vec::new(),
-            _labels: labels,
+            keys,
         })
     }
 
@@ -153,6 +226,12 @@ impl Compositor {
     pub fn submit(&mut self, picture: Picture, token: u64) -> Result<()> {
         self.pictures.insert(token, picture);
         self.apply(Event::Submitted(token), 0)
+    }
+
+    /// Puts widget tiles on the key layer at the next commit.
+    pub fn show_tiles(&mut self, tiles: Vec<Tile>) -> Result<()> {
+        self.keys.write(tiles)?;
+        self.apply(Event::KeysChanged, 0)
     }
 
     /// Collects finished page flips and what became of every picture since the last call.
@@ -177,7 +256,7 @@ impl Compositor {
         self.scanout = next;
         for effect in effects {
             match effect {
-                Effect::Commit(token) => self.commit(token)?,
+                Effect::Commit(update) => self.commit(update)?,
                 Effect::Presented(token) => self.outcomes.push(Outcome::Presented { token, at_us: flipped_at_us }),
                 Effect::Release(token) => {
                     let picture = self.pictures.remove(&token).context("released a picture that was never submitted")?;
@@ -190,12 +269,27 @@ impl Compositor {
                     self.pictures.remove(&token);
                     self.outcomes.push(Outcome::Dropped { token });
                 }
+                Effect::KeysFlipped => self.keys.front = 1 - self.keys.front,
             }
         }
         Ok(())
     }
 
-    fn commit(&mut self, token: u64) -> Result<()> {
+    fn commit(&mut self, update: Update) -> Result<()> {
+        let mut request = match update.video() {
+            Some(token) => self.video_request(token)?,
+            None => AtomicModeReq::new(),
+        };
+        if update.keys() {
+            let fb = self.keys.prepare_back(&self.card)?;
+            request.add_property(self.keys.plane, self.keys.fb_id, Value::Framebuffer(Some(fb)));
+        }
+        self.card
+            .atomic_commit(AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, request)
+            .context("committing to the display")
+    }
+
+    fn video_request(&mut self, token: u64) -> Result<AtomicModeReq> {
         let picture = self.pictures.get(&token).context("committing a picture that was never submitted")?;
         let (fb, size, color) = match picture {
             Picture::Decoded(decoded) => {
@@ -216,9 +310,7 @@ impl Compositor {
             println!("Video color: {color:?}");
             self.applied_color = Some(color);
         }
-        self.card
-            .atomic_commit(AtomicCommitFlags::NONBLOCK | AtomicCommitFlags::PAGE_FLIP_EVENT, request)
-            .context("committing the picture")
+        Ok(request)
     }
 
     /// Lets a renderer on the keyboard hand over scanout buffers from another thread.
@@ -341,7 +433,7 @@ impl Surface {
             }
         }
         let fb = card.add_framebuffer(&buffer, 32, 32).context("wrapping the label buffer in a framebuffer")?;
-        Ok(Self { _buffer: buffer, fb })
+        Ok(Self { buffer, fb })
     }
 }
 

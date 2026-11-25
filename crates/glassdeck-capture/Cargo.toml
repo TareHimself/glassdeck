@@ -9,8 +9,11 @@ anyhow.workspace = true
 clap.workspace = true
 ctrlc = "3.5.3"
 glassdeck-deck.workspace = true
+glassdeck-luau.workspace = true
 glassdeck-proto.workspace = true
 glassdeck-wallpaper-engine.workspace = true
+mlua = { version = "0.12.3", features = ["luau", "serde"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 openh264.workspace = true
 windows.workspace = true
 windows-capture.workspace = true

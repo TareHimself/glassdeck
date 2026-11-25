@@ -11,6 +11,8 @@ pub use web::WebDeck;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";
 pub const DEFAULT_DECKS: &str = "/var/lib/glassdeck/decks";
+pub const DEFAULT_MODULES: &str = "/var/lib/glassdeck/modules";
+pub const DEFAULT_PROFILE: &str = "/var/lib/glassdeck/profile.json";
 pub const DEFAULT_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
 /// What the compositor shows: our own decoder's output, or a buffer from a renderer on the keyboard.

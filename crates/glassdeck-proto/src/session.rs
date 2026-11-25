@@ -20,6 +20,8 @@ pub enum Action<'a> {
     AnswerProbe { probe_sent_us: u64 },
     /// Make this the deck shown when no stream is open; the session itself doesn't change.
     SelectDeck(&'a str),
+    /// Hand a widget instance what its PC half sent; widgets run whether or not a stream is open.
+    ModuleData { instance: u16, payload: &'a [u8] },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +53,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
         (_, Message::ClockReply { .. }) => Err(SessionError::UnexpectedReply),
         (_, Message::SelectDeck { name }) => Ok((state, Action::SelectDeck(name))),
+        (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
         (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
         (SessionState::Idle, Message::Frame(_)) => Err(SessionError::FrameWithoutStream),
@@ -99,6 +102,7 @@ mod tests {
             Ok((next, Action::End)) => Expect::Moves(next, "end"),
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
             Ok((next, Action::SelectDeck(_))) => Expect::Moves(next, "select deck"),
+            Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -111,7 +115,10 @@ mod tests {
         let probe = Message::ClockProbe { sent_us: 5 };
         let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
         let select = Message::SelectDeck { name: "a.deck".into() };
+        let data = Message::ModuleData { instance: 0, payload: vec![0xc0] };
         let table = [
+            (Idle, data.clone(), Expect::Moves(Idle, "module data")),
+            (Streaming(a), data, Expect::Moves(Streaming(a), "module data")),
             (Idle, select.clone(), Expect::Moves(Idle, "select deck")),
             (Streaming(a), select, Expect::Moves(Streaming(a), "select deck")),
             (Idle, probe.clone(), Expect::Moves(Idle, "answer probe")),

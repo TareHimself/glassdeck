@@ -1,0 +1,6 @@
+id = "dev.glassdeck.cpu-meter"
+name = "CPU meter"
+size = { w = 320, h = 120 }
+min = { w = 200, h = 96 }
+max = { w = 640, h = 256 }
+pc = true

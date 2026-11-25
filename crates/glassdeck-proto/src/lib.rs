@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 4;
+pub const VERSION: u8 = 5;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
@@ -25,11 +25,13 @@ const KIND_STREAM_END: u8 = 3;
 const KIND_CLOCK_PROBE: u8 = 4;
 const KIND_CLOCK_REPLY: u8 = 5;
 const KIND_SELECT_DECK: u8 = 6;
+const KIND_MODULE_DATA: u8 = 7;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
 const CLOCK_PROBE_LEN: usize = 8;
 const CLOCK_REPLY_LEN: usize = 16;
+const MODULE_DATA_FIXED_LEN: usize = 4;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +80,9 @@ pub enum Message {
     /// Sender to receiver: play this deck from the keyboard's deck folder whenever no stream is open,
     /// and remember it across restarts.
     SelectDeck { name: String },
+    /// PC to keyboard: what a widget's `pc.luau` sent, for the instance numbered by its place in
+    /// the profile's widget list. `payload` is MessagePack.
+    ModuleData { instance: u16, payload: Vec<u8> },
 }
 
 #[derive(Debug)]
@@ -180,6 +185,9 @@ impl Message {
                 (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
             }
             Self::SelectDeck { name } => (KIND_SELECT_DECK, name.as_bytes().to_vec()),
+            Self::ModuleData { instance, payload } => {
+                (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat())
+            }
         };
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.push(VERSION);
@@ -233,7 +241,14 @@ impl Message {
                 let name = String::from_utf8(body).map_err(|_| ProtoError::DeckNameNotUtf8)?;
                 Ok(Self::SelectDeck { name })
             }
-            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY => Err(bad_length()),
+            KIND_MODULE_DATA if body.len() >= MODULE_DATA_FIXED_LEN => {
+                let mut body = body;
+                let payload = body.split_off(MODULE_DATA_FIXED_LEN);
+                Ok(Self::ModuleData { instance: u16::from_le_bytes([body[0], body[1]]), payload })
+            }
+            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA => {
+                Err(bad_length())
+            }
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
@@ -303,6 +318,7 @@ mod tests {
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
         round_trip(Message::SelectDeck { name: "late-night.deck".into() });
+        round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
     }
 
     #[test]

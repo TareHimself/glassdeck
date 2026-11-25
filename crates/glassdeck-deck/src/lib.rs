@@ -2,6 +2,7 @@
 //! The PC streams from it, and the keyboard keeps a copy to play on its own. Decks are replaced whole.
 
 mod manifest;
+mod module;
 mod zip;
 
 use std::collections::HashMap;
@@ -12,6 +13,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 pub use manifest::{Content, FrameRate, Manifest, Origin, ProbedCodec, ProbedVideo, SpecMismatch, VideoFormat, check};
+pub use module::{
+    ASSETS_FOLDER, KEYBOARD_SCRIPT, MODULE_EXTENSION, MODULE_MANIFEST, ModuleManifest, ModulePackage, ModuleWriter, PC_SCRIPT, Resize,
+    Size, is_module, pack_folder,
+};
 pub use zip::{ALIGNMENT, Entry, check_name};
 
 pub const EXTENSION: &str = "deck";
@@ -33,6 +38,7 @@ impl Deck {
     pub fn open(path: &Path) -> Result<Self> {
         let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let entries = zip::read_directory(&mut file).with_context(|| format!("reading {}", path.display()))?;
+        ensure!(!entries.contains_key(MODULE_MANIFEST), "{} is a module, not a deck", path.display());
         let raw = entries.get(MANIFEST).copied().with_context(|| format!("{} has no {MANIFEST}", path.display()))?;
         ensure!(raw.len <= MAX_MANIFEST_LEN, "{MANIFEST} is too large");
         let mut text = vec![0; raw.len as usize];
@@ -187,10 +193,10 @@ mod tests {
 
     const SIXTY: FrameRate = FrameRate { numerator: 60, denominator: 1 };
 
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(pub PathBuf);
 
     impl Scratch {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             let dir = std::env::temp_dir().join(format!("glassdeck-deck-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
@@ -217,7 +223,7 @@ mod tests {
         }
     }
 
-    fn web_manifest() -> Manifest {
+    pub(crate) fn web_manifest() -> Manifest {
         Manifest {
             format: FORMAT_VERSION,
             title: "Matrix".into(),

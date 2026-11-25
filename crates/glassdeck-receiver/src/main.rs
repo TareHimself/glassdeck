@@ -7,6 +7,7 @@ mod playout;
 mod presentation;
 mod screen;
 mod stats;
+mod widgets;
 
 #[cfg(target_os = "linux")]
 #[path = "linux/mod.rs"]
@@ -20,6 +21,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,6 +39,7 @@ use overlay::Labels;
 use glassdeck_layout::Variant;
 use presentation::Outcome;
 use stats::{FrameTimes, LatencyStats};
+use widgets::{Input, Tiles};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_POLL: Duration = Duration::from_millis(1);
@@ -57,6 +60,12 @@ struct Cli {
     /// Where the keyboard keeps decks it plays with the PC off
     #[arg(long, default_value = platform::DEFAULT_DECKS)]
     decks: PathBuf,
+    /// Installed widget modules (.deckmod files)
+    #[arg(long, default_value = platform::DEFAULT_MODULES)]
+    modules: PathBuf,
+    /// Which modules go where in the widget area
+    #[arg(long, default_value = platform::DEFAULT_PROFILE)]
+    profile: PathBuf,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -76,28 +85,29 @@ impl From<KeyboardLayout> for Variant {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let labels = match cli.no_labels {
-        true => None,
-        false => Some(Labels { font: load_font(&cli.font)?, variant: cli.layout.into() }),
-    };
+    let font = load_font(&cli.font)?;
+    let variant = Variant::from(cli.layout);
+    let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
     let compositor = Compositor::open(labels)?;
+    let tiles = Arc::new(Tiles::new());
+    let widgets = widgets::start(widgets::Config { modules: cli.modules, profile: cli.profile, font }, Arc::clone(&tiles))?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new());
     let director = Director::start(cli.decks, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
-    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director))?;
-    compose_loop(&mailbox, compositor)
+    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets))?;
+    compose_loop(&mailbox, &tiles, compositor)
 }
 
-fn load_font(path: &PathBuf) -> Result<Font> {
+pub(crate) fn load_font(path: &PathBuf) -> Result<Font> {
     let bytes = std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?;
     Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing font: {e}"))
 }
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
-fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector) {
+fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector, widgets: &Sender<Input>) {
     if let Err(e) = platform::init_decoder_thread() {
         eprintln!("error: starting the decoder: {e:#}");
         std::process::exit(1);
@@ -106,7 +116,7 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
         let mut state = SessionState::Idle;
         let result = connection
             .context("accepting connection")
-            .and_then(|socket| serve(socket, mailbox, director, &mut state));
+            .and_then(|socket| serve(socket, mailbox, director, widgets, &mut state));
         match result {
             Ok(()) => println!("Sender disconnected"),
             Err(e) => eprintln!("error: {e:#}"),
@@ -123,7 +133,13 @@ struct Playback {
     clock: Option<PlayoutClock>,
 }
 
-fn serve(mut socket: TcpStream, mailbox: &Mailbox, director: &SharedDirector, state: &mut SessionState) -> Result<()> {
+fn serve(
+    mut socket: TcpStream,
+    mailbox: &Mailbox,
+    director: &SharedDirector,
+    widgets: &Sender<Input>,
+    state: &mut SessionState,
+) -> Result<()> {
     socket.set_nodelay(true)?;
     println!("Sender connected from {}", socket.peer_addr()?);
     let mut playback: Option<Playback> = None;
@@ -167,6 +183,9 @@ fn serve(mut socket: TcpStream, mailbox: &Mailbox, director: &SharedDirector, st
                 lock(director).handle(Event::StreamEnded)?;
             }
             Action::SelectDeck(name) => report(lock(director).select(name)),
+            Action::ModuleData { instance, payload } => widgets
+                .send(Input::Data { instance, payload: payload.to_vec() })
+                .context("the widget thread has stopped")?,
             Action::AnswerProbe { probe_sent_us } => {
                 let reply = Message::ClockReply { probe_sent_us, received_us };
                 socket.write_all(&reply.encode()).context("answering a clock probe")?;
@@ -183,7 +202,7 @@ fn report(result: Result<()>) {
     }
 }
 
-fn compose_loop(mailbox: &Mailbox, mut compositor: Compositor) -> Result<()> {
+fn compose_loop(mailbox: &Mailbox, tiles: &Tiles, mut compositor: Compositor) -> Result<()> {
     let mut stats = LatencyStats::default();
     let mut stats_since = Instant::now();
     let mut in_flight: HashMap<u64, Timing> = HashMap::new();
@@ -192,7 +211,11 @@ fn compose_loop(mailbox: &Mailbox, mut compositor: Compositor) -> Result<()> {
     while compositor.is_open() {
         let (frame, replaced) = mailbox.take();
         stats = stats.replaced(replaced);
-        let idle = frame.is_none();
+        let new_tiles = tiles.take();
+        let idle = frame.is_none() && new_tiles.is_empty();
+        if !new_tiles.is_empty() {
+            compositor.show_tiles(new_tiles)?;
+        }
         if let Some(ShownFrame { picture, timing }) = frame {
             in_flight.insert(next_token, timing);
             compositor.submit(picture, next_token)?;

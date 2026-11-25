@@ -1,0 +1,7 @@
+{
+  "widgets": [
+    { "module": "dev.glassdeck.cpu-meter", "x": 0, "y": 64, "w": 320, "h": 120 },
+    { "module": "dev.glassdeck.clock", "x": 792, "y": 16, "w": 320, "h": 160, "settings": { "seconds": true } },
+    { "module": "dev.glassdeck.pomodoro", "x": 1736, "y": 16, "w": 160, "h": 160 }
+  ]
+}

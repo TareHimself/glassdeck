@@ -5,6 +5,7 @@ mod deck_stream;
 mod desktop;
 mod gpu;
 mod link;
+mod modules;
 mod monitors;
 mod pipeline;
 mod play;
@@ -116,6 +117,11 @@ enum Command {
         #[command(subcommand)]
         action: WallpaperAction,
     },
+    /// Widget modules: pack them, and run their PC halves
+    Module {
+        #[command(subcommand)]
+        action: modules::ModuleAction,
+    },
     /// Choose the deck the keyboard plays from its own deck folder whenever no stream is open
     SelectDeck {
         /// File name in the keyboard's deck folder, such as we-2970107491.deck
@@ -203,6 +209,7 @@ fn main() -> Result<()> {
             pipeline::run(source, link_options(to, link_mbytes, unlimited_link))
         }
         Command::Wallpaper { action } => wallpaper::run(action),
+        Command::Module { action } => modules::run(action),
         Command::SelectDeck { name, to } => {
             Link::connect(to, None)?.send(&Message::SelectDeck { name: name.clone() })?;
             println!("Asked {to} to play {name}");

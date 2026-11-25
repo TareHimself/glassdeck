@@ -1,0 +1,11 @@
+-- pc.luau: runs on the PC and sends data to its keyboard half's on_data.
+
+declare function every(seconds: number, callback: () -> ()): ()
+
+-- The latest value wins: a send replaces anything of this widget's not yet on the Link.
+declare function send(data: Data): ()
+
+declare system: {
+    cpu_percent: () -> number,
+    memory_percent: () -> number,
+}

@@ -1,40 +1,69 @@
 use anyhow::Result;
 use glassdeck_proto::unix_micros;
-use minifb::{Key, Window, WindowOptions};
+use glassdeck_layout::{PANEL_HEIGHT, PANEL_WIDTH};
+use minifb::{Key, ScaleMode, Window, WindowOptions};
 
 use super::decode::Picture;
 use crate::overlay::{Labels, Overlay};
 use crate::presentation::Outcome;
+use crate::widgets::Tile;
 
 const UNTHROTTLED: usize = 0;
+const PANEL: (usize, usize) = (PANEL_WIDTH as usize, PANEL_HEIGHT as usize);
 
-/// A desktop window standing in for the keyboard panel; key labels are blended on the CPU.
+/// A desktop window standing in for the keyboard panel, open from the start so widgets show with
+/// no stream. Labels and widget tiles are blended on the CPU over the latest picture, or black.
 pub struct Compositor {
     labels: Option<Labels>,
-    window: Option<Window>,
+    window: Window,
     overlay: Option<Overlay>,
+    background: Option<Picture>,
     outcomes: Vec<Outcome>,
+    widgets: Vec<Tile>,
 }
 
 impl Compositor {
     pub fn open(labels: Option<Labels>) -> Result<Self> {
-        Ok(Self { labels, window: None, overlay: None, outcomes: Vec::new() })
+        let options = WindowOptions { resize: true, scale_mode: ScaleMode::AspectRatioStretch, ..WindowOptions::default() };
+        let mut window = Window::new("glassdeck-receiver", PANEL.0, PANEL.1, options)?;
+        window.set_target_fps(UNTHROTTLED);
+        let mut compositor = Self { labels, window, overlay: None, background: None, outcomes: Vec::new(), widgets: Vec::new() };
+        compositor.present()?;
+        Ok(compositor)
     }
 
     /// Shows the picture at once: minifb has no page-flip events to wait for.
-    pub fn submit(&mut self, mut picture: Picture, token: u64) -> Result<()> {
-        if let Some(labels) = &self.labels {
-            if !self.overlay.as_ref().is_some_and(|o| o.fits(picture.width, picture.height)) {
-                self.overlay = Some(Overlay::build(labels, picture.width, picture.height));
-            }
-            self.overlay.as_ref().expect("overlay built").composite_onto(&mut picture.pixels);
-        }
-        let window = match self.window.as_mut() {
-            Some(window) => window,
-            None => self.window.insert(open_window(picture.width, picture.height)?),
-        };
-        window.update_with_buffer(&picture.pixels, picture.width, picture.height)?;
+    pub fn submit(&mut self, picture: Picture, token: u64) -> Result<()> {
+        self.background = Some(picture);
+        self.present()?;
         self.outcomes.push(Outcome::Presented { token, at_us: unix_micros() });
+        Ok(())
+    }
+
+    /// Keeps the latest tile per spot and blends them over every picture, like the keyboard's key layer.
+    pub fn show_tiles(&mut self, tiles: Vec<Tile>) -> Result<()> {
+        for tile in tiles {
+            self.widgets.retain(|t| !overlaps(t, &tile));
+            self.widgets.push(tile);
+        }
+        self.present()
+    }
+
+    fn present(&mut self) -> Result<()> {
+        let (mut frame, width, height) = match &self.background {
+            Some(picture) => (picture.pixels.clone(), picture.width, picture.height),
+            None => (vec![0; PANEL.0 * PANEL.1], PANEL.0, PANEL.1),
+        };
+        if let Some(labels) = &self.labels {
+            if !self.overlay.as_ref().is_some_and(|o| o.fits(width, height)) {
+                self.overlay = Some(Overlay::build(labels, width, height));
+            }
+            self.overlay.as_ref().expect("overlay built").composite_onto(&mut frame);
+        }
+        for tile in &self.widgets {
+            composite_tile(tile, &mut frame, width, height);
+        }
+        self.window.update_with_buffer(&frame, width, height)?;
         Ok(())
     }
 
@@ -43,9 +72,7 @@ impl Compositor {
     }
 
     pub fn idle(&mut self) {
-        if let Some(window) = self.window.as_mut() {
-            window.update();
-        }
+        self.window.update();
     }
 
     pub fn registrar(&self) -> super::Registrar {
@@ -53,18 +80,38 @@ impl Compositor {
     }
 
     pub fn is_open(&self) -> bool {
-        self.window.as_ref().is_none_or(|w| w.is_open() && !w.is_key_down(Key::Escape))
+        self.window.is_open() && !self.window.is_key_down(Key::Escape)
     }
 
     pub fn set_status(&mut self, status: &str) {
-        if let Some(window) = self.window.as_mut() {
-            window.set_title(&format!("glassdeck-receiver | {status}"));
-        }
+        self.window.set_title(&format!("glassdeck-receiver | {status}"));
     }
 }
 
-fn open_window(width: usize, height: usize) -> Result<Window> {
-    let mut window = Window::new("glassdeck-receiver", width, height, WindowOptions::default())?;
-    window.set_target_fps(UNTHROTTLED);
-    Ok(window)
+fn overlaps(a: &Tile, b: &Tile) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/// Premultiplied source over an opaque frame; tiles past the frame's edge are cut off.
+fn composite_tile(tile: &Tile, frame: &mut [u32], width: usize, height: usize) {
+    for (row, pixels) in tile.pixels.chunks_exact(tile.w as usize).enumerate() {
+        let y = tile.y as usize + row;
+        if y >= height {
+            break;
+        }
+        for (col, &src) in pixels.iter().enumerate() {
+            let x = tile.x as usize + col;
+            let alpha = src >> 24;
+            if x >= width || alpha == 0 {
+                continue;
+            }
+            let dst = &mut frame[y * width + x];
+            let mix = |shift: u32| {
+                let s = (src >> shift) & 0xFF;
+                let d = (*dst >> shift) & 0xFF;
+                (s + (d * (255 - alpha) + 127) / 255).min(255) << shift
+            };
+            *dst = mix(16) | mix(8) | mix(0);
+        }
+    }
 }
