@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use glassdeck_proto::Codec;
 use windows::Win32::Media::MediaFoundation::{
-    IMFMediaType, IMFSourceReader, MF_E_ATTRIBUTENOTFOUND, MF_MT_FRAME_SIZE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE,
+    IMFMediaType, IMFSourceReader, MF_E_ATTRIBUTENOTFOUND, MF_MT_FRAME_SIZE, MF_MT_MINIMUM_DISPLAY_APERTURE,
+    MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_SUBTYPE, MFVideoArea,
     MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
     MF_VERSION, MFCreateSourceReaderFromURL, MFSTARTUP_FULL, MFSampleExtension_CleanPoint,
     MFStartup, MFVideoFormat_H264, MFVideoFormat_HEVC,
@@ -106,12 +107,12 @@ impl VideoFile {
             } else {
                 bail!("the video codec needs re-encoding, which play does not do yet; use H.264 or HEVC");
             };
-            let size = native.GetUINT64(&MF_MT_FRAME_SIZE)?;
+            let (width, height) = visible_size(&native)?;
             Ok(Self {
                 reader,
                 codec,
-                width: (size >> 32) as u32,
-                height: size as u32,
+                width,
+                height,
                 sequence_header: blob(&native, &MF_MT_MPEG_SEQUENCE_HEADER)?,
             })
         }
@@ -155,6 +156,19 @@ fn with_parameter_sets(header: &[u8], body: Vec<u8>) -> Vec<u8> {
     data.extend_from_slice(header);
     data.extend_from_slice(&body);
     data
+}
+
+/// Encoders pad to whole macroblocks (1080 rows code as 1088); the display aperture holds the picture's real size.
+unsafe fn visible_size(media_type: &IMFMediaType) -> Result<(u32, u32)> {
+    unsafe {
+        if let Some(area) = blob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE)? {
+            ensure!(area.len() == size_of::<MFVideoArea>(), "display aperture has the wrong size");
+            let area: MFVideoArea = std::ptr::read_unaligned(area.as_ptr().cast());
+            return Ok((u32::try_from(area.Area.cx)?, u32::try_from(area.Area.cy)?));
+        }
+        let size = media_type.GetUINT64(&MF_MT_FRAME_SIZE)?;
+        Ok(((size >> 32) as u32, size as u32))
+    }
 }
 
 unsafe fn blob(media_type: &IMFMediaType, key: &windows::core::GUID) -> Result<Option<Vec<u8>>> {

@@ -26,7 +26,7 @@ type FrameFn = extern "C" fn(user: *mut c_void, shared_handle: *mut c_void, widt
 
 unsafe extern "C" {
     fn gd_web_subprocess() -> i32;
-    fn gd_web_start(url: *const i8, width: u32, height: u32, fps: u32, cache_dir: *const i8, on_frame: FrameFn, user: *mut c_void) -> i32;
+    fn gd_web_start(url: *const i8, init_script: *const i8, width: u32, height: u32, fps: u32, cache_dir: *const i8, on_frame: FrameFn, user: *mut c_void) -> i32;
     fn gd_web_stop();
 }
 
@@ -39,6 +39,7 @@ pub fn helper_process_exit_code() -> Option<i32> {
 /// Wallpapers are paced.
 pub struct WebSource {
     url: CString,
+    init_script: CString,
     format: VideoFormat,
     settings: EncoderSettings,
     duration: Option<Duration>,
@@ -48,6 +49,7 @@ impl WebSource {
     pub fn new(url: &str, settings: EncoderSettings, duration: Option<Duration>) -> Result<Self> {
         Ok(Self {
             url: CString::new(url).context("URL contains a NUL byte")?,
+            init_script: CString::default(),
             format: VideoFormat {
                 codec: settings.codec,
                 width: u16::try_from(settings.width).context("page too wide")?,
@@ -56,6 +58,11 @@ impl WebSource {
             settings,
             duration,
         })
+    }
+
+    /// Runs `script` in the page before the page's own scripts, as Wallpaper Engine's hooks need.
+    pub fn with_init_script(self, script: &str) -> Result<Self> {
+        Ok(Self { init_script: CString::new(script).context("init script contains a NUL byte")?, ..self })
     }
 }
 
@@ -78,7 +85,7 @@ impl FrameSource for WebSource {
         let cache = CString::new(std::env::temp_dir().join("glassdeck-cef").to_string_lossy().as_bytes())?;
         let user = (&*sink as *const Mutex<FrameSink>).cast_mut().cast();
         let started =
-            unsafe { gd_web_start(self.url.as_ptr(), width, height, self.settings.fps, cache.as_ptr(), on_frame, user) };
+            unsafe { gd_web_start(self.url.as_ptr(), self.init_script.as_ptr(), width, height, self.settings.fps, cache.as_ptr(), on_frame, user) };
         ensure!(started == 0, "CEF failed to start (step {started})");
         println!("Rendering {} at {width}x{height}@{}", self.url.to_string_lossy(), self.settings.fps);
 

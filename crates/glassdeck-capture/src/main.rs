@@ -7,6 +7,7 @@ mod pipeline;
 mod play;
 mod record;
 mod software;
+mod wallpaper;
 mod web;
 
 use std::net::SocketAddr;
@@ -21,6 +22,7 @@ use monitors::MonitorQuery;
 use pipeline::{EncoderSettings, LinkOptions, Source, VideoCodec};
 use play::FileSource;
 use record::RecordOptions;
+use wallpaper::WallpaperAction;
 use web::WebSource;
 
 const USB2_PRACTICAL_MBYTES_PER_SEC: u64 = 35;
@@ -50,8 +52,9 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         fps: u32,
     },
-    /// Send an H.264 or HEVC video file to a receiver, paced by its timestamps, without re-encoding
+    /// Send an H.264 or HEVC video file or a .deck bundle to a receiver, paced by its timestamps, without re-encoding
     Play {
+        /// A video file, or a .deck folder
         file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:7878")]
         to: SocketAddr,
@@ -91,6 +94,11 @@ enum Command {
         /// Send as fast as localhost allows
         #[arg(long)]
         unlimited_link: bool,
+    },
+    /// Wallpaper Engine items already in this PC's Steam workshop folder
+    Wallpaper {
+        #[command(subcommand)]
+        action: WallpaperAction,
     },
     /// Stream a monitor live to a receiver
     Stream {
@@ -162,9 +170,11 @@ fn main() -> Result<()> {
             pipeline::run(Source::Frames(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
         Command::Play { file, to, looping, link_mbytes, unlimited_link } => {
-            let source = FileSource::open(&file, looping)?;
+            let video = if glassdeck_deck::is_deck(&file) { glassdeck_deck::Deck::open(&file)?.video() } else { file };
+            let source = FileSource::open(&video, looping)?;
             pipeline::run(Source::Encoded(Box::new(source)), link_options(to, link_mbytes, unlimited_link))
         }
+        Command::Wallpaper { action } => wallpaper::run(action),
         Command::Stream {
             monitor,
             to,

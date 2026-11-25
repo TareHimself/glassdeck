@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+glassdeck-deck.workspace = true
 glassdeck-proto.workspace = true
+glassdeck-wallpaper-engine.workspace = true
 openh264.workspace = true
 windows.workspace = true
 windows-capture.workspace = true

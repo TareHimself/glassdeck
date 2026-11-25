@@ -10,6 +10,8 @@
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_render_handler.h"
+#include "include/cef_render_process_handler.h"
+#include "include/cef_v8.h"
 
 extern "C" {
 typedef void (*gd_web_frame_fn)(void* user, void* shared_handle, uint32_t width, uint32_t height, uint64_t timestamp_us);
@@ -73,14 +75,33 @@ class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHand
   IMPLEMENT_REFCOUNTING(Client);
 };
 
-class App : public CefApp {
+constexpr char kInitScript[] = "glassdeck_init_script";
+
+// The init script reaches the renderer through the browser's extra_info, and runs before the page's own scripts.
+class App : public CefApp, public CefRenderProcessHandler {
  public:
+  CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
+
+  void OnBrowserCreated(CefRefPtr<CefBrowser>, CefRefPtr<CefDictionaryValue> extra_info) override {
+    if (extra_info && extra_info->HasKey(kInitScript)) init_script_ = extra_info->GetString(kInitScript);
+  }
+
+  void OnContextCreated(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override {
+    if (!frame->IsMain() || init_script_.empty()) return;
+    CefRefPtr<CefV8Value> result;
+    CefRefPtr<CefV8Exception> exception;
+    if (!context->Eval(init_script_, "glassdeck-init.js", 1, result, exception) && exception) {
+      LOG(ERROR) << "init script failed: " << exception->GetMessage().ToString();
+    }
+  }
+
   void OnBeforeCommandLineProcessing(const CefString&, CefRefPtr<CefCommandLine> command_line) override {
     // Wallpapers play sound and video without anyone clicking first.
     command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
   }
 
  private:
+  CefString init_script_;
   IMPLEMENT_REFCOUNTING(App);
 };
 
@@ -98,8 +119,9 @@ int gd_web_subprocess(void) {
 }
 
 // Starts CEF on its own message-loop thread and opens one windowless browser. Returns 0 on success.
-int gd_web_start(const char* url, uint32_t width, uint32_t height, uint32_t fps, const char* cache_dir,
-                 gd_web_frame_fn on_frame, void* user) {
+// `init_script` may be empty; otherwise it runs in the main frame before the page's scripts.
+int gd_web_start(const char* url, const char* init_script, uint32_t width, uint32_t height, uint32_t fps,
+                 const char* cache_dir, gd_web_frame_fn on_frame, void* user) {
   CefMainArgs args(GetModuleHandleW(nullptr));
   CefSettings settings;
   settings.no_sandbox = true;
@@ -116,7 +138,9 @@ int gd_web_start(const char* url, uint32_t width, uint32_t height, uint32_t fps,
   window.shared_texture_enabled = true;
   CefBrowserSettings browser_settings;
   browser_settings.windowless_frame_rate = static_cast<int>(fps);
-  if (!CefBrowserHost::CreateBrowser(window, g_client, std::string(url), browser_settings, nullptr, nullptr)) {
+  CefRefPtr<CefDictionaryValue> extra_info = CefDictionaryValue::Create();
+  extra_info->SetString(kInitScript, CefString(std::string(init_script)));
+  if (!CefBrowserHost::CreateBrowser(window, g_client, std::string(url), browser_settings, extra_info, nullptr)) {
     g_client = nullptr;
     CefShutdown();
     return 2;
