@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{Frame, Message, StreamInfo};
+use crate::{Frame, Message, PutFile, StreamInfo};
 
 /// Where a receiver is in a connection's sequence of streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum Action<'a> {
     SelectBackground(&'a str),
     /// Hand a widget instance what its PC half sent; widgets run whether or not a stream is open.
     ModuleData { instance: u16, payload: &'a [u8] },
+    /// Write a piece of a file; files arrive whether or not a stream is open.
+    PutFile(&'a PutFile),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +42,7 @@ impl fmt::Display for SessionError {
             Self::EndWithoutStream => write!(f, "StreamEnd received with no stream open"),
             Self::WrongStream { current, got } => write!(f, "message for stream {got} while stream {current} is open"),
             Self::ProbeWhileStreaming => write!(f, "clock probe received while a stream is open"),
-            Self::UnexpectedReply => write!(f, "clock replies only travel from receiver to sender"),
+            Self::UnexpectedReply => write!(f, "replies only travel from receiver to sender"),
         }
     }
 }
@@ -51,7 +53,8 @@ impl std::error::Error for SessionError {}
 pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionState, Action<'a>), SessionError> {
     match (state, message) {
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
-        (_, Message::ClockReply { .. }) => Err(SessionError::UnexpectedReply),
+        (_, Message::ClockReply { .. } | Message::PutDone { .. } | Message::PutRefused { .. }) => Err(SessionError::UnexpectedReply),
+        (_, Message::PutFile(put)) => Ok((state, Action::PutFile(put))),
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
@@ -79,7 +82,7 @@ fn check_stream(info: StreamInfo, got: u32) -> Result<(), SessionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Codec, Mode};
+    use crate::{Codec, FileTarget, Mode};
 
     fn info(stream_id: u32) -> StreamInfo {
         StreamInfo { stream_id, codec: Codec::H264, mode: Mode::Live { clock_offset_us: 0 }, width: 2, height: 2 }
@@ -103,6 +106,7 @@ mod tests {
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
             Ok((next, Action::SelectBackground(_))) => Expect::Moves(next, "select background"),
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
+            Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -116,7 +120,16 @@ mod tests {
         let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
         let select = Message::SelectBackground { name: "a.deckbg".into() };
         let data = Message::ModuleData { instance: 0, payload: vec![0xc0] };
+        let put = Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 1, data: vec![b'{'] });
+        let done = Message::PutDone { target: FileTarget::Profile };
+        let refused = Message::PutRefused { target: FileTarget::Profile, reason: "full".into() };
         let table = [
+            (Idle, put.clone(), Expect::Moves(Idle, "put file")),
+            (Streaming(a), put, Expect::Moves(Streaming(a), "put file")),
+            (Idle, done.clone(), Expect::Refused(SessionError::UnexpectedReply)),
+            (Streaming(a), done, Expect::Refused(SessionError::UnexpectedReply)),
+            (Idle, refused.clone(), Expect::Refused(SessionError::UnexpectedReply)),
+            (Streaming(a), refused, Expect::Refused(SessionError::UnexpectedReply)),
             (Idle, data.clone(), Expect::Moves(Idle, "module data")),
             (Streaming(a), data, Expect::Moves(Streaming(a), "module data")),
             (Idle, select.clone(), Expect::Moves(Idle, "select background")),

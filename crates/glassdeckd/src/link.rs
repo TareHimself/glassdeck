@@ -4,18 +4,25 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+use std::sync::mpsc;
+
+use anyhow::{Context, Result, anyhow};
 use glassdeck_capture::link::Link;
-use glassdeck_proto::{Message, Mode, StreamInfo};
+use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo};
 
 /// Realistic USB 2.0 bulk throughput, what the TCP stand-in is throttled to by default.
 pub const USB2_PRACTICAL_BYTES_PER_SEC: u64 = 35_000_000;
 /// Stream messages waiting for the Link before the source is made to wait.
 const QUEUED_STREAM_MESSAGES: usize = 4;
+/// Small enough that a piece never holds up the next video frame for long.
+const PIECE_BYTES: u64 = 256 * 1024;
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -97,12 +104,48 @@ struct Queues {
     latest: BTreeMap<u16, Vec<u8>>,
     unsent: BTreeSet<u16>,
     selected: Option<String>,
+    uploads: VecDeque<Upload>,
+    /// Fully sent files, oldest first, which is the order the keyboard answers them in.
+    awaiting: VecDeque<Waiter>,
 }
 
 enum Outgoing {
     Control(Message),
     Stream(Message),
     ModuleData { instance: u16, payload: Vec<u8> },
+    Put(Upload),
+}
+
+/// Whoever asked for an upload, waiting for how it went.
+struct Waiter {
+    target: FileTarget,
+    answer: mpsc::Sender<Result<()>>,
+}
+
+impl Waiter {
+    /// They may have stopped waiting, which is fine.
+    fn finish(self, result: Result<()>) {
+        let _ = self.answer.send(result);
+    }
+}
+
+/// A file on its way to the keyboard, sent a piece at a time in the gaps the stream and widgets leave.
+pub struct Upload {
+    file: File,
+    total: u64,
+    sent: u64,
+    waiter: Waiter,
+}
+
+impl Upload {
+    fn next_piece(&mut self) -> Result<PutFile> {
+        let len = (self.total - self.sent).min(PIECE_BYTES);
+        let mut data = vec![0; len as usize];
+        self.file.read_exact(&mut data).with_context(|| format!("reading {}", self.waiter.target))?;
+        let piece = PutFile { target: self.waiter.target.clone(), offset: self.sent, total: self.total, data };
+        self.sent += len;
+        Ok(piece)
+    }
 }
 
 impl Uplink {
@@ -154,11 +197,61 @@ impl Uplink {
         }
     }
 
+    /// Queues `path` for the keyboard to install as `target`; the receiver gets the keyboard's answer.
+    pub fn put_file(&self, target: FileTarget, path: &Path) -> Result<mpsc::Receiver<Result<()>>> {
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let total = file.metadata()?.len();
+        let (answer, answered) = mpsc::channel();
+        let mut queues = self.lock();
+        if !queues.connected {
+            return Err(LinkDown.into());
+        }
+        queues.uploads.push_back(Upload { file, total, sent: 0, waiter: Waiter { target, answer } });
+        self.changed.notify_all();
+        Ok(answered)
+    }
+
+    /// Puts a partly sent upload back at the front, or, after its last piece, waits for the answer.
+    /// Called before the piece goes out, so the answer can't arrive first.
+    fn sending_piece(&self, upload: Upload, last: bool) {
+        let mut queues = self.lock();
+        match (queues.connected, last) {
+            (false, _) => upload.waiter.finish(Err(LinkDown.into())),
+            (true, false) => queues.uploads.push_front(upload),
+            (true, true) => queues.awaiting.push_back(upload.waiter),
+        }
+    }
+
+    /// The keyboard's answer to the oldest fully sent file, from the Link's reader thread.
+    pub fn answered(&self, message: Message) {
+        let waiter = self.lock().awaiting.pop_front();
+        let (target, result) = match message {
+            Message::PutDone { target } => (target, Ok(())),
+            Message::PutRefused { target, reason } => {
+                let refusal = anyhow!("the keyboard refused {target}: {reason}");
+                (target, Err(refusal))
+            }
+            other => {
+                eprintln!("Link: the keyboard sent {other:?}, which nothing asked for");
+                return;
+            }
+        };
+        match waiter {
+            Some(waiter) if waiter.target == target => waiter.finish(result),
+            Some(waiter) => {
+                eprintln!("Link: the keyboard answered for {target} while {} was waiting", waiter.target);
+                waiter.finish(Err(anyhow!("the keyboard answered for {target} instead")));
+            }
+            None => eprintln!("Link: the keyboard answered for {target}, which nothing was waiting on"),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Queues> {
         self.queues.lock().expect("uplink poisoned")
     }
 
-    /// Control first, then the stream, then widget data, so widgets only use the gaps.
+    /// Control first, then the stream, then widget data, then file pieces, so each only uses the
+    /// gaps the ones before it leave.
     fn next_outgoing(&self) -> Outgoing {
         let mut queues = self.lock();
         loop {
@@ -172,6 +265,9 @@ impl Uplink {
             if let Some(instance) = queues.unsent.pop_first() {
                 let payload = queues.latest[&instance].clone();
                 return Outgoing::ModuleData { instance, payload };
+            }
+            if let Some(upload) = queues.uploads.pop_front() {
+                return Outgoing::Put(upload);
             }
             queues = self.changed.wait(queues).expect("uplink poisoned");
         }
@@ -191,6 +287,10 @@ impl Uplink {
                 queues.connected = false;
                 queues.control.clear();
                 queues.stream.clear();
+                let uploads: Vec<Waiter> = queues.uploads.drain(..).map(|upload| upload.waiter).collect();
+                for waiter in uploads.into_iter().chain(queues.awaiting.drain(..)) {
+                    waiter.finish(Err(LinkDown.into()));
+                }
             }
         }
         self.changed.notify_all();
@@ -202,7 +302,7 @@ impl Uplink {
 }
 
 /// The Link thread: runs for the life of glassdeckd.
-pub fn run(uplink: &Uplink, to: SocketAddr, link_bytes_per_sec: Option<u64>) {
+pub fn run(uplink: &Arc<Uplink>, to: SocketAddr, link_bytes_per_sec: Option<u64>) {
     let mut state = LinkState::Disconnected { retry_at: Instant::now(), backoff: FIRST_BACKOFF };
     let mut link: Option<Link> = None;
     let mut failing_since_connected = false;
@@ -212,7 +312,10 @@ pub fn run(uplink: &Uplink, to: SocketAddr, link_bytes_per_sec: Option<u64>) {
                 thread::sleep(retry_at.saturating_duration_since(Instant::now()));
                 LinkEvent::RetryDue
             }
-            LinkState::Connecting { .. } => match Link::connect(to, link_bytes_per_sec) {
+            LinkState::Connecting { .. } => match Link::connect(to, link_bytes_per_sec, {
+                let uplink = Arc::clone(uplink);
+                move |answer| uplink.answered(answer)
+            }) {
                 Ok(connected) => {
                     println!("Link: connected to {to}");
                     link = Some(connected);
@@ -229,7 +332,7 @@ pub fn run(uplink: &Uplink, to: SocketAddr, link_bytes_per_sec: Option<u64>) {
             },
             LinkState::Connected => {
                 let connected = link.as_mut().expect("a connected Link has a socket");
-                match send(connected, uplink.next_outgoing()) {
+                match send(connected, uplink, uplink.next_outgoing()) {
                     Ok(()) => continue,
                     Err(e) => {
                         eprintln!("Link: lost the keyboard ({e:#}); reconnecting");
@@ -247,7 +350,7 @@ pub fn run(uplink: &Uplink, to: SocketAddr, link_bytes_per_sec: Option<u64>) {
     }
 }
 
-fn send(link: &mut Link, outgoing: Outgoing) -> Result<()> {
+fn send(link: &mut Link, uplink: &Uplink, outgoing: Outgoing) -> Result<()> {
     let message = match outgoing {
         Outgoing::Control(message) => message,
         Outgoing::ModuleData { instance, payload } => Message::ModuleData { instance, payload },
@@ -261,8 +364,23 @@ fn send(link: &mut Link, outgoing: Outgoing) -> Result<()> {
             Message::StreamStart(StreamInfo { mode: Mode::Live { clock_offset_us: sample.offset_us() }, ..info })
         }
         Outgoing::Stream(message) => message,
+        Outgoing::Put(upload) => return put_piece(link, uplink, upload),
     };
     link.send(&message)?;
+    Ok(())
+}
+
+/// Sends the upload's next piece. A failed send loses the Link, which fails the upload with it.
+fn put_piece(link: &mut Link, uplink: &Uplink, mut upload: Upload) -> Result<()> {
+    let piece = match upload.next_piece() {
+        Ok(piece) => piece,
+        Err(e) => {
+            upload.waiter.finish(Err(e));
+            return Ok(());
+        }
+    };
+    uplink.sending_piece(upload, piece.completes());
+    link.send(&Message::PutFile(piece))?;
     Ok(())
 }
 
@@ -303,6 +421,28 @@ mod tests {
         assert!(matches!(uplink.next_outgoing(), Outgoing::Control(Message::SelectBackground { .. })));
         assert!(matches!(uplink.next_outgoing(), Outgoing::Stream(Message::StreamEnd { stream_id: 7 })));
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 0, .. }));
+    }
+
+    #[test]
+    fn files_go_after_widgets_and_fail_when_the_link_drops() {
+        let path = std::env::temp_dir().join(format!("glassdeckd-upload-{}", std::process::id()));
+        std::fs::write(&path, [7u8; 10]).unwrap();
+        let uplink = Uplink::new(|| {});
+        assert!(uplink.put_file(FileTarget::Profile, &path).is_err());
+        uplink.apply(Resend);
+        let first = uplink.put_file(FileTarget::Profile, &path).unwrap();
+        let second = uplink.put_file(FileTarget::Profile, &path).unwrap();
+        uplink.put_module_data(0, vec![1]);
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { .. }));
+        let Outgoing::Put(mut upload) = uplink.next_outgoing() else { panic!("expected the first upload") };
+        let piece = upload.next_piece().unwrap();
+        assert_eq!((piece.offset, piece.total, piece.data.len(), piece.completes()), (0, 10, 10, true));
+        uplink.sending_piece(upload, true);
+        uplink.answered(Message::PutDone { target: FileTarget::Profile });
+        assert!(first.recv().unwrap().is_ok());
+        uplink.apply(DropQueued);
+        assert!(second.recv().unwrap().is_err());
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

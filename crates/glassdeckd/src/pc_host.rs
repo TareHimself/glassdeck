@@ -179,7 +179,7 @@ fn snapshot(profile: &Path, modules: &Path) -> Snapshot {
     Snapshot { profile: modified(profile), modules: found }
 }
 
-fn installed(folder: &Path) -> Result<HashMap<String, ModulePackage>> {
+pub fn installed(folder: &Path) -> Result<HashMap<String, ModulePackage>> {
     let mut packages = HashMap::new();
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,

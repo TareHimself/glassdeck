@@ -92,6 +92,10 @@ enum Command {
         /// File name in the keyboard's background folder, such as we-2970107491.deckbg
         name: String,
     },
+    /// Install a background (.deckbg), widget module (.deckmod) or widget profile (.json) on the keyboard
+    Deploy {
+        file: PathBuf,
+    },
     /// Wallpaper Engine items already in this PC's Steam workshop folder
     Wallpaper {
         #[command(subcommand)]
@@ -200,6 +204,12 @@ fn run(command: Command) -> Result<()> {
         Command::SelectBackground { name } => {
             client::call("PUT", "/background", Some(json!({ "name": name })))?;
             println!("The keyboard plays {name} whenever nothing is streaming");
+            Ok(())
+        }
+        Command::Deploy { file } => {
+            let path = std::path::absolute(&file).with_context(|| format!("finding {}", file.display()))?;
+            let answer = client::call("PUT", "/deploy", Some(json!({ "path": path })))?;
+            println!("The keyboard installed {}", text(&answer["deployed"]));
             Ok(())
         }
         Command::Wallpaper { action } => match action {

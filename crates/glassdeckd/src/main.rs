@@ -3,6 +3,7 @@
 
 mod api;
 mod config;
+mod deploy;
 mod link;
 mod pc_host;
 mod runner;
@@ -93,7 +94,8 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     pc_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink))?;
-    Api { token, runner, uplink, keyboard: config.keyboard }.serve(&paths.api)
+    let (modules, profile) = (paths.modules.clone(), paths.profile.clone());
+    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile }.serve(&paths.api)
 }
 
 fn new_token() -> Result<String> {

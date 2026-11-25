@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 6;
+pub const VERSION: u8 = 7;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 
@@ -26,12 +26,20 @@ const KIND_CLOCK_PROBE: u8 = 4;
 const KIND_CLOCK_REPLY: u8 = 5;
 const KIND_SELECT_BACKGROUND: u8 = 6;
 const KIND_MODULE_DATA: u8 = 7;
+const KIND_PUT_FILE: u8 = 8;
+const KIND_PUT_DONE: u8 = 9;
+const KIND_PUT_REFUSED: u8 = 10;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
 const CLOCK_PROBE_LEN: usize = 8;
 const CLOCK_REPLY_LEN: usize = 16;
 const MODULE_DATA_FIXED_LEN: usize = 4;
+const TARGET_FIXED_LEN: usize = 4;
+const PUT_FILE_FIXED_LEN: usize = TARGET_FIXED_LEN + 16;
+const TARGET_BACKGROUND: u8 = 1;
+const TARGET_MODULE: u8 = 2;
+const TARGET_PROFILE: u8 = 3;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +76,44 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+/// Where a file sent to the keyboard goes. The keyboard checks the names before writing anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileTarget {
+    Background(String),
+    Module(String),
+    /// The widget profile, which has one fixed place
+    Profile,
+}
+
+impl fmt::Display for FileTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Background(name) => write!(f, "background {name}"),
+            Self::Module(name) => write!(f, "module {name}"),
+            Self::Profile => write!(f, "the profile"),
+        }
+    }
+}
+
+/// One piece of a file. The file is complete once a piece ends at `total`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PutFile {
+    pub target: FileTarget,
+    pub offset: u64,
+    pub total: u64,
+    pub data: Vec<u8>,
+}
+
+impl PutFile {
+    pub fn end(&self) -> u64 {
+        self.offset + self.data.len() as u64
+    }
+
+    pub fn completes(&self) -> bool {
+        self.end() >= self.total
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     StreamStart(StreamInfo),
@@ -83,6 +129,13 @@ pub enum Message {
     /// PC to keyboard: what a widget's `pc.luau` sent, for the instance numbered by its place in
     /// the profile's widget list. `payload` is MessagePack.
     ModuleData { instance: u16, payload: Vec<u8> },
+    /// PC to keyboard: a piece of a file to install. The keyboard answers only the piece that
+    /// completes the file, with `PutDone` or `PutRefused`.
+    PutFile(PutFile),
+    /// Keyboard to PC: the file is in place.
+    PutDone { target: FileTarget },
+    /// Keyboard to PC: the file was not installed.
+    PutRefused { target: FileTarget, reason: String },
 }
 
 #[derive(Debug)]
@@ -94,6 +147,8 @@ pub enum ProtoError {
     UnknownCodec(u8),
     UnknownMode(u8),
     BackgroundNameNotUtf8,
+    BadFileTarget,
+    TextNotUtf8,
     Io(io::Error),
 }
 
@@ -107,6 +162,8 @@ impl fmt::Display for ProtoError {
             Self::UnknownCodec(c) => write!(f, "unknown codec {c}"),
             Self::UnknownMode(m) => write!(f, "unknown mode {m}"),
             Self::BackgroundNameNotUtf8 => write!(f, "background name is not UTF-8"),
+            Self::BadFileTarget => write!(f, "malformed file target"),
+            Self::TextNotUtf8 => write!(f, "text is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -188,6 +245,18 @@ impl Message {
             Self::ModuleData { instance, payload } => {
                 (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat())
             }
+            Self::PutFile(put) => {
+                let (head, name) = encode_target(&put.target);
+                (KIND_PUT_FILE, [&head[..], &put.offset.to_le_bytes(), &put.total.to_le_bytes(), name, &put.data].concat())
+            }
+            Self::PutDone { target } => {
+                let (head, name) = encode_target(target);
+                (KIND_PUT_DONE, [&head[..], name].concat())
+            }
+            Self::PutRefused { target, reason } => {
+                let (head, name) = encode_target(target);
+                (KIND_PUT_REFUSED, [&head[..], name, reason.as_bytes()].concat())
+            }
         };
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
         out.push(VERSION);
@@ -246,12 +315,54 @@ impl Message {
                 let payload = body.split_off(MODULE_DATA_FIXED_LEN);
                 Ok(Self::ModuleData { instance: u16::from_le_bytes([body[0], body[1]]), payload })
             }
-            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA => {
+            KIND_PUT_FILE if body.len() >= PUT_FILE_FIXED_LEN => {
+                let (target, name_end) = decode_target(&body, PUT_FILE_FIXED_LEN)?;
+                let (offset, total) = (u64_at(&body, 4), u64_at(&body, 12));
+                let mut body = body;
+                Ok(Self::PutFile(PutFile { target, offset, total, data: body.split_off(name_end) }))
+            }
+            KIND_PUT_DONE if body.len() >= TARGET_FIXED_LEN => match decode_target(&body, TARGET_FIXED_LEN)? {
+                (target, name_end) if name_end == body.len() => Ok(Self::PutDone { target }),
+                _ => Err(bad_length()),
+            },
+            KIND_PUT_REFUSED if body.len() >= TARGET_FIXED_LEN => {
+                let (target, name_end) = decode_target(&body, TARGET_FIXED_LEN)?;
+                let reason = String::from_utf8(body[name_end..].to_vec()).map_err(|_| ProtoError::TextNotUtf8)?;
+                Ok(Self::PutRefused { target, reason })
+            }
+            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA
+            | KIND_PUT_FILE | KIND_PUT_DONE | KIND_PUT_REFUSED => {
                 Err(bad_length())
             }
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
+}
+
+/// A target is 4 fixed bytes (kind, name length, padding) at the body's start, and its name after
+/// the message's other fixed fields.
+fn encode_target(target: &FileTarget) -> ([u8; TARGET_FIXED_LEN], &[u8]) {
+    let (kind, name) = match target {
+        FileTarget::Background(name) => (TARGET_BACKGROUND, name.as_bytes()),
+        FileTarget::Module(name) => (TARGET_MODULE, name.as_bytes()),
+        FileTarget::Profile => (TARGET_PROFILE, &[][..]),
+    };
+    let len = u8::try_from(name.len()).expect("file names are at most 255 bytes");
+    ([kind, len, 0, 0], name)
+}
+
+/// Returns the target and where its name ends.
+fn decode_target(body: &[u8], name_at: usize) -> Result<(FileTarget, usize), ProtoError> {
+    let name_end = name_at + body[1] as usize;
+    let name = body.get(name_at..name_end).ok_or(ProtoError::BadFileTarget)?;
+    let text = || String::from_utf8(name.to_vec()).map_err(|_| ProtoError::TextNotUtf8);
+    let target = match body[0] {
+        TARGET_BACKGROUND => FileTarget::Background(text()?),
+        TARGET_MODULE => FileTarget::Module(text()?),
+        TARGET_PROFILE if name.is_empty() => FileTarget::Profile,
+        _ => return Err(ProtoError::BadFileTarget),
+    };
+    Ok((target, name_end))
 }
 
 fn parse_header(header: &[u8; HEADER_LEN]) -> Result<(u8, u32), ProtoError> {
@@ -319,6 +430,15 @@ mod tests {
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
         round_trip(Message::SelectBackground { name: "late-night.deckbg".into() });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
+        round_trip(Message::PutFile(PutFile {
+            target: FileTarget::Background("late-night.deckbg".into()),
+            offset: 262_144,
+            total: 300_000,
+            data: vec![1, 2, 3],
+        }));
+        round_trip(Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 0, data: vec![] }));
+        round_trip(Message::PutDone { target: FileTarget::Module("cpu.deckmod".into()) });
+        round_trip(Message::PutRefused { target: FileTarget::Profile, reason: "no space left".into() });
     }
 
     #[test]
@@ -357,6 +477,17 @@ mod tests {
             Message::read_from(&mut short.as_slice()),
             Err(ProtoError::BadBodyLength { kind: KIND_STREAM_END, len: 2 })
         ));
+    }
+
+    #[test]
+    fn refuses_malformed_file_targets() {
+        let mut named_profile = Message::PutDone { target: FileTarget::Module("a.deckmod".into()) }.encode();
+        named_profile[HEADER_LEN] = TARGET_PROFILE;
+        assert!(matches!(Message::read_from(&mut named_profile.as_slice()), Err(ProtoError::BadFileTarget)));
+
+        let mut long_name = Message::PutDone { target: FileTarget::Module("a.deckmod".into()) }.encode();
+        long_name[HEADER_LEN + 1] = 200;
+        assert!(matches!(Message::read_from(&mut long_name.as_slice()), Err(ProtoError::BadFileTarget)));
     }
 
     #[test]

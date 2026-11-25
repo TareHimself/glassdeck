@@ -2,7 +2,7 @@
 //! what the CLI does; more come with the clients that need them.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::deploy;
 use crate::link::Uplink;
 use crate::runner::{Runner, RunnerEvent};
 
@@ -36,11 +37,19 @@ struct SelectBackground {
     name: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Deploy {
+    path: PathBuf,
+}
+
 pub struct Api {
     pub token: String,
     pub runner: Runner,
     pub uplink: Arc<Uplink>,
     pub keyboard: SocketAddr,
+    pub modules: PathBuf,
+    pub profile: PathBuf,
 }
 
 impl Api {
@@ -106,8 +115,23 @@ impl Api {
                 self.uplink.select_background(name.clone());
                 Ok(json!({ "selected": name }))
             }
+            (Method::Put, "/deploy") => {
+                let Deploy { path } = serde_json::from_slice(&body(request)?).context("reading the deploy request")?;
+                self.deploy(&path)
+            }
             (method, url) => bail!("no route {method} {url}"),
         }
+    }
+
+    /// Installs a background, module or profile on the keyboard, then keeps glassdeckd's own copy.
+    /// Answers once the keyboard has the file in place.
+    fn deploy(&self, path: &Path) -> Result<serde_json::Value> {
+        let target = deploy::target_for(path, &self.modules)?;
+        let answered = self.uplink.put_file(target.clone(), path)?;
+        answered.recv().context("the Link stopped before the keyboard answered")??;
+        deploy::keep_locally(&target, path, &self.modules, &self.profile)?;
+        println!("Deployed {target}");
+        Ok(json!({ "deployed": target.to_string() }))
     }
 
     /// Starts the source and waits until it streams, fails, or is still starting after `START_WAIT`.
