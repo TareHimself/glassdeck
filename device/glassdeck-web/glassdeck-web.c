@@ -18,10 +18,15 @@
 #include <xf86drmMode.h>
 #include <wpe/webkit.h>
 
+#include "compositor.h"
+#include "deck.h"
+
 #define PANEL_WIDTH 1920
 #define PANEL_HEIGHT 1080
 #define INSIDE_FLAG "--inside-sandbox"
 #define SANDBOXED_SELF "/app/glassdeck-web"
+#define SANDBOXED_DECK "/app/wallpaper.deck"
+#define DECK_ORIGIN "deck://wallpaper/"
 #define DISPLAY_DRIVER "rockchip"
 #define MAX_CARDS 16
 
@@ -32,16 +37,31 @@ static const char* const READ_ONLY_SYSTEM[] = {
     "/sys/devices/system/cpu",
 };
 
+// Headless for tests; display drives the screen for previews while no receiver holds it; compositor is the receiver.
+enum output_kind {
+  OUTPUT_HEADLESS,
+  OUTPUT_DISPLAY,
+  OUTPUT_COMPOSITOR,
+};
+
+// What to show: a page by URI (for tests), or a web .deck, served to WebKit as deck://.
+enum content_kind {
+  CONTENT_NONE,
+  CONTENT_URI,
+  CONTENT_DECK,
+};
+
 struct options {
-  const char* uri;
+  enum content_kind content;
+  const char* location;
   guint seconds;
   gboolean inside;
-  // Drive the screen directly, for previews while no receiver holds it
-  gboolean display;
+  enum output_kind output;
+  int compositor_fd;
 };
 
 static int usage(void) {
-  fprintf(stderr, "usage: glassdeck-web [--seconds=N] [--display] <uri>\n");
+  fprintf(stderr, "usage: glassdeck-web [--seconds=N] [--display | --compositor-fd=N] (--deck=PATH | <uri>)\n");
   return 2;
 }
 
@@ -49,17 +69,24 @@ static gboolean parse_options(int argc, char** argv, struct options* o) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], INSIDE_FLAG) == 0) {
       o->inside = TRUE;
-    } else if (strcmp(argv[i], "--display") == 0) {
-      o->display = TRUE;
+    } else if (strncmp(argv[i], "--deck=", 7) == 0 && o->content == CONTENT_NONE) {
+      o->content = CONTENT_DECK;
+      o->location = argv[i] + 7;
+    } else if (strcmp(argv[i], "--display") == 0 && o->output == OUTPUT_HEADLESS) {
+      o->output = OUTPUT_DISPLAY;
+    } else if (strncmp(argv[i], "--compositor-fd=", 16) == 0 && o->output == OUTPUT_HEADLESS) {
+      o->output = OUTPUT_COMPOSITOR;
+      o->compositor_fd = (int)strtol(argv[i] + 16, NULL, 10);
     } else if (strncmp(argv[i], "--seconds=", 10) == 0) {
       o->seconds = (guint)strtoul(argv[i] + 10, NULL, 10);
-    } else if (argv[i][0] == '-' || o->uri) {
+    } else if (argv[i][0] == '-' || o->content != CONTENT_NONE) {
       return FALSE;
     } else {
-      o->uri = argv[i];
+      o->content = CONTENT_URI;
+      o->location = argv[i];
     }
   }
-  return o->uri != NULL;
+  return o->content != CONTENT_NONE;
 }
 
 static void add(GPtrArray* args, const char* first, ...) {
@@ -98,20 +125,35 @@ static int exec_in_sandbox(const struct options* o) {
   add(args, "--proc", "/proc", "--dev", "/dev", NULL);
   for (size_t i = 0; i < G_N_ELEMENTS(DEVICES); i++) add(args, "--dev-bind", DEVICES[i], DEVICES[i], NULL);
   add(args, "--tmpfs", "/tmp", "--tmpfs", "/run", "--dir", "/tmp/runtime", NULL);
-  g_autofree char* content = content_dir(o->uri);
-  if (content) add(args, "--ro-bind", content, content, NULL);
+  g_autofree char* content = NULL;
+  g_autofree char* deck_flag = NULL;
+  if (o->content == CONTENT_DECK) {
+    content = realpath(o->location, NULL);
+    if (!content) return fprintf(stderr, "glassdeck-web: cannot find %s: %s\n", o->location, strerror(errno)), 1;
+    add(args, "--ro-bind", content, SANDBOXED_DECK, NULL);
+    // Media in the page reaches the deck through our GStreamer source, which reads this
+    add(args, "--setenv", "GLASSDECK_DECK", SANDBOXED_DECK, "--setenv", "GST_PLUGIN_PATH", GST_DECK_PLUGIN_DIR, NULL);
+    deck_flag = g_strdup("--deck=" SANDBOXED_DECK);
+  } else {
+    content = content_dir(o->location);
+    if (content) add(args, "--ro-bind", content, content, NULL);
+  }
   add(args, "--ro-bind", self, SANDBOXED_SELF, NULL);
   add(args, "--setenv", "HOME", "/tmp", "--setenv", "XDG_RUNTIME_DIR", "/tmp/runtime", NULL);
   add(args, "--unsetenv", "DBUS_SESSION_BUS_ADDRESS", "--unsetenv", "WAYLAND_DISPLAY", "--unsetenv", "DISPLAY", NULL);
   // WebKit's own sandbox cannot nest in ours or pass the decoder through; ours stands in for it.
   add(args, "--setenv", "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", NULL);
   add(args, "--", SANDBOXED_SELF, INSIDE_FLAG, NULL);
-  if (o->display) add(args, "--display", NULL);
+  if (o->output == OUTPUT_DISPLAY) add(args, "--display", NULL);
+  if (o->output == OUTPUT_COMPOSITOR) {
+    g_autofree char* fd = g_strdup_printf("--compositor-fd=%d", o->compositor_fd);
+    add(args, fd, NULL);
+  }
   if (o->seconds) {
     g_autofree char* seconds = g_strdup_printf("--seconds=%u", o->seconds);
     add(args, seconds, NULL);
   }
-  add(args, o->uri, NULL);
+  add(args, deck_flag ? deck_flag : o->location, NULL);
   g_ptr_array_add(args, NULL);
 
   execvp("bwrap", (char**)args->pdata);
@@ -130,13 +172,29 @@ struct display {
   struct wpe_dmabuf_pool_entry* flipping;
 };
 
+// The receiver shows our frames: each buffer is registered once, then presented by id.
+struct compositor_output {
+  struct compositor* socket;
+  // Presented and not yet released; WebKit draws the next frame once the one before is replaced on screen.
+  guint outstanding;
+  gboolean awaiting_complete;
+};
+
+struct output {
+  enum output_kind kind;
+  union {
+    struct display display;
+    struct compositor_output compositor;
+  };
+};
+
 struct renderer {
   struct gbm_device* gbm;
   struct wpe_view_backend_dmabuf_pool_fdo* pool;
   GMainLoop* loop;
   // WPEBackend-fdo 1.16 never calls destroy_entry, so the renderer frees what it allocated.
   GPtrArray* entries;
-  struct display display;
+  struct output output;
   guint frames;
   gboolean stopping;
   int exit_code;
@@ -145,13 +203,15 @@ struct renderer {
 struct frame_buffer {
   struct gbm_bo* bo;
   int fd;
+  // Set once known to the display (preview) or the compositor
   uint32_t fb_id;
+  uint32_t compositor_id;
 };
 
 static void free_entry(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
   struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
   wpe_dmabuf_pool_entry_destroy(entry);
-  if (fb->fb_id) drmModeRmFB(r->display.fd, fb->fb_id);
+  if (r->output.kind == OUTPUT_DISPLAY && fb->fb_id) drmModeRmFB(r->output.display.fd, fb->fb_id);
   close(fb->fd);
   gbm_bo_destroy(fb->bo);
   g_free(fb);
@@ -184,6 +244,22 @@ static struct wpe_dmabuf_pool_entry* on_create_entry(void* data) {
       .strides = {gbm_bo_get_stride(bo)},
       .modifiers = {gbm_bo_get_modifier(bo)},
   };
+  if (r->output.kind == OUTPUT_COMPOSITOR) {
+    struct buffer_layout layout = {
+        .width = PANEL_WIDTH,
+        .height = PANEL_HEIGHT,
+        .fourcc = gbm_bo_get_format(bo),
+        .stride = gbm_bo_get_stride(bo),
+        .offset = 0,
+        .modifier = gbm_bo_get_modifier(bo),
+    };
+    g_autoptr(GError) error = NULL;
+    if (!compositor_register(r->output.compositor.socket, fb->fd, &layout, &fb->compositor_id, &error)) {
+      // Without a buffer the compositor can show there is nothing to draw into; the receiver logs our status.
+      fprintf(stderr, "glassdeck-web: %s\n", error->message);
+      exit(1);
+    }
+  }
   struct wpe_dmabuf_pool_entry* entry = wpe_dmabuf_pool_entry_create(&init);
   wpe_dmabuf_pool_entry_set_user_data(entry, fb);
   g_ptr_array_add(r->entries, entry);
@@ -210,7 +286,7 @@ static gboolean import_frame(struct display* d, struct frame_buffer* fb) {
 }
 
 static void show(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
-  struct display* d = &r->display;
+  struct display* d = &r->output.display;
   struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
   if (!import_frame(d, fb)) return stop_with_error(r, "the display refused the frame buffer");
   if (!d->mode_set) {
@@ -229,7 +305,7 @@ static void show(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
 static void on_flip(G_GNUC_UNUSED int fd, G_GNUC_UNUSED unsigned sequence, G_GNUC_UNUSED unsigned seconds,
                     G_GNUC_UNUSED unsigned microseconds, void* data) {
   struct renderer* r = data;
-  struct display* d = &r->display;
+  struct display* d = &r->output.display;
   wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, d->on_screen);
   d->on_screen = d->flipping;
   d->flipping = NULL;
@@ -240,6 +316,53 @@ static gboolean on_display_event(int fd, G_GNUC_UNUSED GIOCondition condition, G
   drmEventContext events = {.version = 2, .page_flip_handler = on_flip};
   drmHandleEvent(fd, &events);
   return G_SOURCE_CONTINUE;
+}
+
+static void present_to_compositor(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
+  struct compositor_output* c = &r->output.compositor;
+  struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
+  g_autoptr(GError) error = NULL;
+  if (!compositor_present(c->socket, fb->compositor_id, &error)) {
+    fprintf(stderr, "glassdeck-web: %s\n", error->message);
+    r->exit_code = 1;
+    g_main_loop_quit(r->loop);
+    return;
+  }
+  if (c->outstanding++ == 0) {
+    wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+  } else {
+    c->awaiting_complete = TRUE;
+  }
+}
+
+static void on_compositor_released(void* data, uint32_t id) {
+  struct renderer* r = data;
+  struct compositor_output* c = &r->output.compositor;
+  for (guint i = 0; i < r->entries->len; i++) {
+    struct wpe_dmabuf_pool_entry* entry = g_ptr_array_index(r->entries, i);
+    struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
+    if (fb->compositor_id != id) continue;
+    wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, entry);
+    c->outstanding--;
+    if (c->awaiting_complete) {
+      c->awaiting_complete = FALSE;
+      wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+    }
+    return;
+  }
+  fprintf(stderr, "glassdeck-web: the compositor released buffer %u, which it never registered\n", id);
+  r->exit_code = 1;
+  g_main_loop_quit(r->loop);
+}
+
+static gboolean on_compositor_readable(G_GNUC_UNUSED int fd, G_GNUC_UNUSED GIOCondition condition, gpointer data) {
+  struct renderer* r = data;
+  g_autoptr(GError) error = NULL;
+  if (compositor_dispatch(r->output.compositor.socket, &error)) return G_SOURCE_CONTINUE;
+  fprintf(stderr, "glassdeck-web: %s\n", error->message);
+  r->exit_code = 1;
+  g_main_loop_quit(r->loop);
+  return G_SOURCE_REMOVE;
 }
 
 // A connected output that can show the panel's size, preferring 60 Hz.
@@ -283,9 +406,16 @@ static void on_commit_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
            gbm_bo_get_height(fb->bo), (const char*)&format, (unsigned long long)gbm_bo_get_modifier(fb->bo));
     fflush(stdout);
   }
-  if (r->display.fd >= 0) return show(r, entry);
-  wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, entry);
-  wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+  switch (r->output.kind) {
+    case OUTPUT_DISPLAY:
+      return show(r, entry);
+    case OUTPUT_COMPOSITOR:
+      return present_to_compositor(r, entry);
+    case OUTPUT_HEADLESS:
+      wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, entry);
+      wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+      return;
+  }
 }
 
 // Buffers come from the display controller's node: Mesa (kmsro) allocates them there and renders into them on the
@@ -337,6 +467,111 @@ static int fail(const char* message) {
   return 1;
 }
 
+// Content types by extension, for what web wallpapers load (the same table as the PC's deck:// handler).
+static const char* mime_type(const char* path) {
+  static const char* const TYPES[][2] = {
+      {".html", "text/html"}, {".htm", "text/html"}, {".js", "text/javascript"}, {".mjs", "text/javascript"},
+      {".css", "text/css"}, {".json", "application/json"}, {".map", "application/json"}, {".wasm", "application/wasm"},
+      {".svg", "image/svg+xml"}, {".png", "image/png"}, {".jpg", "image/jpeg"}, {".jpeg", "image/jpeg"},
+      {".gif", "image/gif"}, {".webp", "image/webp"}, {".ico", "image/x-icon"}, {".mp4", "video/mp4"},
+      {".webm", "video/webm"}, {".mp3", "audio/mpeg"}, {".ogg", "audio/ogg"}, {".wav", "audio/wav"},
+      {".woff", "font/woff"}, {".woff2", "font/woff2"}, {".ttf", "font/ttf"}, {".otf", "font/otf"},
+      {".txt", "text/plain"}, {".xml", "application/xml"},
+  };
+  g_autofree char* lower = g_ascii_strdown(path, -1);
+  for (size_t i = 0; i < G_N_ELEMENTS(TYPES); i++)
+    if (g_str_has_suffix(lower, TYPES[i][0])) return TYPES[i][1];
+  return "application/octet-stream";
+}
+
+// Stands in for Wallpaper Engine's JS hooks, as on the PC: user properties get their defaults, audio stays silent.
+static char* wallpaper_init_script(const char* properties_json) {
+  return g_strdup_printf(
+      "(() => {\n"
+      "  const userProperties = %s;\n"
+      "  for (const name of [\"wallpaperRegisterAudioListener\", \"wallpaperRegisterMediaStatusListener\",\n"
+      "      \"wallpaperRegisterMediaPropertiesListener\", \"wallpaperRegisterMediaThumbnailListener\",\n"
+      "      \"wallpaperRegisterMediaPlaybackListener\", \"wallpaperRegisterMediaTimelineListener\"]) {\n"
+      "    window[name] = () => {};\n"
+      "  }\n"
+      "  window.addEventListener(\"load\", () => setTimeout(() => {\n"
+      "    const listener = window.wallpaperPropertyListener;\n"
+      "    if (listener && typeof listener.applyUserProperties === \"function\") listener.applyUserProperties(userProperties);\n"
+      "  }, 0));\n"
+      "})();",
+      properties_json);
+}
+
+// "bytes=a-b", "bytes=a-" or "bytes=-n" into [start, end); one range only.
+static gboolean parse_range(const char* header, uint64_t len, uint64_t* start, uint64_t* end) {
+  if (!g_str_has_prefix(header, "bytes=") || strchr(header, ',')) return FALSE;
+  const char* spec = header + 6;
+  const char* dash = strchr(spec, '-');
+  if (!dash) return FALSE;
+  char* rest;
+  if (dash == spec) {
+    uint64_t suffix = g_ascii_strtoull(dash + 1, &rest, 10);
+    if (*rest || suffix == 0) return FALSE;
+    *start = len - MIN(suffix, len);
+    *end = len;
+  } else {
+    *start = g_ascii_strtoull(spec, &rest, 10);
+    if (rest != dash) return FALSE;
+    if (dash[1] == '\0') {
+      *end = len;
+    } else {
+      uint64_t last = g_ascii_strtoull(dash + 1, &rest, 10);
+      if (*rest) return FALSE;
+      *end = MIN(last + 1, len);
+    }
+  }
+  return *start < *end;
+}
+
+// Serves deck://wallpaper/<entry> straight from the mapped deck, honouring Range so media can seek.
+static void on_deck_request(WebKitURISchemeRequest* request, gpointer data) {
+  const struct deck* d = data;
+  g_autofree char* path = g_uri_unescape_string(webkit_uri_scheme_request_get_path(request), NULL);
+  const char* name = path && path[0] == '/' ? path + 1 : path;
+  struct deck_entry entry;
+  if (!name || !deck_find(d, name, &entry)) {
+    fprintf(stderr, "glassdeck-web: the page asked for \"%s\", which the deck does not hold\n", name ? name : "");
+    GError* error = g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "not in the deck: %s", name ? name : "");
+    webkit_uri_scheme_request_finish_error(request, error);
+    g_error_free(error);
+    return;
+  }
+  uint64_t start = 0, end = entry.len;
+  SoupMessageHeaders* request_headers = webkit_uri_scheme_request_get_http_headers(request);
+  const char* range = request_headers ? soup_message_headers_get_one(request_headers, "Range") : NULL;
+  gboolean partial = range && parse_range(range, entry.len, &start, &end);
+  if (range && !partial) {
+    GError* error = g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "unsatisfiable range %s", range);
+    webkit_uri_scheme_request_finish_error(request, error);
+    g_error_free(error);
+    return;
+  }
+  g_autoptr(GBytes) bytes = deck_bytes(d, entry, start, end);
+  g_autoptr(GInputStream) stream = g_memory_input_stream_new_from_bytes(bytes);
+  g_autoptr(WebKitURISchemeResponse) response = webkit_uri_scheme_response_new(stream, (gint64)(end - start));
+  webkit_uri_scheme_response_set_content_type(response, mime_type(name));
+  SoupMessageHeaders* headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+  soup_message_headers_append(headers, "Accept-Ranges", "bytes");
+  if (partial) {
+    g_autofree char* content_range = g_strdup_printf("bytes %" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT "/%" G_GUINT64_FORMAT,
+                                                     start, end - 1, entry.len);
+    soup_message_headers_append(headers, "Content-Range", content_range);
+    webkit_uri_scheme_response_set_status(response, 206, "Partial Content");
+  }
+  webkit_uri_scheme_response_set_http_headers(response, headers);
+  webkit_uri_scheme_request_finish_with_response(request, response);
+}
+
+static char* deck_page_uri(const char* entry) {
+  g_autofree char* escaped = g_uri_escape_string(entry, "/", FALSE);
+  return g_strconcat(DECK_ORIGIN, escaped, NULL);
+}
+
 static int render(const struct options* o) {
   int card = open_display_device();
   if (card < 0) return fail("no " DISPLAY_DRIVER " display device");
@@ -344,13 +579,23 @@ static int render(const struct options* o) {
       .loop = g_main_loop_new(NULL, FALSE),
       .gbm = gbm_create_device(card),
       .entries = g_ptr_array_new(),
-      .display = {.fd = -1},
+      .output = {.kind = o->output},
   };
   if (!r.gbm) return fail("cannot open the GPU through GBM");
-  if (o->display) {
-    if (!find_output(card, &r.display)) return fail("no connected output can show 1920x1080");
-    printf("previewing on %ux%u@%u\n", r.display.mode.hdisplay, r.display.mode.vdisplay, r.display.mode.vrefresh);
-    g_unix_fd_add(r.display.fd, G_IO_IN, on_display_event, NULL);
+  switch (o->output) {
+    case OUTPUT_DISPLAY: {
+      struct display* d = &r.output.display;
+      if (!find_output(card, d)) return fail("no connected output can show 1920x1080");
+      printf("previewing on %ux%u@%u\n", d->mode.hdisplay, d->mode.vdisplay, d->mode.vrefresh);
+      g_unix_fd_add(d->fd, G_IO_IN, on_display_event, NULL);
+      break;
+    }
+    case OUTPUT_COMPOSITOR:
+      r.output.compositor.socket = compositor_new(o->compositor_fd, on_compositor_released, &r);
+      g_unix_fd_add(o->compositor_fd, G_IO_IN | G_IO_HUP | G_IO_ERR, on_compositor_readable, &r);
+      break;
+    case OUTPUT_HEADLESS:
+      break;
   }
   if (!wpe_loader_init("libWPEBackend-fdo-1.0.so.1")) return fail("cannot load WPEBackend-fdo");
   if (!wpe_fdo_initialize_dmabuf()) return fail("cannot start WPEBackend-fdo in dma-buf pool mode");
@@ -368,11 +613,34 @@ static int render(const struct options* o) {
       webkit_web_view_backend_new(wpe_view_backend_dmabuf_pool_fdo_get_view_backend(r.pool), NULL, NULL);
 
   WebKitWebContext* context = webkit_web_context_new();
+  WebKitUserContentManager* scripts = webkit_user_content_manager_new();
+  struct deck* deck = NULL;
+  g_autofree char* uri = NULL;
+  if (o->content == CONTENT_DECK) {
+    g_autoptr(GError) error = NULL;
+    struct deck_web web = {0};
+    deck = deck_open(o->location, &error);
+    if (!deck || !deck_web_content(deck, &web, &error)) return fail(error->message);
+    webkit_web_context_register_uri_scheme(context, "deck", on_deck_request, deck, NULL);
+    WebKitSecurityManager* security = webkit_web_context_get_security_manager(context);
+    webkit_security_manager_register_uri_scheme_as_secure(security, "deck");
+    webkit_security_manager_register_uri_scheme_as_cors_enabled(security, "deck");
+    g_autofree char* init = wallpaper_init_script(web.properties_json);
+    WebKitUserScript* script = webkit_user_script_new(init, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                                                      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+    webkit_user_content_manager_add_script(scripts, script);
+    webkit_user_script_unref(script);
+    uri = deck_page_uri(web.entry);
+    deck_web_clear(&web);
+  } else {
+    uri = g_strdup(o->location);
+  }
   WebKitNetworkSession* session = webkit_network_session_new_ephemeral();
   WebKitSettings* settings = webkit_settings_new_with_settings(
       "enable-write-console-messages-to-stdout", TRUE, "media-playback-requires-user-gesture", FALSE, NULL);
   WebKitWebView* view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "backend", backend, "web-context", context,
-                                     "network-session", session, "settings", settings, NULL);
+                                     "network-session", session, "settings", settings, "user-content-manager", scripts,
+                                     NULL);
   webkit_web_view_set_is_muted(view, TRUE);
 
   g_signal_connect(view, "load-failed", G_CALLBACK(on_load_failed), &r);
@@ -382,7 +650,7 @@ static int render(const struct options* o) {
   g_unix_signal_add(SIGTERM, on_stop, &r);
   if (o->seconds) g_timeout_add_seconds(o->seconds, on_stop, &r);
 
-  webkit_web_view_load_uri(view, o->uri);
+  webkit_web_view_load_uri(view, uri);
   gint64 started = g_get_monotonic_time();
   g_main_loop_run(r.loop);
   double seconds = (g_get_monotonic_time() - started) / 1e6;
@@ -394,10 +662,13 @@ static int render(const struct options* o) {
   g_object_unref(view);
   g_object_unref(settings);
   g_object_unref(session);
+  g_object_unref(scripts);
   g_object_unref(context);
+  if (deck) deck_free(deck);
   g_main_loop_unref(r.loop);
   for (guint i = 0; i < r.entries->len; i++) free_entry(&r, g_ptr_array_index(r.entries, i));
   g_ptr_array_unref(r.entries);
+  if (r.output.kind == OUTPUT_COMPOSITOR) compositor_free(r.output.compositor.socket);
   gbm_device_destroy(r.gbm);
   close(card);
   return r.exit_code;
