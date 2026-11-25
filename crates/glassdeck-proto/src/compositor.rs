@@ -1,4 +1,4 @@
-//! The receiver's compositor socket, for renderers on the keyboard itself (glassdeck-web).
+//! The receiver's compositor socket, for renderers on the keyboard itself (glassdeck-local-web).
 //!
 //! One message per SOCK_SEQPACKET datagram, little-endian: `[version u8][kind u8][0 u8; 2][body]`.
 //! `Register` carries the buffer's dma-buf fd as SCM_RIGHTS; no other message carries an fd.
@@ -188,7 +188,7 @@ mod tests {
         }
     }
 
-    /// The exact bytes glassdeck-web's C side must produce and accept.
+    /// The exact bytes glassdeck-local-web's C side must produce and accept.
     #[test]
     fn wire_layout_is_fixed() {
         assert_eq!(

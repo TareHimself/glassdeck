@@ -1,4 +1,4 @@
-//! Decks played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-web.
+//! Decks played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ const LOCAL_PLAYOUT_DELAY_US: u64 = 100_000;
 pub enum LocalDeck {
     /// Decoded on its own thread
     Video { stop: Arc<AtomicBool>, thread: JoinHandle<()> },
-    /// Rendered by glassdeck-web
+    /// Rendered by glassdeck-local-web
     Web(WebDeck),
 }
 

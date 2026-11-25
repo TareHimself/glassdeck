@@ -1,4 +1,4 @@
-//! Web decks: glassdeck-web renders them into its own scanout buffers and presents them over a socket.
+//! Web decks: glassdeck-local-web renders them into its own scanout buffers and presents them over a socket.
 
 use std::collections::HashMap;
 use std::io::IoSliceMut;
@@ -23,8 +23,8 @@ use super::Picture;
 use super::compositor::{Registrar, SharedBuffer};
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 
-const RENDERER: &str = "glassdeck-web";
-const RENDERER_USER: &str = "glassdeck-web";
+const RENDERER: &str = "glassdeck-local-web";
+const RENDERER_USER: &str = "glassdeck-local-web";
 /// The renderer finds its end of the socket here, as `--compositor-fd` says.
 const RENDERER_SOCKET_FD: i32 = 3;
 /// Our end is moved above the standard descriptors, so placing the child's end at 3 never overwrites it.
@@ -53,7 +53,7 @@ fn send(socket: &OwnedFd, message: &FromCompositor) -> Result<(), RendererGone> 
         Ok(_) => Ok(()),
         Err(Errno::PIPE | Errno::CONNRESET | Errno::NOTCONN) => Err(RendererGone),
         Err(e) => {
-            eprintln!("error: answering glassdeck-web: {e}");
+            eprintln!("error: answering glassdeck-local-web: {e}");
             Err(RendererGone)
         }
     }
@@ -144,7 +144,7 @@ fn serve(socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Mailbox) -> Res
         let mut control = RecvAncillaryBuffer::new(&mut space);
         let received =
             rustix::net::recvmsg(&**socket, &mut [IoSliceMut::new(&mut bytes)], &mut control, RecvFlags::CMSG_CLOEXEC)
-                .context("reading from glassdeck-web")?;
+                .context("reading from glassdeck-local-web")?;
         if received.bytes == 0 {
             return Ok(());
         }
@@ -157,7 +157,7 @@ fn serve(socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Mailbox) -> Res
             .collect();
         match ToCompositor::decode(&bytes[..received.bytes])? {
             ToCompositor::Register(layout) => {
-                let fd = fds.pop().context("glassdeck-web registered a buffer without sending it")?;
+                let fd = fds.pop().context("glassdeck-local-web registered a buffer without sending it")?;
                 match registrar.register(&fd, layout) {
                     Ok(buffer) => {
                         let id = next_id;
@@ -169,13 +169,13 @@ fn serve(socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Mailbox) -> Res
                     Err(e) => {
                         let reason = format!("{e:#}");
                         let _ = send(socket, &FromCompositor::Refused { reason: reason.clone() });
-                        bail!("refused a glassdeck-web buffer: {reason}");
+                        bail!("refused a glassdeck-local-web buffer: {reason}");
                     }
                 }
             }
             ToCompositor::Present(id) => {
                 let buffer = Arc::clone(
-                    buffers.get(&id).with_context(|| format!("glassdeck-web presented unknown buffer {id}"))?,
+                    buffers.get(&id).with_context(|| format!("glassdeck-local-web presented unknown buffer {id}"))?,
                 );
                 let picture = Picture::Shared(SharedPicture { buffer, id, socket: Arc::clone(socket) });
                 mailbox.put(ShownFrame { picture, timing: Timing::Paced { late_us: 0 } });

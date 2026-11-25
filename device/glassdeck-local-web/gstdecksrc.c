@@ -1,6 +1,6 @@
 // A GStreamer source for deck:// URIs, so <video> and <audio> in a web deck play from the deck like the rest of
 // the page. WebKit hands media URLs to GStreamer instead of its own loader, and GStreamer knows no deck scheme.
-// The web process runs inside glassdeck-web's sandbox, where GLASSDECK_DECK names the deck file.
+// The web process runs inside glassdeck-local-web's sandbox, where GLASSDECK_DECK names the deck file.
 #include <gst/base/gstbasesrc.h>
 #include <gst/gst.h>
 #include <string.h>
@@ -148,6 +148,6 @@ static gboolean plugin_init(GstPlugin* plugin) {
   return gst_element_register(plugin, "decksrc", GST_RANK_PRIMARY, gst_deck_src_get_type());
 }
 
-#define PACKAGE "glassdeck-web"
+#define PACKAGE "glassdeck-local-web"
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, deck, "deck:// sources for Glassdeck web decks", plugin_init, "1.0",
                   "MIT/X11", PACKAGE, "Glassdeck")

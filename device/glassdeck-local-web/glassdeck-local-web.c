@@ -24,7 +24,7 @@
 #define PANEL_WIDTH 1920
 #define PANEL_HEIGHT 1080
 #define INSIDE_FLAG "--inside-sandbox"
-#define SANDBOXED_SELF "/app/glassdeck-web"
+#define SANDBOXED_SELF "/app/glassdeck-local-web"
 #define SANDBOXED_DECK "/app/wallpaper.deck"
 #define DECK_ORIGIN "deck://wallpaper/"
 #define DISPLAY_DRIVER "rockchip"
@@ -61,7 +61,7 @@ struct options {
 };
 
 static int usage(void) {
-  fprintf(stderr, "usage: glassdeck-web [--seconds=N] [--display | --compositor-fd=N] (--deck=PATH | <uri>)\n");
+  fprintf(stderr, "usage: glassdeck-local-web [--seconds=N] [--display | --compositor-fd=N] (--deck=PATH | <uri>)\n");
   return 2;
 }
 
@@ -105,18 +105,18 @@ static char* content_dir(const char* uri) {
 
 static int exec_in_sandbox(const struct options* o) {
   if (getuid() == 0) {
-    fprintf(stderr, "glassdeck-web: refusing to run pages as root; run as the glassdeck-web user\n");
+    fprintf(stderr, "glassdeck-local-web: refusing to run pages as root; run as the glassdeck-local-web user\n");
     return 1;
   }
   for (size_t i = 0; i < G_N_ELEMENTS(DEVICES); i++) {
     int needed = g_file_test(DEVICES[i], G_FILE_TEST_IS_DIR) ? R_OK | X_OK : R_OK | W_OK;
     if (access(DEVICES[i], needed) != 0) {
-      fprintf(stderr, "glassdeck-web: cannot open %s (%s); is this user in the video group?\n", DEVICES[i], strerror(errno));
+      fprintf(stderr, "glassdeck-local-web: cannot open %s (%s); is this user in the video group?\n", DEVICES[i], strerror(errno));
       return 1;
     }
   }
   g_autofree char* self = g_file_read_link("/proc/self/exe", NULL);
-  if (!self) return fprintf(stderr, "glassdeck-web: cannot find its own executable\n"), 1;
+  if (!self) return fprintf(stderr, "glassdeck-local-web: cannot find its own executable\n"), 1;
 
   g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
   add(args, "bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", NULL);
@@ -129,7 +129,7 @@ static int exec_in_sandbox(const struct options* o) {
   g_autofree char* deck_flag = NULL;
   if (o->content == CONTENT_DECK) {
     content = realpath(o->location, NULL);
-    if (!content) return fprintf(stderr, "glassdeck-web: cannot find %s: %s\n", o->location, strerror(errno)), 1;
+    if (!content) return fprintf(stderr, "glassdeck-local-web: cannot find %s: %s\n", o->location, strerror(errno)), 1;
     add(args, "--ro-bind", content, SANDBOXED_DECK, NULL);
     // Media in the page reaches the deck through our GStreamer source, which reads this
     add(args, "--setenv", "GLASSDECK_DECK", SANDBOXED_DECK, "--setenv", "GST_PLUGIN_PATH", GST_DECK_PLUGIN_DIR, NULL);
@@ -157,7 +157,7 @@ static int exec_in_sandbox(const struct options* o) {
   g_ptr_array_add(args, NULL);
 
   execvp("bwrap", (char**)args->pdata);
-  fprintf(stderr, "glassdeck-web: cannot start bwrap: %s\n", strerror(errno));
+  fprintf(stderr, "glassdeck-local-web: cannot start bwrap: %s\n", strerror(errno));
   return 1;
 }
 
@@ -225,7 +225,7 @@ static void free_entry(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) 
 }
 
 static void stop_with_error(struct renderer* r, const char* message) {
-  fprintf(stderr, "glassdeck-web: %s: %s\n", message, strerror(errno));
+  fprintf(stderr, "glassdeck-local-web: %s: %s\n", message, strerror(errno));
   r->exit_code = 1;
   g_main_loop_quit(r->loop);
 }
@@ -236,7 +236,7 @@ static struct wpe_dmabuf_pool_entry* on_create_entry(void* data) {
   struct gbm_bo* bo = gbm_bo_create(r->gbm, PANEL_WIDTH, PANEL_HEIGHT, GBM_FORMAT_XRGB8888,
                                     GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
   if (!bo) {
-    fprintf(stderr, "glassdeck-web: cannot allocate a frame buffer\n");
+    fprintf(stderr, "glassdeck-local-web: cannot allocate a frame buffer\n");
     return NULL;
   }
   struct frame_buffer* fb = g_new0(struct frame_buffer, 1);
@@ -263,7 +263,7 @@ static struct wpe_dmabuf_pool_entry* on_create_entry(void* data) {
     g_autoptr(GError) error = NULL;
     if (!compositor_register(r->output.compositor.socket, fb->fd, &layout, &fb->compositor_id, &error)) {
       // Without a buffer the compositor can show there is nothing to draw into; the receiver logs our status.
-      fprintf(stderr, "glassdeck-web: %s\n", error->message);
+      fprintf(stderr, "glassdeck-local-web: %s\n", error->message);
       exit(1);
     }
   }
@@ -351,7 +351,7 @@ static void present_to_compositor(struct renderer* r, struct wpe_dmabuf_pool_ent
   struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
   g_autoptr(GError) error = NULL;
   if (!compositor_present(c->socket, fb->compositor_id, &error)) {
-    fprintf(stderr, "glassdeck-web: %s\n", error->message);
+    fprintf(stderr, "glassdeck-local-web: %s\n", error->message);
     r->exit_code = 1;
     g_main_loop_quit(r->loop);
     return;
@@ -378,7 +378,7 @@ static void on_compositor_released(void* data, uint32_t id) {
     }
     return;
   }
-  fprintf(stderr, "glassdeck-web: the compositor released buffer %u, which it never registered\n", id);
+  fprintf(stderr, "glassdeck-local-web: the compositor released buffer %u, which it never registered\n", id);
   r->exit_code = 1;
   g_main_loop_quit(r->loop);
 }
@@ -387,7 +387,7 @@ static gboolean on_compositor_readable(G_GNUC_UNUSED int fd, G_GNUC_UNUSED GIOCo
   struct renderer* r = data;
   g_autoptr(GError) error = NULL;
   if (compositor_dispatch(r->output.compositor.socket, &error)) return G_SOURCE_CONTINUE;
-  fprintf(stderr, "glassdeck-web: %s\n", error->message);
+  fprintf(stderr, "glassdeck-local-web: %s\n", error->message);
   r->exit_code = 1;
   g_main_loop_quit(r->loop);
   return G_SOURCE_REMOVE;
@@ -491,7 +491,7 @@ static void on_title(WebKitWebView* view, G_GNUC_UNUSED GParamSpec* spec, G_GNUC
 }
 
 static int fail(const char* message) {
-  fprintf(stderr, "glassdeck-web: %s\n", message);
+  fprintf(stderr, "glassdeck-local-web: %s\n", message);
   return 1;
 }
 
@@ -563,7 +563,7 @@ static void on_deck_request(WebKitURISchemeRequest* request, gpointer data) {
   const char* name = path && path[0] == '/' ? path + 1 : path;
   struct deck_entry entry;
   if (!name || !deck_find(d, name, &entry)) {
-    fprintf(stderr, "glassdeck-web: the page asked for \"%s\", which the deck does not hold\n", name ? name : "");
+    fprintf(stderr, "glassdeck-local-web: the page asked for \"%s\", which the deck does not hold\n", name ? name : "");
     GError* error = g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "not in the deck: %s", name ? name : "");
     webkit_uri_scheme_request_finish_error(request, error);
     g_error_free(error);
@@ -633,7 +633,7 @@ static gboolean enable_features(WebKitSettings* settings) {
       found = TRUE;
     }
     if (!found) {
-      fprintf(stderr, "glassdeck-web: this WebKit has no %s feature\n", CHROMIUM_FEATURES[i]);
+      fprintf(stderr, "glassdeck-local-web: this WebKit has no %s feature\n", CHROMIUM_FEATURES[i]);
       return FALSE;
     }
   }
