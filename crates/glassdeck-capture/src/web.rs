@@ -103,8 +103,13 @@ impl FrameSource for WebSource {
             }
         };
         unsafe { gd_web_stop() };
-        let frames = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?.frames;
-        println!("Rendered {frames} frames");
+        let sink = sink.lock().map_err(|_| anyhow!("frame sink poisoned"))?;
+        println!(
+            "Rendered {} frames; each held CEF's thread {:.2} ms on average (max {:.2}) while we copied it",
+            sink.frames,
+            sink.callback_total.as_secs_f64() * 1000.0 / sink.frames.max(1) as f64,
+            sink.callback_max.as_secs_f64() * 1000.0
+        );
         failure.map_or(Ok(()), Err)
     }
 }
@@ -119,6 +124,9 @@ struct FrameSink {
     owned: Option<ID3D11Texture2D>,
     done: ID3D11Query,
     frames: u64,
+    /// Time spent inside CEF's paint callback, which blocks its UI thread
+    callback_total: Duration,
+    callback_max: Duration,
     failure: Option<anyhow::Error>,
 }
 
@@ -138,11 +146,14 @@ impl FrameSink {
             owned: None,
             done: done.context("CreateQuery returned nothing")?,
             frames: 0,
+            callback_total: Duration::ZERO,
+            callback_max: Duration::ZERO,
             failure: None,
         })
     }
 
     fn accept(&mut self, shared_handle: *mut c_void, width: u32, height: u32) -> Result<()> {
+        let entered = Instant::now();
         if (width, height) != self.size {
             bail!("CEF painted {width}x{height}, expected {}x{}", self.size.0, self.size.1);
         }
@@ -160,6 +171,9 @@ impl FrameSink {
             self.encoder.submit(&owned, unix_micros())?;
             self.wait_for_gpu()?;
         }
+        let held = entered.elapsed();
+        self.callback_total += held;
+        self.callback_max = self.callback_max.max(held);
         self.frames += 1;
         Ok(())
     }
