@@ -11,4 +11,6 @@ meson setup build --prefix=/usr/local && ninja -C build install
 udevadm control --reload && udevadm trigger
 useradd --system --no-create-home --shell /usr/sbin/nologin --groups video,render glassdeck-web
 runuser -u glassdeck-web -- glassdeck-web --seconds=15 file:///path/to/index.html
+# with no receiver running, --display previews straight on the screen
+runuser -u glassdeck-web -- glassdeck-web --display file:///path/to/index.html
 ```

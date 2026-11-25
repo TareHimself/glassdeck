@@ -15,6 +15,7 @@
 #include <wpe/fdo.h>
 #include <wpe/unstable/fdo-dmabuf.h>
 #include <xf86drm.h>
+#include <xf86drmMode.h>
 #include <wpe/webkit.h>
 
 #define PANEL_WIDTH 1920
@@ -36,10 +37,12 @@ struct options {
   const char* uri;
   guint seconds;
   gboolean inside;
+  // Drive the screen directly, for previews while no receiver holds it
+  gboolean display;
 };
 
 static int usage(void) {
-  fprintf(stderr, "usage: glassdeck-web [--seconds=N] <uri>\n");
+  fprintf(stderr, "usage: glassdeck-web [--seconds=N] [--display] <uri>\n");
   return 2;
 }
 
@@ -47,6 +50,8 @@ static gboolean parse_options(int argc, char** argv, struct options* o) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], INSIDE_FLAG) == 0) {
       o->inside = TRUE;
+    } else if (strcmp(argv[i], "--display") == 0) {
+      o->display = TRUE;
     } else if (strncmp(argv[i], "--seconds=", 10) == 0) {
       o->seconds = (guint)strtoul(argv[i] + 10, NULL, 10);
     } else if (argv[i][0] == '-' || o->uri) {
@@ -102,6 +107,7 @@ static int exec_in_sandbox(const struct options* o) {
   // WebKit's own sandbox cannot nest in ours or pass the decoder through; ours stands in for it.
   add(args, "--setenv", "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", NULL);
   add(args, "--", SANDBOXED_SELF, INSIDE_FLAG, NULL);
+  if (o->display) add(args, "--display", NULL);
   if (o->seconds) {
     g_autofree char* seconds = g_strdup_printf("--seconds=%u", o->seconds);
     add(args, seconds, NULL);
@@ -114,12 +120,24 @@ static int exec_in_sandbox(const struct options* o) {
   return 1;
 }
 
+// The screen, when previewing: one frame on screen, at most one more waiting for the next vblank.
+struct display {
+  int fd;
+  uint32_t crtc;
+  uint32_t connector;
+  drmModeModeInfo mode;
+  gboolean mode_set;
+  struct wpe_dmabuf_pool_entry* on_screen;
+  struct wpe_dmabuf_pool_entry* flipping;
+};
+
 struct renderer {
   struct gbm_device* gbm;
   struct wpe_view_backend_dmabuf_pool_fdo* pool;
   GMainLoop* loop;
   // WPEBackend-fdo 1.16 never calls destroy_entry, so the renderer frees what it allocated.
   GPtrArray* entries;
+  struct display display;
   guint frames;
   gboolean stopping;
   int exit_code;
@@ -128,14 +146,22 @@ struct renderer {
 struct frame_buffer {
   struct gbm_bo* bo;
   int fd;
+  uint32_t fb_id;
 };
 
-static void free_entry(struct wpe_dmabuf_pool_entry* entry) {
+static void free_entry(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
   struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
   wpe_dmabuf_pool_entry_destroy(entry);
+  if (fb->fb_id) drmModeRmFB(r->display.fd, fb->fb_id);
   close(fb->fd);
   gbm_bo_destroy(fb->bo);
   g_free(fb);
+}
+
+static void stop_with_error(struct renderer* r, const char* message) {
+  fprintf(stderr, "glassdeck-web: %s: %s\n", message, strerror(errno));
+  r->exit_code = 1;
+  g_main_loop_quit(r->loop);
 }
 
 // WebKit renders into dma-bufs we allocate; this is what the receiver's compositor will put on a plane.
@@ -167,7 +193,97 @@ static struct wpe_dmabuf_pool_entry* on_create_entry(void* data) {
 
 static void on_destroy_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
   struct renderer* r = data;
-  if (g_ptr_array_remove(r->entries, entry)) free_entry(entry);
+  if (g_ptr_array_remove(r->entries, entry)) free_entry(r, entry);
+}
+
+static gboolean import_frame(struct display* d, struct frame_buffer* fb) {
+  if (fb->fb_id) return TRUE;
+  uint32_t handle;
+  if (drmPrimeFDToHandle(d->fd, fb->fd, &handle) != 0) return FALSE;
+  uint32_t handles[4] = {handle};
+  uint32_t pitches[4] = {gbm_bo_get_stride(fb->bo)};
+  uint32_t offsets[4] = {0};
+  uint64_t modifiers[4] = {gbm_bo_get_modifier(fb->bo)};
+  int added = drmModeAddFB2WithModifiers(d->fd, PANEL_WIDTH, PANEL_HEIGHT, gbm_bo_get_format(fb->bo), handles, pitches,
+                                         offsets, modifiers, &fb->fb_id, DRM_MODE_FB_MODIFIERS);
+  drmCloseBufferHandle(d->fd, handle);
+  return added == 0;
+}
+
+static void show(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
+  struct display* d = &r->display;
+  struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
+  if (!import_frame(d, fb)) return stop_with_error(r, "the display refused the frame buffer");
+  if (!d->mode_set) {
+    if (drmModeSetCrtc(d->fd, d->crtc, fb->fb_id, 0, 0, &d->connector, 1, &d->mode) != 0)
+      return stop_with_error(r, "cannot set the display mode");
+    d->mode_set = TRUE;
+    d->on_screen = entry;
+    wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+    return;
+  }
+  if (drmModePageFlip(d->fd, d->crtc, fb->fb_id, DRM_MODE_PAGE_FLIP_EVENT, r) != 0)
+    return stop_with_error(r, "cannot flip to the new frame");
+  d->flipping = entry;
+}
+
+static void on_flip(G_GNUC_UNUSED int fd, G_GNUC_UNUSED unsigned sequence, G_GNUC_UNUSED unsigned seconds,
+                    G_GNUC_UNUSED unsigned microseconds, void* data) {
+  struct renderer* r = data;
+  struct display* d = &r->display;
+  wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, d->on_screen);
+  d->on_screen = d->flipping;
+  d->flipping = NULL;
+  wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+}
+
+static gboolean on_display_event(int fd, G_GNUC_UNUSED GIOCondition condition, G_GNUC_UNUSED gpointer data) {
+  drmEventContext events = {.version = 2, .page_flip_handler = on_flip};
+  drmHandleEvent(fd, &events);
+  return G_SOURCE_CONTINUE;
+}
+
+// A connected output that can show the panel's size, preferring 60 Hz.
+static gboolean find_output(int fd, struct display* d) {
+  drmModeRes* resources = drmModeGetResources(fd);
+  if (!resources) return FALSE;
+  gboolean found = FALSE;
+  for (int i = 0; i < resources->count_connectors && !found; i++) {
+    drmModeConnector* connector = drmModeGetConnector(fd, resources->connectors[i]);
+    if (!connector) continue;
+    const drmModeModeInfo* best = NULL;
+    for (int m = 0; connector->connection == DRM_MODE_CONNECTED && m < connector->count_modes; m++) {
+      const drmModeModeInfo* mode = &connector->modes[m];
+      if (mode->hdisplay != PANEL_WIDTH || mode->vdisplay != PANEL_HEIGHT) continue;
+      if (!best || (mode->vrefresh == 60 && best->vrefresh != 60)) best = mode;
+    }
+    uint32_t encoder_id = connector->encoder_id ? connector->encoder_id : (connector->count_encoders ? connector->encoders[0] : 0);
+    drmModeEncoder* encoder = best && encoder_id ? drmModeGetEncoder(fd, encoder_id) : NULL;
+    if (encoder) {
+      uint32_t crtc = encoder->crtc_id;
+      for (int k = 0; !crtc && k < resources->count_crtcs; k++)
+        if (encoder->possible_crtcs & (1u << k)) crtc = resources->crtcs[k];
+      if (crtc) {
+        *d = (struct display){.fd = fd, .crtc = crtc, .connector = connector->connector_id, .mode = *best};
+        found = TRUE;
+      }
+      drmModeFreeEncoder(encoder);
+    }
+    drmModeFreeConnector(connector);
+  }
+  drmModeFreeResources(resources);
+  return found;
+}
+
+static gboolean open_display(struct display* d) {
+  for (int minor = 0; minor < 16; minor++) {
+    g_autofree char* path = g_strdup_printf("/dev/dri/card%d", minor);
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) continue;
+    if (find_output(fd, d)) return TRUE;
+    close(fd);
+  }
+  return FALSE;
 }
 
 static void on_commit_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
@@ -179,6 +295,7 @@ static void on_commit_entry(void* data, struct wpe_dmabuf_pool_entry* entry) {
            gbm_bo_get_height(fb->bo), (const char*)&format, (unsigned long long)gbm_bo_get_modifier(fb->bo));
     fflush(stdout);
   }
+  if (r->display.fd >= 0) return show(r, entry);
   wpe_view_backend_dmabuf_pool_fdo_dispatch_release_entry(r->pool, entry);
   wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
 }
@@ -233,8 +350,18 @@ static int fail(const char* message) {
 static int render(const struct options* o) {
   int gpu = open_gpu();
   if (gpu < 0) return fail("no " GPU_DRIVER " render node");
-  struct renderer r = {.loop = g_main_loop_new(NULL, FALSE), .gbm = gbm_create_device(gpu), .entries = g_ptr_array_new()};
+  struct renderer r = {
+      .loop = g_main_loop_new(NULL, FALSE),
+      .gbm = gbm_create_device(gpu),
+      .entries = g_ptr_array_new(),
+      .display = {.fd = -1},
+  };
   if (!r.gbm) return fail("cannot open the GPU through GBM");
+  if (o->display) {
+    if (!open_display(&r.display)) return fail("no connected output can show 1920x1080");
+    printf("previewing on %ux%u@%u\n", r.display.mode.hdisplay, r.display.mode.vdisplay, r.display.mode.vrefresh);
+    g_unix_fd_add(r.display.fd, G_IO_IN, on_display_event, NULL);
+  }
   if (!wpe_loader_init("libWPEBackend-fdo-1.0.so.1")) return fail("cannot load WPEBackend-fdo");
   if (!wpe_fdo_initialize_dmabuf()) return fail("cannot start WPEBackend-fdo in dma-buf pool mode");
 
@@ -279,8 +406,9 @@ static int render(const struct options* o) {
   g_object_unref(session);
   g_object_unref(context);
   g_main_loop_unref(r.loop);
-  for (guint i = 0; i < r.entries->len; i++) free_entry(g_ptr_array_index(r.entries, i));
+  for (guint i = 0; i < r.entries->len; i++) free_entry(&r, g_ptr_array_index(r.entries, i));
   g_ptr_array_unref(r.entries);
+  if (r.display.fd >= 0) close(r.display.fd);
   gbm_device_destroy(r.gbm);
   close(gpu);
   return r.exit_code;
