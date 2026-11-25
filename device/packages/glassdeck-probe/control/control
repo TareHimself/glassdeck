@@ -1,0 +1,7 @@
+Package: glassdeck-probe
+Version: 0.1.0
+Architecture: aarch64
+Maintainer: Glassdeck
+Description: Writes a report of the keyboard's system to /home/root/glassdeck-probe.txt and changes nothing else
+Section: utils
+Priority: optional

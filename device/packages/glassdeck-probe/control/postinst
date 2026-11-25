@@ -1,0 +1,86 @@
+#!/bin/sh
+# Reads the system and writes what it finds to /home/root/glassdeck-probe.txt. Changes nothing else, and
+# always exits 0 so opkg never records a failed install. Pull the report back with the bridge's GET_FILE.
+REPORT=/home/root/glassdeck-probe.txt
+LIMIT=${GLASSDECK_PROBE_LINES:-200}
+
+section() {
+    echo
+    echo "===== $1"
+}
+
+# Runs a command with a time limit when `timeout` exists, and caps its output.
+run() {
+    printf '$ %s\n' "$*"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 sh -c "$*" 2>&1 | head -n "$LIMIT"
+    else
+        sh -c "$*" 2>&1 | head -n "$LIMIT"
+    fi
+}
+
+probe() {
+    section "identity"
+    run 'date; id; uname -a'
+    run 'cat /etc/os-release /home/root/gazpacho_version.txt'
+    run 'tr -d "\0" < /proc/device-tree/model; echo; grep -m1 Hardware /proc/cpuinfo'
+
+    section "libc and tools"
+    run 'ls -l /lib/libc.so* /lib/ld-linux* /usr/lib/libc.so* /lib64/libc.so* 2>/dev/null'
+    run 'for l in $(find /lib /usr/lib -maxdepth 2 -name "libc.so.6" 2>/dev/null); do echo "$l"; "$l" 2>&1 | head -1; done; ldd --version 2>&1 | head -1'
+    run 'for c in busybox opkg dropbear sshd python3 modetest weston timeout fuser strings; do printf "%s: " $c; command -v $c || echo missing; done'
+
+    section "storage and memory"
+    run 'df -h; mount'
+    run 'cat /proc/partitions; ls -l /dev/block/by-name /dev/disk/by-partlabel 2>/dev/null'
+    run 'cat /proc/cmdline'
+    run 'head -5 /proc/meminfo'
+
+    section "processes"
+    run 'ps -o pid,user,args 2>/dev/null || ps'
+
+    section "boot"
+    run 'ls -l /etc/init.d /etc/rc*.d 2>/dev/null'
+    run 'cat /usr/bin/flux-weston-autolaunch.sh'
+    run 'grep -l -i weston /etc/init.d/* /usr/bin/*.sh 2>/dev/null'
+    run 'for f in $(grep -l -i weston /etc/init.d/* 2>/dev/null); do echo "--- $f"; cat "$f"; done'
+    run 'cat /usr/bin/flux-ipk-monitor.sh'
+
+    section "gpu libraries"
+    run 'ls -l /usr/lib | grep -i -E "mali|gbm|egl|gles|wayland|mpp|rga|stdc|drm"'
+    run 'find / -xdev -name "libgbm*" 2>/dev/null'
+    run 'ls /usr/lib/libmali* 2>/dev/null && for s in gbm_create_device gbm_bo_create eglGetPlatformDisplay; do printf "%s in libmali: " $s; grep -c "$s" /usr/lib/libmali.so* 2>/dev/null | head -1; done'
+    run 'cat /sys/class/devfreq/*gpu*/governor /sys/class/devfreq/*gpu*/max_freq /sys/class/devfreq/*gpu*/available_frequencies 2>/dev/null'
+    run 'dmesg | grep -i -E "mali|panfrost|bifrost" | head -20'
+
+    section "display"
+    run 'ls -l /dev/dri /dev/fb* 2>/dev/null; cat /sys/class/drm/*/modes 2>/dev/null; ls /sys/class/drm'
+    run 'ls /sys/kernel/debug/dri/0 2>/dev/null && cat /sys/kernel/debug/dri/0/state'
+    run 'dmesg | grep -i -E "vop|drm|dsi|panel" | head -30'
+    run 'ls /sys/class/backlight; cat /sys/class/backlight/*/max_brightness'
+
+    section "video decode"
+    run 'ls -l /dev/mpp_service /dev/rga /dev/video* 2>/dev/null'
+
+    section "usb gadget"
+    run 'ls /sys/class/udc; cat /sys/class/udc/*/state'
+    run 'find /sys/kernel/config/usb_gadget -maxdepth 4 2>/dev/null'
+    run 'for f in /sys/kernel/config/usb_gadget/*/idVendor /sys/kernel/config/usb_gadget/*/idProduct /sys/kernel/config/usb_gadget/*/UDC; do echo "$f: $(cat $f)"; done'
+    run 'grep -r -l usb_gadget /etc/init.d /usr/bin 2>/dev/null'
+    run 'ls /sys/kernel/config/usb_gadget/*/functions 2>/dev/null; zcat /proc/config.gz 2>/dev/null | grep -E "USB_CONFIGFS|USB_F_NCM|USB_F_ECM|USB_F_RNDIS|USB_F_FS"'
+
+    section "key scanner uart"
+    run 'ls -l /dev/ttyS*'
+    run 'for p in /proc/[0-9]*; do ls -l $p/fd 2>/dev/null | grep -q ttyS3 && echo "$(basename $p): $(tr "\0" " " < $p/cmdline)"; done'
+
+    section "network"
+    run 'ip addr 2>/dev/null || ifconfig -a'
+
+    section "kernel modules"
+    run 'lsmod 2>/dev/null | head -60'
+}
+
+probe > "$REPORT.tmp" 2>&1
+mv -f "$REPORT.tmp" "$REPORT"
+sync
+exit 0
