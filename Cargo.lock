@@ -422,11 +422,23 @@ dependencies = [
  "anyhow",
  "cc",
  "clap",
+ "glassdeck-deck",
  "glassdeck-proto",
+ "glassdeck-wallpaper-engine",
  "openh264",
  "serde_json",
  "windows",
  "windows-capture",
+]
+
+[[package]]
+name = "glassdeck-deck"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glassdeck-proto",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -446,6 +458,18 @@ dependencies = [
  "minifb",
  "pkg-config",
  "rustix",
+ "windows",
+]
+
+[[package]]
+name = "glassdeck-wallpaper-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glassdeck-deck",
+ "glassdeck-proto",
+ "serde",
+ "serde_json",
  "windows",
 ]
 

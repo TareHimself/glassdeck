@@ -9,10 +9,14 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
+glassdeck-deck = { path = "crates/glassdeck-deck" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
+glassdeck-wallpaper-engine = { path = "crates/glassdeck-wallpaper-engine" }
 fontdue = "0.9.5"
 minifb = "0.29.0"
 openh264 = "0.9.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 windows-capture = "2.0.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
@@ -23,5 +27,6 @@ windows = { version = "0.62.2", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_Ole",
+    "Win32_System_Registry",
     "Win32_System_Variant",
 ] }
