@@ -1,12 +1,15 @@
 mod compositor;
 mod mpp;
+mod renderer;
 mod scanout;
+mod scene;
 mod web;
 
 use anyhow::Result;
 
 pub use compositor::{Compositor, Registrar};
 pub use mpp::Decoder;
+pub use scene::FallbackScene;
 pub use web::WebBackground;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";
@@ -18,7 +21,7 @@ pub const DEFAULT_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold
 /// What the compositor shows: our own decoder's output, or a buffer from a renderer on the keyboard.
 pub enum Picture {
     Decoded(mpp::Picture),
-    Shared(web::SharedPicture),
+    Shared(renderer::SharedPicture),
 }
 
 pub fn decoded(picture: mpp::Picture) -> Picture {

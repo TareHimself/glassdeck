@@ -1,4 +1,4 @@
-//! Carries out the screen table: starts and stops local backgrounds, and remembers the chosen one.
+//! Carries out the screen table: starts and stops local backgrounds and the built-in scene, and remembers the chosen background.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::local::LocalBackground;
 use crate::mailbox::Mailbox;
-use crate::platform::Registrar;
+use crate::platform::{FallbackScene, Registrar};
 use crate::screen::{BackgroundName, Effect, Event, Screen, step};
 
 /// Lives in the background folder; background names can't start with a dot, so it never collides with one.
@@ -19,7 +19,14 @@ const RECENT_FILE: &str = ".recent";
 
 pub type SharedDirector = Arc<Mutex<Director>>;
 
-struct BackgroundStopped {
+#[derive(Clone, Copy)]
+enum Runner {
+    Background,
+    Fallback,
+}
+
+struct Stopped {
+    runner: Runner,
     generation: u64,
     error: anyhow::Error,
 }
@@ -27,12 +34,15 @@ struct BackgroundStopped {
 pub struct Director {
     screen: Screen,
     running: Option<LocalBackground>,
-    /// Counts background starts, so a report from a background that was since replaced is ignored.
+    /// The built-in scene. `None` while the screen shows it means its renderer died; that's logged,
+    /// and the screen stays black until something else owns it.
+    fallback: Option<FallbackScene>,
+    /// Counts starts, so a report from a background or scene that was since replaced is ignored.
     generation: u64,
     backgrounds: PathBuf,
     registrar: Registrar,
     mailbox: Arc<Mailbox>,
-    stopped: Sender<BackgroundStopped>,
+    stopped: Sender<Stopped>,
 }
 
 impl Director {
@@ -43,15 +53,23 @@ impl Director {
             None
         });
         let (screen, effects) = Screen::at_boot(remembered);
-        let (stopped, reports) = mpsc::channel::<BackgroundStopped>();
-        let director =
-            Arc::new(Mutex::new(Self { screen, running: None, generation: 0, backgrounds, registrar, mailbox, stopped }));
+        let (stopped, reports) = mpsc::channel::<Stopped>();
+        let director = Arc::new(Mutex::new(Self {
+            screen,
+            running: None,
+            fallback: None,
+            generation: 0,
+            backgrounds,
+            registrar,
+            mailbox,
+            stopped,
+        }));
         lock(&director).apply(effects)?;
 
         let watched = Arc::clone(&director);
         thread::Builder::new().name("background watch".into()).spawn(move || {
             for report in reports {
-                if let Err(e) = lock(&watched).background_stopped(report) {
+                if let Err(e) = lock(&watched).stopped_by_itself(report) {
                     eprintln!("error: {e:#}");
                 }
             }
@@ -74,15 +92,39 @@ impl Director {
         self.handle(Event::BackgroundSelected(background))
     }
 
-    fn background_stopped(&mut self, report: BackgroundStopped) -> Result<()> {
-        if report.generation != self.generation || self.running.is_none() {
+    /// A large file started or finished arriving.
+    pub fn install(&mut self, started: bool) -> Result<()> {
+        self.handle(if started { Event::InstallStarted } else { Event::InstallEnded })
+    }
+
+    fn stopped_by_itself(&mut self, report: Stopped) -> Result<()> {
+        if report.generation != self.generation {
             return Ok(());
         }
-        eprintln!("error: the local background stopped: {:#}", report.error);
-        if let Some(background) = self.running.take() {
-            background.stop();
+        match report.runner {
+            Runner::Background => {
+                let Some(background) = self.running.take() else { return Ok(()) };
+                eprintln!("error: the local background stopped: {:#}", report.error);
+                background.stop();
+                self.handle(Event::BackgroundStopped)
+            }
+            Runner::Fallback => {
+                if let Some(scene) = self.fallback.take() {
+                    eprintln!("error: the built-in scene stopped: {:#}", report.error);
+                    scene.stop();
+                }
+                Ok(())
+            }
         }
-        self.handle(Event::BackgroundStopped)
+    }
+
+    /// What a background or scene runs if it stops by itself.
+    fn report_for(&mut self, runner: Runner) -> impl FnOnce(anyhow::Error) + Send + 'static {
+        self.generation += 1;
+        let generation = self.generation;
+        let stopped = self.stopped.clone();
+        // Only fails once the watch thread is gone, at shutdown, when nobody needs the report.
+        move |error| drop(stopped.send(Stopped { runner, generation, error }))
     }
 
     fn apply(&mut self, effects: Vec<Effect>) -> Result<()> {
@@ -95,13 +137,7 @@ impl Director {
                 },
                 Effect::Remember(background) => write_recent(&self.backgrounds, &background)?,
                 Effect::Start(background) => {
-                    self.generation += 1;
-                    let generation = self.generation;
-                    let stopped = self.stopped.clone();
-                    let report = move |error| {
-                        // Only fails once the watch thread is gone, at shutdown, when nobody needs the report.
-                        let _ = stopped.send(BackgroundStopped { generation, error });
-                    };
+                    let report = self.report_for(Runner::Background);
                     match LocalBackground::start(
                         &self.backgrounds.join(background.as_str()),
                         self.registrar.clone(),
@@ -110,6 +146,19 @@ impl Director {
                     ) {
                         Ok(running) => self.running = Some(running),
                         Err(e) => failed_start = Some(e.context(format!("starting {background}"))),
+                    }
+                }
+                Effect::ShowFallback => {
+                    ensure!(self.fallback.is_none(), "asked to show the built-in scene while it was showing");
+                    let report = self.report_for(Runner::Fallback);
+                    match FallbackScene::start(self.registrar.clone(), Arc::clone(&self.mailbox), report) {
+                        Ok(scene) => self.fallback = Some(scene),
+                        Err(e) => eprintln!("error: showing the built-in scene: {e:#}"),
+                    }
+                }
+                Effect::HideFallback => {
+                    if let Some(scene) = self.fallback.take() {
+                        scene.stop();
                     }
                 }
             }

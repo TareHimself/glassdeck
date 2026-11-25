@@ -1,0 +1,17 @@
+[package]
+name = "glassdeck-scene"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+drm = "0.15.0"
+glassdeck-proto.workspace = true
+glow = "0.16"
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
+rustix = { version = "1.1.6", features = ["net", "time"] }

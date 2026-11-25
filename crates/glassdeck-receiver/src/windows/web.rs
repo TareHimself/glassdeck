@@ -9,7 +9,7 @@ use crate::mailbox::Mailbox;
 #[derive(Clone)]
 pub struct Registrar;
 
-/// Web backgrounds render on the keyboard; on the PC, `glassdeck-capture play` renders them with CEF instead.
+/// Web backgrounds render on the keyboard; on the PC, `glassdeck play` renders them with CEF instead.
 pub enum WebBackground {}
 
 impl WebBackground {
@@ -19,7 +19,20 @@ impl WebBackground {
         _mailbox: Arc<Mailbox>,
         _stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        bail!("web backgrounds play only on the keyboard; stream them from the PC with `glassdeck-capture play`")
+        bail!("web backgrounds play only on the keyboard; stream them from the PC with `glassdeck play`")
+    }
+
+    pub fn stop(self) {
+        match self {}
+    }
+}
+
+/// The built-in scene needs the keyboard's GPU, so the preview shows black where the keyboard shows it.
+pub enum FallbackScene {}
+
+impl FallbackScene {
+    pub fn start(_registrar: Registrar, _mailbox: Arc<Mailbox>, _stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
+        bail!("the built-in scene renders only on the keyboard; the preview shows black instead")
     }
 
     pub fn stop(self) {

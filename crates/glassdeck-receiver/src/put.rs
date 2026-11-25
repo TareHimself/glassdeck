@@ -12,7 +12,8 @@ use anyhow::{Context, Result};
 use glassdeck_package::{EXTENSION, MODULE_EXTENSION};
 use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES, Message, PutFile};
 
-use crate::send_reply;
+use crate::director::{SharedDirector, lock};
+use crate::{report, send_reply};
 use crate::widgets::Input;
 
 /// Pieces waiting for the disk (8 MB) before the connection waits too.
@@ -20,27 +21,39 @@ pub const QUEUED_PIECES: usize = 32;
 
 /// The file writer thread for one connection: disk writes and the final flush, which takes seconds
 /// for a large file on an SD card, happen here so the receive thread keeps decoding frames.
-pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex<TcpStream>, widgets: &Sender<Input>) {
+pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex<TcpStream>, widgets: &Sender<Input>, director: &SharedDirector) {
     let mut uploads = Uploads::new(folders);
-    let mut showing = false;
+    let mut installing = false;
     for put in pieces {
-        if put.total >= LARGE_FILE_BYTES {
-            showing = !put.completes();
-            show(widgets, match showing {
-                true => Input::InstallProgress { what: put.target.to_string(), fraction: put.end() as f32 / put.total as f32 },
-                false => Input::InstallEnded,
-            });
+        let arriving = put.total >= LARGE_FILE_BYTES && !put.completes();
+        if arriving {
+            if !installing {
+                installing = true;
+                report(lock(director).install(true));
+            }
+            show(widgets, Input::InstallProgress { what: put.target.to_string(), fraction: put.end() as f32 / put.total as f32 });
         }
-        if let Some(answer) = uploads.put(&put)
+        let answer = uploads.put(&put);
+        if installing && !arriving {
+            installing = false;
+            end_install(widgets, director);
+        }
+        if let Some(answer) = answer
             && let Err(e) = send_reply(replies, &answer)
         {
             eprintln!("error: answering {}: {e:#}", put.target);
         }
     }
     uploads.abandon();
-    if showing {
-        show(widgets, Input::InstallEnded);
+    if installing {
+        end_install(widgets, director);
     }
+}
+
+/// After the file is in place, so a background coming back plays the new one.
+fn end_install(widgets: &Sender<Input>, director: &SharedDirector) {
+    show(widgets, Input::InstallEnded);
+    report(lock(director).install(false));
 }
 
 /// A stopped widget thread is reported by the receive thread, which also sends it widget data.

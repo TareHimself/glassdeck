@@ -125,7 +125,7 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
             thread::scope(|scope| {
                 thread::Builder::new()
                     .name("files".into())
-                    .spawn_scoped(scope, || put::write_files(folders, arriving, &replies, widgets))?;
+                    .spawn_scoped(scope, || put::write_files(folders, arriving, &replies, widgets, director))?;
                 let served = serve(socket, mailbox, director, widgets, &pieces, &replies, &mut state);
                 drop(pieces);
                 served
@@ -219,7 +219,7 @@ pub(crate) fn send_reply(replies: &Mutex<TcpStream>, message: &Message) -> Resul
 }
 
 /// A failure that is logged, not fatal: the connection carries on.
-fn report(result: Result<()>) {
+pub(crate) fn report(result: Result<()>) {
     if let Err(e) = result {
         eprintln!("error: {e:#}");
     }

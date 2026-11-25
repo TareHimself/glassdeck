@@ -5,7 +5,7 @@ mod yuv;
 
 pub use decode::{Decoder, Picture, init_decoder_thread};
 pub use compositor::Compositor;
-pub use web::{Registrar, WebBackground};
+pub use web::{FallbackScene, Registrar, WebBackground};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 pub const DEFAULT_BACKGROUNDS: &str = r"C:\ProgramData\Glassdeck\backgrounds";
