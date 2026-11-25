@@ -9,7 +9,7 @@ use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame as CapturedFrame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::settings::{
-    ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+    ColorFormat, GraphicsCaptureItemType, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
 };
 
@@ -58,28 +58,39 @@ impl FrameSource for DesktopSource {
     }
 
     fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
-        let flags = Flags { tx: out, kind: self.encoder, settings: self.settings };
-        let settings = Settings::new(
-            self.monitor.monitor,
-            CursorCaptureSettings::WithoutCursor,
-            DrawBorderSettings::WithoutBorder,
-            SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Default,
-            DirtyRegionSettings::Default,
-            ColorFormat::Bgra8,
-            flags,
-        );
-        // Stopped from here rather than from the frame callback: a still screen delivers no frames.
-        let control = Capture::start_free_threaded(settings).map_err(|e| anyhow!("starting capture: {e}"))?;
-        let begun = Instant::now();
-        while !control.is_finished() {
-            if stop_requested() || self.duration.is_some_and(|d| begun.elapsed() >= d) {
-                return control.stop().map_err(|e| anyhow!("capture failed: {e}"));
-            }
-            thread::sleep(POLL);
-        }
-        control.wait().map_err(|e| anyhow!("capture failed: {e}"))
+        capture_live(self.monitor.monitor, self.encoder, self.settings, self.duration, out)
     }
+}
+
+/// Captures a monitor or a window with Windows.Graphics.Capture and encodes every frame until stopped.
+pub fn capture_live<T: TryInto<GraphicsCaptureItemType> + Send + 'static>(
+    target: T,
+    encoder: EncoderKind,
+    settings: EncoderSettings,
+    duration: Option<Duration>,
+    out: SyncSender<EncodedFrame>,
+) -> Result<()> {
+    let flags = Flags { tx: out, kind: encoder, settings };
+    let settings = Settings::new(
+        target,
+        CursorCaptureSettings::WithoutCursor,
+        DrawBorderSettings::WithoutBorder,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
+        ColorFormat::Bgra8,
+        flags,
+    );
+    // Stopped from here rather than from the frame callback: a still picture delivers no frames.
+    let control = Capture::start_free_threaded(settings).map_err(|e| anyhow!("starting capture: {e}"))?;
+    let begun = Instant::now();
+    while !control.is_finished() {
+        if stop_requested() || duration.is_some_and(|d| begun.elapsed() >= d) {
+            return control.stop().map_err(|e| anyhow!("capture failed: {e}"));
+        }
+        thread::sleep(POLL);
+    }
+    control.wait().map_err(|e| anyhow!("capture failed: {e}"))
 }
 
 struct Flags {
@@ -129,7 +140,7 @@ impl GraphicsCaptureApiHandler for Capture {
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         if (frame.width(), frame.height()) != self.size {
-            return Err("monitor resolution changed during the stream".into());
+            return Err(format!("captured {}x{}, expected {}x{}", frame.width(), frame.height(), self.size.0, self.size.1).into());
         }
         let capture_us = unix_micros();
         match &mut self.backend {

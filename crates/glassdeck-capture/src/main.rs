@@ -8,6 +8,7 @@ mod monitors;
 mod pipeline;
 mod play;
 mod record;
+mod scene;
 mod software;
 mod wallpaper;
 mod web;
