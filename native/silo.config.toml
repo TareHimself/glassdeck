@@ -1,0 +1,9 @@
+# Where native modules find the packages their silopkg.py depends on by name.
+[[registry]]
+name = "glassdeck"
+path = "."
+
+[[registry]]
+name = "silo-recipes"
+git = "https://github.com/TareHimself/silo-recipes"
+rev = "7134eaf79088c28ceb43751ec92f7e8a8883facf"

@@ -1,0 +1,16 @@
+[project]
+name = "glassdeck-native"
+version = "0.0.0"
+description = "Tooling for building Glassdeck's native modules with silo."
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+native = ["silo"]
+
+[tool.uv]
+package = false
+default-groups = ["native"]
+
+[tool.uv.sources]
+silo = { git = "https://github.com/TareHimself/silo", rev = "5ba46999d8a5f7c554065a08d4d7967f5a499f26", subdirectory = "client" }
