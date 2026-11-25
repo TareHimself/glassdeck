@@ -175,10 +175,17 @@ struct display {
 // The receiver shows our frames: each buffer is registered once, then presented by id.
 struct compositor_output {
   struct compositor* socket;
-  // Presented and not yet released; WebKit draws the next frame once the one before is replaced on screen.
+  // Presented and not yet released: the one on screen, plus the newest waiting for a flip.
   guint outstanding;
   gboolean awaiting_complete;
+  gint64 last_complete_us;
+  guint complete_timer;
 };
+
+// Three buffers in turn: WebKit draws the next frame while one is on screen and the newest waits for its flip.
+#define MAX_PRESENTED 2
+// The receiver drops superseded frames, so frames beyond the panel's refresh would only burn CPU and GPU.
+#define REFRESH_INTERVAL_US (G_USEC_PER_SEC / 60)
 
 struct output {
   enum output_kind kind;
@@ -318,6 +325,27 @@ static gboolean on_display_event(int fd, G_GNUC_UNUSED GIOCondition condition, G
   return G_SOURCE_CONTINUE;
 }
 
+static void complete_frame(struct renderer* r) {
+  r->output.compositor.last_complete_us = g_get_monotonic_time();
+  wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+}
+
+static gboolean on_complete_timer(gpointer data) {
+  struct renderer* r = data;
+  r->output.compositor.complete_timer = 0;
+  complete_frame(r);
+  return G_SOURCE_REMOVE;
+}
+
+// Lets WebKit start its next frame now, or at the next refresh interval if the last one began less than one ago.
+static void request_next_frame(struct renderer* r) {
+  struct compositor_output* c = &r->output.compositor;
+  if (c->complete_timer) return;
+  gint64 wait_us = c->last_complete_us + REFRESH_INTERVAL_US - g_get_monotonic_time();
+  if (wait_us <= 0) return complete_frame(r);
+  c->complete_timer = g_timeout_add_full(G_PRIORITY_HIGH, (guint)((wait_us + 999) / 1000), on_complete_timer, r, NULL);
+}
+
 static void present_to_compositor(struct renderer* r, struct wpe_dmabuf_pool_entry* entry) {
   struct compositor_output* c = &r->output.compositor;
   struct frame_buffer* fb = wpe_dmabuf_pool_entry_get_user_data(entry);
@@ -328,8 +356,8 @@ static void present_to_compositor(struct renderer* r, struct wpe_dmabuf_pool_ent
     g_main_loop_quit(r->loop);
     return;
   }
-  if (c->outstanding++ == 0) {
-    wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+  if (++c->outstanding <= MAX_PRESENTED) {
+    request_next_frame(r);
   } else {
     c->awaiting_complete = TRUE;
   }
@@ -346,7 +374,7 @@ static void on_compositor_released(void* data, uint32_t id) {
     c->outstanding--;
     if (c->awaiting_complete) {
       c->awaiting_complete = FALSE;
-      wpe_view_backend_dmabuf_pool_fdo_dispatch_frame_complete(r->pool);
+      request_next_frame(r);
     }
     return;
   }
@@ -717,7 +745,10 @@ static int render(const struct options* o) {
   g_main_loop_unref(r.loop);
   for (guint i = 0; i < r.entries->len; i++) free_entry(&r, g_ptr_array_index(r.entries, i));
   g_ptr_array_unref(r.entries);
-  if (r.output.kind == OUTPUT_COMPOSITOR) compositor_free(r.output.compositor.socket);
+  if (r.output.kind == OUTPUT_COMPOSITOR) {
+    if (r.output.compositor.complete_timer) g_source_remove(r.output.compositor.complete_timer);
+    compositor_free(r.output.compositor.socket);
+  }
   gbm_device_destroy(r.gbm);
   close(card);
   return r.exit_code;
