@@ -33,6 +33,8 @@ use director::{Director, SharedDirector, lock};
 use mailbox::{Mailbox, ShownFrame, Timing};
 use playout::{PlayoutClock, wait_until};
 use screen::Event;
+use overlay::Labels;
+use glassdeck_layout::Variant;
 use presentation::Outcome;
 use stats::{FrameTimes, LatencyStats};
 
@@ -49,15 +51,36 @@ struct Cli {
     /// Show the stream without key labels
     #[arg(long)]
     no_labels: bool,
+    /// The keyboard's physical layout, which places the key labels
+    #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
+    layout: KeyboardLayout,
     /// Where the keyboard keeps decks it plays with the PC off
     #[arg(long, default_value = platform::DEFAULT_DECKS)]
     decks: PathBuf,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum KeyboardLayout {
+    Ansi,
+    Iso,
+}
+
+impl From<KeyboardLayout> for Variant {
+    fn from(layout: KeyboardLayout) -> Self {
+        match layout {
+            KeyboardLayout::Ansi => Variant::Ansi,
+            KeyboardLayout::Iso => Variant::Iso,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let font = if cli.no_labels { None } else { Some(load_font(&cli.font)?) };
-    let compositor = Compositor::open(font)?;
+    let labels = match cli.no_labels {
+        true => None,
+        false => Some(Labels { font: load_font(&cli.font)?, variant: cli.layout.into() }),
+    };
+    let compositor = Compositor::open(labels)?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 

@@ -482,6 +482,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "glassdeck-layout"
+version = "0.1.0"
+
+[[package]]
 name = "glassdeck-proto"
 version = "0.1.0"
 
@@ -495,6 +499,7 @@ dependencies = [
  "drm",
  "fontdue",
  "glassdeck-deck",
+ "glassdeck-layout",
  "glassdeck-proto",
  "minifb",
  "pkg-config",

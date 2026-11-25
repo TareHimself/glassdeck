@@ -1,7 +1,7 @@
 use fontdue::Font;
+use glassdeck_layout::{Layout, PANEL_HEIGHT, PANEL_WIDTH, Variant};
 
-const COLUMNS: f32 = 15.0;
-const KEY_INSET: f32 = 6.0;
+const KEY_INSET: f32 = 4.0;
 const OUTLINE: usize = 2;
 const OUTLINE_COLOR: u32 = 0xFF_FF_FF;
 const OUTLINE_ALPHA: u8 = 70;
@@ -10,15 +10,41 @@ const LABEL_ALPHA: u8 = 235;
 const SHADOW_COLOR: u32 = 0x00_00_00;
 const SHADOW_ALPHA: u8 = 170;
 const SHADOW_OFFSET: i32 = 2;
+/// Label size as a share of the key's height, shrunk further when a label is wider than its key.
+const LABEL_HEIGHT_SHARE: f32 = 0.28;
+const LABEL_SIDE_PADDING: f32 = 8.0;
 
-/// Placeholder layout, in key-width units summing to 15 per row, until we read the real one off the keyboard.
-const ROWS: &[&[(&str, f32)]] = &[
-    &[("Esc", 1.0), ("1", 1.0), ("2", 1.0), ("3", 1.0), ("4", 1.0), ("5", 1.0), ("6", 1.0), ("7", 1.0), ("8", 1.0), ("9", 1.0), ("0", 1.0), ("-", 1.0), ("=", 1.0), ("Bksp", 2.0)],
-    &[("Tab", 1.5), ("Q", 1.0), ("W", 1.0), ("E", 1.0), ("R", 1.0), ("T", 1.0), ("Y", 1.0), ("U", 1.0), ("I", 1.0), ("O", 1.0), ("P", 1.0), ("[", 1.0), ("]", 1.0), ("\\", 1.5)],
-    &[("Caps", 1.75), ("A", 1.0), ("S", 1.0), ("D", 1.0), ("F", 1.0), ("G", 1.0), ("H", 1.0), ("J", 1.0), ("K", 1.0), ("L", 1.0), (";", 1.0), ("'", 1.0), ("Enter", 2.25)],
-    &[("Shift", 2.25), ("Z", 1.0), ("X", 1.0), ("C", 1.0), ("V", 1.0), ("B", 1.0), ("N", 1.0), ("M", 1.0), (",", 1.0), (".", 1.0), ("/", 1.0), ("Shift", 2.75)],
-    &[("Ctrl", 1.25), ("Win", 1.25), ("Alt", 1.25), ("", 6.25), ("Alt", 1.25), ("Fn", 1.25), ("Menu", 1.25), ("Ctrl", 1.25)],
+/// What the key labels need: a font and which keyboard layout to place them on.
+pub struct Labels {
+    pub font: Font,
+    pub variant: Variant,
+}
+
+/// Default labels, in the layout's key order, until profiles bring their own.
+const ANSI_LABELS: [&str; 85] = [
+    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "Delete",
+    "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home",
+    "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "End",
+    "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter", "PgUp",
+    "Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "\u{2191}", "PgDn",
+    "Ctrl", "Win", "Alt", "Alt", "Space", "Fn", "", "", "\u{2190}", "\u{2193}", "\u{2192}",
 ];
+
+const ISO_LABELS: [&str; 87] = [
+    "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "Delete",
+    "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home",
+    "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "Enter", "End",
+    "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "#", "", "PgUp",
+    "Shift", "\\", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "\u{2191}", "PgDn",
+    "Ctrl", "Win", "Alt", "Alt", "Space", "Fn", "", "", "\u{2190}", "\u{2193}", "\u{2192}",
+];
+
+fn default_labels(variant: Variant) -> &'static [&'static str] {
+    match variant {
+        Variant::Ansi => &ANSI_LABELS,
+        Variant::Iso => &ISO_LABELS,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct OverlayPixel {
@@ -35,27 +61,24 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn build(font: &Font, width: usize, height: usize) -> Self {
+    /// Draws the labels at the keys' real positions, scaled from the panel to `width` x `height`.
+    pub fn build(labels: &Labels, width: usize, height: usize) -> Self {
+        let Labels { font, variant } = labels;
+        let variant = *variant;
         let mut canvas = Canvas { width, height, pixels: Vec::new() };
-        let unit = width as f32 / COLUMNS;
-        let row_height = height as f32 / ROWS.len() as f32;
-        let label_px = row_height * 0.22;
-
-        for (row, keys) in ROWS.iter().enumerate() {
-            let top = row as f32 * row_height;
-            let mut left = 0.0;
-            for &(label, units) in *keys {
-                let key = Rect {
-                    x: (left + KEY_INSET) as i32,
-                    y: (top + KEY_INSET) as i32,
-                    w: (units * unit - 2.0 * KEY_INSET) as i32,
-                    h: (row_height - 2.0 * KEY_INSET) as i32,
-                };
-                canvas.outline(key, OUTLINE_COLOR, OUTLINE_ALPHA);
-                canvas.text(font, label, key, label_px, SHADOW_OFFSET, SHADOW_COLOR, SHADOW_ALPHA);
-                canvas.text(font, label, key, label_px, 0, LABEL_COLOR, LABEL_ALPHA);
-                left += units * unit;
-            }
+        let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
+        let layout = Layout::new(variant);
+        for (key, &label) in layout.keys.iter().zip(default_labels(variant)) {
+            let key = Rect {
+                x: (key.x * scale_x + KEY_INSET) as i32,
+                y: (key.y * scale_y + KEY_INSET) as i32,
+                w: (key.width * scale_x - 2.0 * KEY_INSET) as i32,
+                h: (key.height * scale_y - 2.0 * KEY_INSET) as i32,
+            };
+            let label_px = fitted_size(font, label, key.h as f32 * LABEL_HEIGHT_SHARE, key.w as f32 - 2.0 * LABEL_SIDE_PADDING);
+            canvas.outline(key, OUTLINE_COLOR, OUTLINE_ALPHA);
+            canvas.text(font, label, key, label_px, SHADOW_OFFSET, SHADOW_COLOR, SHADOW_ALPHA);
+            canvas.text(font, label, key, label_px, 0, LABEL_COLOR, LABEL_ALPHA);
         }
         Self { width, height, pixels: canvas.pixels }
     }
@@ -83,6 +106,12 @@ impl Overlay {
         }
         image
     }
+}
+
+/// The preferred size, or smaller if the label would overflow its key.
+fn fitted_size(font: &Font, label: &str, preferred_px: f32, max_width: f32) -> f32 {
+    let width: f32 = label.chars().map(|c| font.metrics(c, preferred_px).advance_width).sum();
+    if width > max_width { preferred_px * max_width / width } else { preferred_px }
 }
 
 #[derive(Clone, Copy)]
@@ -200,10 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn every_row_spans_the_full_width() {
-        for keys in ROWS {
-            let units: f32 = keys.iter().map(|(_, u)| u).sum();
-            assert!((units - COLUMNS).abs() < 1e-3, "row sums to {units}");
+    fn every_key_has_a_label() {
+        for variant in [Variant::Ansi, Variant::Iso] {
+            assert_eq!(default_labels(variant).len(), Layout::new(variant).keys.len(), "{variant:?}");
         }
     }
 

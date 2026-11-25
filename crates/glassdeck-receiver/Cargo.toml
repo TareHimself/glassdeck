@@ -9,6 +9,7 @@ anyhow.workspace = true
 clap.workspace = true
 glassdeck-proto.workspace = true
 glassdeck-deck.workspace = true
+glassdeck-layout.workspace = true
 fontdue.workspace = true
 
 [target.'cfg(windows)'.dependencies]

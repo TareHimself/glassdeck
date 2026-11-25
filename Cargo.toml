@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
 glassdeck-deck = { path = "crates/glassdeck-deck" }
+glassdeck-layout = { path = "crates/glassdeck-layout" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
 glassdeck-wallpaper-engine = { path = "crates/glassdeck-wallpaper-engine" }
 fontdue = "0.9.5"

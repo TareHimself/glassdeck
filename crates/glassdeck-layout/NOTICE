@@ -1,0 +1,5 @@
+The key geometry in src/lib.rs is adapted from Keyglass
+(https://github.com/keyglass-dev/keyglass, keyboard/display/src/layout.rs).
+
+Copyright (c) 2026 The OpenFlux Contributors
+Licensed under the MIT License or the Apache License, Version 2.0, at your option.

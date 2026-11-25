@@ -16,7 +16,6 @@ use drm::control::{
     property,
 };
 use drm::{ClientCapability, Device};
-use fontdue::Font;
 use glassdeck_proto::compositor::BufferLayout;
 use glassdeck_proto::unix_micros;
 use rustix::fs::OFlags;
@@ -25,7 +24,7 @@ use rustix::time::{ClockId, clock_gettime};
 use super::Picture;
 use super::mpp::{Color, Encoding, Range};
 use super::scanout::{Effect, Event, Scanout, step};
-use crate::overlay::Overlay;
+use crate::overlay::{Labels, Overlay};
 use crate::presentation::Outcome;
 
 const CARD: &str = "/dev/dri/card0";
@@ -83,7 +82,7 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn open(font: Option<Font>) -> Result<Self> {
+    pub fn open(labels: Option<Labels>) -> Result<Self> {
         // Non-blocking, so polling for flip events never stalls the compose loop.
         let card = Card(
             OpenOptions::new()
@@ -127,8 +126,8 @@ impl Compositor {
         card.set_property(label_plane, property_handle(&card, label_plane, "zpos")?, LABELS_ZPOS)
             .context("moving the label plane up")?;
 
-        let image = match font {
-            Some(font) => Overlay::build(&font, size.0 as usize, size.1 as usize).premultiplied_argb(),
+        let image = match labels {
+            Some(labels) => Overlay::build(&labels, size.0 as usize, size.1 as usize).premultiplied_argb(),
             None => vec![0; size.0 as usize * size.1 as usize],
         };
         let labels = Surface::new(&card, size, &image)?;
