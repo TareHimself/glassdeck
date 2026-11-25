@@ -2,6 +2,7 @@
 //! compositor tiles to put on the key layer. Profile and module changes are picked up while running.
 
 mod draw;
+mod installing;
 mod instance;
 mod ui;
 
@@ -19,6 +20,7 @@ use fontdue::Font;
 use glassdeck_package::{ModulePackage, is_module};
 use glassdeck_luau::profile::{Placement, Profile, WidgetArea};
 
+use installing::Installing;
 use instance::Instance;
 
 /// How often the profile and module folder are checked for changes.
@@ -70,6 +72,9 @@ impl Installed {
 
 pub enum Input {
     Data { instance: u16, payload: Vec<u8> },
+    /// A large file is arriving: the widget area shows its progress instead of the widgets.
+    InstallProgress { what: String, fraction: f32 },
+    InstallEnded,
 }
 
 pub struct Config {
@@ -92,6 +97,8 @@ struct Host {
     /// What the last scan saw, to notice changes.
     seen: Option<Snapshot>,
     last_frame: Option<Instant>,
+    /// While set, widgets keep running but their redraws wait until the install ends.
+    installing: Option<Installing>,
 }
 
 #[derive(PartialEq)]
@@ -102,7 +109,7 @@ struct Snapshot {
 
 impl Host {
     fn new(config: Config, tiles: Arc<Tiles>) -> Self {
-        Self { config, area: WidgetArea::of_panel(), tiles, instances: Vec::new(), seen: None, last_frame: None }
+        Self { config, area: WidgetArea::of_panel(), tiles, instances: Vec::new(), seen: None, last_frame: None, installing: None }
     }
 
     fn run(mut self, inputs: Receiver<Input>) {
@@ -119,6 +126,11 @@ impl Host {
                     Some(target) => target.on_data(&payload),
                     None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
                 },
+                Ok(Input::InstallProgress { what, fraction }) => match &mut self.installing {
+                    Some(installing) if installing.what == what => installing.fraction = fraction,
+                    _ => self.installing = Some(Installing::new(what, fraction)),
+                },
+                Ok(Input::InstallEnded) => self.end_install(),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -153,11 +165,32 @@ impl Host {
     }
 
     fn publish(&mut self) {
+        if let Some(installing) = &mut self.installing {
+            let size = (self.area.size.w, self.area.size.h);
+            match installing.draw(size, &self.config.font) {
+                Ok(Some(pixels)) => self.tiles.put(Tile { x: self.area.x, y: self.area.y, w: size.0, h: size.1, pixels }),
+                Ok(None) => {}
+                Err(e) => eprintln!("error: drawing the install progress: {e:#}"),
+            }
+            return;
+        }
         for instance in &mut self.instances {
             if let Some(tile) = instance.draw(&self.config.font) {
                 let p = instance.placement;
                 self.tiles.put(Tile { x: self.area.x + p.x, y: self.area.y + p.y, w: p.w, h: p.h, pixels: tile.pixels });
             }
+        }
+    }
+
+    /// Takes the progress panel down and has every widget draw itself again where it was.
+    fn end_install(&mut self) {
+        if self.installing.take().is_none() {
+            return;
+        }
+        let (w, h) = (self.area.size.w, self.area.size.h);
+        self.clear(Placement { x: 0, y: 0, w, h });
+        for instance in &mut self.instances {
+            instance.request_redraw();
         }
     }
 

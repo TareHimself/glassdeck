@@ -12,7 +12,7 @@ mod worker;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use anyhow::Result;
@@ -95,7 +95,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     pc_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink))?;
     let (modules, profile) = (paths.modules.clone(), paths.profile.clone());
-    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile }.serve(&paths.api)
+    Api { token, runner, uplink, keyboard: config.keyboard, modules, profile, large_uploads: Mutex::new(0) }.serve(&paths.api)
 }
 
 fn new_token() -> Result<String> {

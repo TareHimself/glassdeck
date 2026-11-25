@@ -244,10 +244,11 @@ fn run(command: Command) -> Result<()> {
 fn start(play: Play, seconds: Option<u64>) -> Result<()> {
     let request = SourceRequest { play, seconds };
     let answer = client::call("PUT", "/source", Some(serde_json::to_value(&request)?))?;
-    match (answer.get("playing"), answer.get("waiting"), answer.get("starting")) {
-        (Some(what), _, _) => println!("Playing {}", text(what)),
-        (_, Some(what), _) => println!("{} starts when the keyboard connects", text(what)),
-        (_, _, Some(what)) => println!("{} is still starting; `glassdeck status` shows how it goes", text(what)),
+    match (answer.get("playing"), answer.get("waiting"), answer.get("after_upload"), answer.get("starting")) {
+        (Some(what), _, _, _) => println!("Playing {}", text(what)),
+        (_, Some(what), _, _) => println!("{} starts when the keyboard connects", text(what)),
+        (_, _, Some(what), _) => println!("{} starts once the keyboard has the file it's installing", text(what)),
+        (_, _, _, Some(what)) => println!("{} is still starting; `glassdeck status` shows how it goes", text(what)),
         _ => println!("{answer}"),
     }
     Ok(())

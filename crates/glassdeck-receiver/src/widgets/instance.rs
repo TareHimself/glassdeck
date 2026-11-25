@@ -96,6 +96,14 @@ impl Instance {
         self.error_unshown = true;
     }
 
+    pub fn request_redraw(&mut self) {
+        self.with_live(|live| {
+            live.ui.request_redraw();
+            Ok(())
+        });
+        self.error_unshown = true;
+    }
+
     pub fn move_to(&mut self, placement: Placement) {
         self.placement = placement;
         self.with_live(|live| {

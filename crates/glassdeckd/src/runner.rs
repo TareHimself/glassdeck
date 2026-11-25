@@ -25,6 +25,7 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const CONNECT_GRACE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(20);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub const PAUSED_FOR_UPLOAD: &str = "paused for an upload";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerState {
@@ -32,6 +33,9 @@ pub enum RunnerState {
     Running { request: SourceRequest, worker: u64 },
     /// The Link dropped mid-stream; this starts again once the keyboard is back.
     WaitingForLink { request: SourceRequest },
+    /// A large file is going to the keyboard, which shows its own background meanwhile; this starts
+    /// again when the upload is answered.
+    PausedForUpload { request: SourceRequest },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +51,8 @@ pub enum RunnerEvent {
     Stop,
     WorkerEnded { worker: u64, outcome: Outcome },
     LinkUp,
+    PauseForUpload,
+    ResumeAfterUpload,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,9 +66,16 @@ pub enum RunnerEffect {
 /// numbers a worker this move would start.
 pub fn step(state: RunnerState, event: RunnerEvent, next_worker: u64) -> (RunnerState, Vec<RunnerEffect>) {
     use RunnerEffect::{Ended, Spawn, StopWorker};
-    use RunnerState::{Idle, Running, WaitingForLink};
+    use RunnerState::{Idle, PausedForUpload, Running, WaitingForLink};
     let spawn = |request: SourceRequest| (Running { request: request.clone(), worker: next_worker }, Spawn { worker: next_worker, request });
     match (state, event) {
+        (PausedForUpload { .. }, RunnerEvent::Start(request)) => (PausedForUpload { request }, vec![]),
+        (Running { request, worker }, RunnerEvent::PauseForUpload) => (PausedForUpload { request }, vec![StopWorker(worker)]),
+        (PausedForUpload { request }, RunnerEvent::ResumeAfterUpload) => {
+            let (state, effect) = spawn(request);
+            (state, vec![effect])
+        }
+        (state, RunnerEvent::PauseForUpload | RunnerEvent::ResumeAfterUpload) => (state, vec![]),
         (Idle | WaitingForLink { .. }, RunnerEvent::Start(request)) => {
             let (state, effect) = spawn(request);
             (state, vec![effect])
@@ -72,7 +85,7 @@ pub fn step(state: RunnerState, event: RunnerEvent, next_worker: u64) -> (Runner
             (state, vec![StopWorker(worker), effect])
         }
         (Running { worker, .. }, RunnerEvent::Stop) => (Idle, vec![StopWorker(worker)]),
-        (Idle | WaitingForLink { .. }, RunnerEvent::Stop) => (Idle, vec![]),
+        (Idle | WaitingForLink { .. } | PausedForUpload { .. }, RunnerEvent::Stop) => (Idle, vec![]),
         (Running { request, worker }, RunnerEvent::WorkerEnded { worker: ended, outcome }) if ended == worker => match outcome {
             Outcome::LinkLost => (WaitingForLink { request }, vec![Ended { worker, outcome: Outcome::LinkLost }]),
             outcome => (Idle, vec![Ended { worker, outcome }]),
@@ -171,6 +184,7 @@ impl Loop {
             RunnerState::Idle => ("idle", None, None),
             RunnerState::Running { request, worker } => ("running", Some(request.play.to_string()), Some(*worker)),
             RunnerState::WaitingForLink { request } => ("waiting for the keyboard", Some(request.play.to_string()), None),
+            RunnerState::PausedForUpload { request } => (PAUSED_FOR_UPLOAD, Some(request.play.to_string()), None),
         };
         if status.worker != worker {
             status.streaming = false;
@@ -342,7 +356,7 @@ fn forward_stderr(id: u64, stderr: impl Read + Send + 'static) -> Arc<Mutex<Opti
 #[cfg(test)]
 mod tests {
     use super::RunnerEffect::{Ended, Spawn, StopWorker};
-    use super::RunnerState::{Idle, Running, WaitingForLink};
+    use super::RunnerState::{Idle, PausedForUpload, Running, WaitingForLink};
     use super::*;
     use glassdeck_capture::sources::Play;
 
@@ -355,6 +369,7 @@ mod tests {
         let (a, b) = (request("a"), request("b"));
         let running = Running { request: a.clone(), worker: 1 };
         let waiting = WaitingForLink { request: a.clone() };
+        let paused = PausedForUpload { request: a.clone() };
         let ended = |worker, outcome| RunnerEvent::WorkerEnded { worker, outcome };
         let table = vec![
             (Idle, RunnerEvent::Start(b.clone()), Running { request: b.clone(), worker: 9 }, vec![Spawn { worker: 9, request: b.clone() }]),
@@ -371,6 +386,18 @@ mod tests {
             (waiting.clone(), RunnerEvent::LinkUp, Running { request: a.clone(), worker: 9 }, vec![Spawn { worker: 9, request: a.clone() }]),
             (running.clone(), RunnerEvent::LinkUp, running.clone(), vec![]),
             (Idle, RunnerEvent::LinkUp, Idle, vec![]),
+            (running.clone(), RunnerEvent::PauseForUpload, paused.clone(), vec![StopWorker(1)]),
+            (Idle, RunnerEvent::PauseForUpload, Idle, vec![]),
+            (waiting.clone(), RunnerEvent::PauseForUpload, waiting.clone(), vec![]),
+            (paused.clone(), RunnerEvent::PauseForUpload, paused.clone(), vec![]),
+            (paused.clone(), RunnerEvent::ResumeAfterUpload, Running { request: a.clone(), worker: 9 }, vec![Spawn { worker: 9, request: a.clone() }]),
+            (Idle, RunnerEvent::ResumeAfterUpload, Idle, vec![]),
+            (running.clone(), RunnerEvent::ResumeAfterUpload, running.clone(), vec![]),
+            (waiting.clone(), RunnerEvent::ResumeAfterUpload, waiting.clone(), vec![]),
+            (paused.clone(), RunnerEvent::Start(b.clone()), PausedForUpload { request: b.clone() }, vec![]),
+            (paused.clone(), RunnerEvent::Stop, Idle, vec![]),
+            (paused.clone(), ended(1, Outcome::Finished), paused.clone(), vec![]),
+            (paused.clone(), RunnerEvent::LinkUp, paused.clone(), vec![]),
         ];
         for (from, event, to, effects) in table {
             assert_eq!(step(from.clone(), event.clone(), 9), (to, effects), "from {from:?} on {event:?}");

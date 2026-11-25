@@ -12,6 +12,9 @@ pub use session::{Action, SessionError, SessionState, step};
 pub const VERSION: u8 = 7;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
+/// Files at least this big pause the stream while they go to the keyboard, which shows their
+/// progress; smaller ones finish too quickly to be worth changing the screen for.
+pub const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Paced streams are wallpapers, where start-up delay costs nothing, so they buffer deeply enough to
 /// ride out Wi-Fi stalls. The sender runs this far ahead of presentation time...

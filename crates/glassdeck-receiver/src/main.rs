@@ -125,7 +125,7 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
             thread::scope(|scope| {
                 thread::Builder::new()
                     .name("files".into())
-                    .spawn_scoped(scope, || put::write_files(folders, arriving, &replies))?;
+                    .spawn_scoped(scope, || put::write_files(folders, arriving, &replies, widgets))?;
                 let served = serve(socket, mailbox, director, widgets, &pieces, &replies, &mut state);
                 drop(pieces);
                 served

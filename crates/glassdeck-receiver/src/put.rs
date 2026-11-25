@@ -6,22 +6,31 @@ use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::{Context, Result};
 use glassdeck_package::{EXTENSION, MODULE_EXTENSION};
-use glassdeck_proto::{FileTarget, Message, PutFile};
+use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES, Message, PutFile};
 
 use crate::send_reply;
+use crate::widgets::Input;
 
 /// Pieces waiting for the disk (8 MB) before the connection waits too.
 pub const QUEUED_PIECES: usize = 32;
 
 /// The file writer thread for one connection: disk writes and the final flush, which takes seconds
 /// for a large file on an SD card, happen here so the receive thread keeps decoding frames.
-pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex<TcpStream>) {
+pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex<TcpStream>, widgets: &Sender<Input>) {
     let mut uploads = Uploads::new(folders);
+    let mut showing = false;
     for put in pieces {
+        if put.total >= LARGE_FILE_BYTES {
+            showing = !put.completes();
+            show(widgets, match showing {
+                true => Input::InstallProgress { what: put.target.to_string(), fraction: put.end() as f32 / put.total as f32 },
+                false => Input::InstallEnded,
+            });
+        }
         if let Some(answer) = uploads.put(&put)
             && let Err(e) = send_reply(replies, &answer)
         {
@@ -29,6 +38,14 @@ pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex
         }
     }
     uploads.abandon();
+    if showing {
+        show(widgets, Input::InstallEnded);
+    }
+}
+
+/// A stopped widget thread is reported by the receive thread, which also sends it widget data.
+fn show(widgets: &Sender<Input>, input: Input) {
+    let _ = widgets.send(input);
 }
 
 pub struct Folders {

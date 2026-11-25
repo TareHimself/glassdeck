@@ -3,19 +3,20 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glassdeck_capture::sources::SourceRequest;
+use glassdeck_proto::LARGE_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::deploy;
 use crate::link::Uplink;
-use crate::runner::{Runner, RunnerEvent};
+use crate::runner::{PAUSED_FOR_UPLOAD, Runner, RunnerEvent};
 
 pub const API_FORMAT_VERSION: u32 = 1;
 /// How long starting a source may take before the CLI is told it's still starting (CEF is the slow one).
@@ -50,6 +51,25 @@ pub struct Api {
     pub keyboard: SocketAddr,
     pub modules: PathBuf,
     pub profile: PathBuf,
+    /// Large uploads running now; the source stays paused until the last one is answered.
+    pub large_uploads: Mutex<usize>,
+}
+
+/// Held for the length of a large upload.
+struct UploadPause<'a> {
+    api: &'a Api,
+}
+
+impl Drop for UploadPause<'_> {
+    fn drop(&mut self) {
+        let mut running = self.api.large_uploads.lock().expect("upload count poisoned");
+        *running -= 1;
+        if *running == 0
+            && let Err(e) = self.api.runner.send(RunnerEvent::ResumeAfterUpload)
+        {
+            eprintln!("error: resuming the source after an upload: {e:#}");
+        }
+    }
 }
 
 impl Api {
@@ -127,11 +147,23 @@ impl Api {
     /// Answers once the keyboard has the file in place.
     fn deploy(&self, path: &Path) -> Result<serde_json::Value> {
         let target = deploy::target_for(path, &self.modules)?;
+        let size = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?.len();
+        let _pause = (size >= LARGE_FILE_BYTES).then(|| self.pause_for_upload()).transpose()?;
         let answered = self.uplink.put_file(target.clone(), path)?;
         answered.recv().context("the Link stopped before the keyboard answered")??;
         deploy::keep_locally(&target, path, &self.modules, &self.profile)?;
         println!("Deployed {target}");
         Ok(json!({ "deployed": target.to_string() }))
+    }
+
+    /// The keyboard falls back to its own background, and the transfer gets the whole Link.
+    fn pause_for_upload(&self) -> Result<UploadPause<'_>> {
+        let mut running = self.large_uploads.lock().expect("upload count poisoned");
+        if *running == 0 {
+            self.runner.send(RunnerEvent::PauseForUpload)?;
+        }
+        *running += 1;
+        Ok(UploadPause { api: self })
     }
 
     /// Starts the source and waits until it streams, fails, or is still starting after `START_WAIT`.
@@ -155,6 +187,9 @@ impl Api {
             }
             if now.state == "waiting for the keyboard" {
                 return Ok(json!({ "waiting": playing }));
+            }
+            if now.state == PAUSED_FOR_UPLOAD {
+                return Ok(json!({ "after_upload": playing }));
             }
         }
         Ok(json!({ "starting": playing }))
