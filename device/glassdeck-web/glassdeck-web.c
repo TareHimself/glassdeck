@@ -567,6 +567,51 @@ static void on_deck_request(WebKitURISchemeRequest* request, gpointer data) {
   webkit_uri_scheme_request_finish_with_response(request, response);
 }
 
+// The page's errors reach our stderr; WebKit's own console output never leaves the sandboxed web process.
+static const char PAGE_ERRORS_SCRIPT[] =
+    "(() => {\n"
+    "  const post = (kind, text) => window.webkit.messageHandlers.glassdeck.postMessage(kind + ': ' + text);\n"
+    "  window.addEventListener('error', e => post('error', `${e.message} at ${e.filename}:${e.lineno}`));\n"
+    "  window.addEventListener('unhandledrejection', e => post('rejection', String(e.reason)));\n"
+    "  for (const level of ['error', 'warn']) {\n"
+    "    const original = console[level];\n"
+    "    console[level] = (...args) => { post(level, args.map(String).join(' ')); original.apply(console, args); };\n"
+    "  }\n"
+    "})();";
+
+static void on_page_message(G_GNUC_UNUSED WebKitUserContentManager* manager, JSCValue* value, G_GNUC_UNUSED gpointer data) {
+  g_autofree char* text = jsc_value_to_string(value);
+  fprintf(stderr, "page %s\n", text);
+}
+
+static void add_start_script(WebKitUserContentManager* scripts, const char* source) {
+  WebKitUserScript* script = webkit_user_script_new(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                                                    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+  webkit_user_content_manager_add_script(scripts, script);
+  webkit_user_script_unref(script);
+}
+
+// Wallpapers are written for Wallpaper Engine's Chromium; WebKit has these too, but off by default.
+static const char* const CHROMIUM_FEATURES[] = {"RequestIdleCallback"};
+
+static gboolean enable_features(WebKitSettings* settings) {
+  g_autoptr(WebKitFeatureList) features = webkit_settings_get_all_features();
+  for (size_t i = 0; i < G_N_ELEMENTS(CHROMIUM_FEATURES); i++) {
+    gboolean found = FALSE;
+    for (gsize f = 0; f < webkit_feature_list_get_length(features) && !found; f++) {
+      WebKitFeature* feature = webkit_feature_list_get(features, f);
+      if (g_strcmp0(webkit_feature_get_identifier(feature), CHROMIUM_FEATURES[i]) != 0) continue;
+      webkit_settings_set_feature_enabled(settings, feature, TRUE);
+      found = TRUE;
+    }
+    if (!found) {
+      fprintf(stderr, "glassdeck-web: this WebKit has no %s feature\n", CHROMIUM_FEATURES[i]);
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
 static char* deck_page_uri(const char* entry) {
   g_autofree char* escaped = g_uri_escape_string(entry, "/", FALSE);
   return g_strconcat(DECK_ORIGIN, escaped, NULL);
@@ -614,6 +659,9 @@ static int render(const struct options* o) {
 
   WebKitWebContext* context = webkit_web_context_new();
   WebKitUserContentManager* scripts = webkit_user_content_manager_new();
+  webkit_user_content_manager_register_script_message_handler(scripts, "glassdeck", NULL);
+  g_signal_connect(scripts, "script-message-received::glassdeck", G_CALLBACK(on_page_message), NULL);
+  add_start_script(scripts, PAGE_ERRORS_SCRIPT);
   struct deck* deck = NULL;
   g_autofree char* uri = NULL;
   if (o->content == CONTENT_DECK) {
@@ -626,22 +674,23 @@ static int render(const struct options* o) {
     webkit_security_manager_register_uri_scheme_as_secure(security, "deck");
     webkit_security_manager_register_uri_scheme_as_cors_enabled(security, "deck");
     g_autofree char* init = wallpaper_init_script(web.properties_json);
-    WebKitUserScript* script = webkit_user_script_new(init, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-                                                      WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
-    webkit_user_content_manager_add_script(scripts, script);
-    webkit_user_script_unref(script);
+    add_start_script(scripts, init);
     uri = deck_page_uri(web.entry);
     deck_web_clear(&web);
   } else {
     uri = g_strdup(o->location);
   }
   WebKitNetworkSession* session = webkit_network_session_new_ephemeral();
-  WebKitSettings* settings = webkit_settings_new_with_settings(
-      "enable-write-console-messages-to-stdout", TRUE, "media-playback-requires-user-gesture", FALSE, NULL);
+  WebKitSettings* settings = webkit_settings_new_with_settings("media-playback-requires-user-gesture", FALSE, NULL);
+  if (!enable_features(settings)) return 1;
   WebKitWebView* view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "backend", backend, "web-context", context,
                                      "network-session", session, "settings", settings, "user-content-manager", scripts,
                                      NULL);
   webkit_web_view_set_is_muted(view, TRUE);
+  // A view WebKit thinks is hidden gets requestAnimationFrame and timers throttled to a crawl.
+  wpe_view_backend_add_activity_state(wpe_view_backend_dmabuf_pool_fdo_get_view_backend(r.pool),
+                                      wpe_view_activity_state_visible | wpe_view_activity_state_focused |
+                                          wpe_view_activity_state_in_window);
 
   g_signal_connect(view, "load-failed", G_CALLBACK(on_load_failed), &r);
   g_signal_connect(view, "web-process-terminated", G_CALLBACK(on_web_process_terminated), &r);
