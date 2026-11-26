@@ -2,6 +2,7 @@
 //! the rest (monitors, recording, converting, packing modules) runs here.
 
 mod client;
+mod theme;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,12 +13,8 @@ use clap::{Parser, Subcommand};
 use glassdeck_capture::monitors::{self, MonitorQuery};
 use glassdeck_capture::record::{self, RecordOptions};
 use glassdeck_convert::{Details, EncodeSettings};
-use glassdeck_api::{
-    BgChosen, BgView, Deploy, Deployed, OptionKind, OptionSet, OptionView, OptionsView, PanelItem, RunsOn, SetBg, SetOption,
-    ShowState, Status, Streams,
-};
-use glassdeck_package::Origin;
-use serde_json::{Value, json};
+use glassdeck_api::{Deploy, Deployed, Status, Streams};
+use glassdeck_package::{Origin, PackageId};
 
 #[derive(Parser)]
 #[command(about = "Glassdeck: choose what the keyboard shows, and put files on it")]
@@ -28,20 +25,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// The Link, the background and where it runs
+    /// The Link, the stream and the active theme's background
     Status,
     /// Streams glassdeckd can show, such as monitor-q27g4zd
     Streams,
-    /// Show or set the background: gradient (built in), a .deckbg, or stream:<name>
-    Bg {
-        /// gradient, a .deckbg file (uploaded if it's a file here) or name on the keyboard, or stream:<name>
+    /// Show or set the active theme's background: gradient (built in), a package id, a .deck, or stream:<name>
+    #[command(alias = "bg")]
+    Background {
+        /// gradient, a package id, a .deck file (uploaded if it's a file here), or stream:<name>
         choice: Option<String>,
     },
-    /// Put a .deckbg, .deckmod or profile .json on the keyboard
+    /// Put a .deck on the keyboard
     Deploy { file: PathBuf },
-    /// Show the selected background's (or a widget's) options, or set one: glassdeck options look.tint "#ff8000"
+    /// Show the background's (or a widget's) options, or set one: glassdeck options look.tint "#ff8000"
     Options {
-        /// A widget's place in the profile, instead of the background
+        /// A widget's place in the theme, instead of the background
         #[arg(long)]
         widget: Option<usize>,
         /// An option's path, such as motion.speed
@@ -52,21 +50,21 @@ enum Command {
         #[arg(long, conflicts_with = "value")]
         reset: bool,
     },
-    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod,
-    /// or a canvas folder (canvas.slang, optional keyboard.luau) into a .deckbg
+    /// Pack a widget folder (deck.json, keyboard.luau, optional options.luau, host.luau and assets/), or a
+    /// canvas folder (deck.json, canvas.slang, optional scripts), into a .deck
     Pack {
         folder: PathBuf,
-        /// Defaults to <folder>.deckmod, or <folder>.deckbg for a canvas
+        /// Defaults to <folder>.deck
         #[arg(long)]
         out: Option<PathBuf>,
         /// Canvases: pack again whenever a file in the folder changes, refreshing its .glassdeck types
         #[arg(long)]
         watch: bool,
     },
-    /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a .deckbg
+    /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a background .deck
     Convert {
         input: PathBuf,
-        /// Defaults to %LOCALAPPDATA%\Glassdeck\backgrounds\<name>.deckbg
+        /// Defaults to %APPDATA%\Glassdeck\packages\converted.<name>.deck
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when a video has to be re-encoded
@@ -104,29 +102,14 @@ fn run(command: Command) -> Result<()> {
     match command {
         Command::Status => status(),
         Command::Streams => streams(),
-        Command::Bg { choice: None } => {
-            println!("{}", describe_bg(&client::get::<BgView>("/bg")?));
-            Ok(())
-        }
-        Command::Bg { choice: Some(choice) } => set_bg(&choice),
-        Command::Options { widget, path: None, .. } => {
-            print_options(&client::get(&options_route(widget))?);
-            Ok(())
-        }
-        Command::Options { widget, path: Some(path), value, reset } => {
-            let value = match (value, reset) {
-                (Some(text), _) => {
-                    let view: OptionsView = client::get(&options_route(widget))?;
-                    let option = find_option(&view.items, &path).with_context(|| format!("{} has no option {path}", view.owner))?;
-                    Some(parse_typed(&option.kind, &text).with_context(|| path.clone())?)
-                }
-                (None, true) => None,
-                (None, false) => bail!("give {path} a value, or --reset it to its default"),
-            };
-            let answer: OptionSet = client::put(&options_route(widget), &SetOption { path, value })?;
-            println!("{} {} = {}", answer.owner, answer.path, answer.value);
-            Ok(())
-        }
+        Command::Background { choice: None } => theme::show_background(),
+        Command::Background { choice: Some(choice) } => theme::set_background(&choice),
+        Command::Options { widget, path: None, .. } => theme::show_options(widget),
+        Command::Options { widget, path: Some(path), value, reset } => match (value, reset) {
+            (Some(text), _) => theme::set_option(widget, &path, Some(&text)),
+            (None, true) => theme::set_option(widget, &path, None),
+            (None, false) => bail!("give {path} a value, or --reset it to its default"),
+        },
         Command::Deploy { file } => {
             println!("The keyboard installed {}", deploy(&file)?);
             Ok(())
@@ -159,10 +142,10 @@ fn run(command: Command) -> Result<()> {
         }
         Command::Pack { watch: true, .. } => bail!("--watch is for canvas folders (with canvas.slang)"),
         Command::Pack { folder, out, .. } => {
-            let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
+            let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::EXTENSION));
             if [glassdeck_package::OPTIONS_SCRIPT, glassdeck_package::HOST_SCRIPT].iter().any(|script| folder.join(script).is_file()) {
                 let luau = glassdeck_luau_check::LuauChecker::load(&native_libraries()?)?;
-                glassdeck_slang::pack::check_module(&luau, &folder)?;
+                glassdeck_slang::pack::check_widget(&luau, &folder)?;
             }
             let package = glassdeck_package::pack_folder(&folder, &out)?;
             println!("Packed {} into {}", package.manifest().id, out.display());
@@ -180,85 +163,6 @@ fn run(command: Command) -> Result<()> {
             println!("Recording {} for {seconds}s to {}", found.info, out.display());
             record::run(found, RecordOptions { out, duration: Duration::from_secs(seconds), bitrate: mbps * 1_000_000, fps })
         }
-    }
-}
-
-/// A `.deckbg` that's a file here is uploaded first and then chosen by its name; anything else is
-/// passed to glassdeckd as it is.
-fn set_bg(choice: &str) -> Result<()> {
-    let local = Path::new(choice);
-    let name = if glassdeck_package::is_background(local) {
-        deploy(local)?;
-        file_name(local)?
-    } else {
-        choice.to_owned()
-    };
-    let answer: BgChosen = client::put("/bg", &SetBg { bg: name })?;
-    let state = match answer.state {
-        ShowState::Shown => "",
-        ShowState::WaitingForKeyboard => " (waiting for the keyboard)",
-        ShowState::AfterUpload => " (after the upload)",
-        ShowState::Starting => " (starting)",
-    };
-    println!("{}{state}", describe_bg(&BgView { bg: Some(answer.bg), runs_on: answer.runs_on }));
-    Ok(())
-}
-
-fn options_route(widget: Option<usize>) -> String {
-    widget.map_or_else(|| "/bg/options".to_owned(), |index| format!("/widgets/{index}/options"))
-}
-
-fn find_option<'a>(items: &'a [PanelItem], path: &str) -> Option<&'a OptionView> {
-    items.iter().find_map(|item| match item {
-        PanelItem::Section { items, .. } => find_option(items, path),
-        PanelItem::Option(option) if option.path == path => Some(option),
-        PanelItem::Option(_) | PanelItem::Heading { .. } => None,
-    })
-}
-
-/// A value as typed on the command line (`on`, `0.5`, `#ff8000`), as the JSON its option's kind takes.
-fn parse_typed(kind: &OptionKind, text: &str) -> Result<Value> {
-    Ok(match kind {
-        OptionKind::Range { .. } | OptionKind::Number { .. } => json!(text.parse::<f64>().with_context(|| format!("{text:?} isn't a number"))?),
-        OptionKind::Toggle { .. } => match text {
-            "true" | "on" | "yes" => json!(true),
-            "false" | "off" | "no" => json!(false),
-            _ => bail!("{text:?} isn't true or false"),
-        },
-        OptionKind::Color { .. } | OptionKind::Text { .. } | OptionKind::Choice { .. } => json!(text),
-    })
-}
-
-/// The panel as the app would draw it: sections indented, hidden options marked.
-fn print_options(view: &OptionsView) {
-    fn walk(items: &[PanelItem], depth: usize) {
-        let indent = "  ".repeat(depth);
-        for item in items {
-            match item {
-                PanelItem::Section { path, label, items } => {
-                    println!("{indent}{label} ({path})");
-                    walk(items, depth + 1);
-                }
-                PanelItem::Heading { text } => println!("{indent}-- {text} --"),
-                PanelItem::Option(option) => {
-                    let limits = match &option.kind {
-                        OptionKind::Range { min, max, .. } => format!("range {min} to {max}"),
-                        OptionKind::Choice { values, .. } => format!("one of {}", values.join(", ")),
-                        OptionKind::Color { .. } => "colour".to_owned(),
-                        OptionKind::Number { .. } => "number".to_owned(),
-                        OptionKind::Toggle { .. } => "toggle".to_owned(),
-                        OptionKind::Text { .. } => "text".to_owned(),
-                    };
-                    let hidden = if option.visible { "" } else { "  [hidden]" };
-                    println!("{indent}{}: {}  ({}, {limits}){hidden}", option.label, option.value, option.path);
-                }
-            }
-        }
-    }
-    println!("Options for {}", view.owner);
-    walk(&view.items, 1);
-    for dropped in &view.dropped {
-        println!("  (dropped a stored value: {dropped})");
     }
 }
 
@@ -296,7 +200,7 @@ fn native_libraries() -> Result<PathBuf> {
     Ok(exe.parent().context("this program has no folder")?.to_path_buf())
 }
 
-fn deploy(file: &Path) -> Result<String> {
+pub(crate) fn deploy(file: &Path) -> Result<String> {
     let path = std::path::absolute(file).with_context(|| format!("finding {}", file.display()))?;
     let answer: Deployed = client::put("/deploy", &Deploy { path: path.to_string_lossy().into_owned() })?;
     Ok(answer.deployed)
@@ -304,13 +208,14 @@ fn deploy(file: &Path) -> Result<String> {
 
 fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
     let title = input.file_stem().context("the input has no name")?.to_string_lossy().into_owned();
+    let id = PackageId::from_name("converted", &title)?;
     let out = match out {
         Some(out) => out,
-        None => glassdeck_convert::default_backgrounds_dir()?.join(format!("{title}.{}", glassdeck_package::EXTENSION)),
+        None => glassdeck_convert::default_packages_dir()?.join(id.file_name()),
     };
-    let details = Details { title, origin: Origin::Converted { from: file_name(input)? }, preview: None };
+    let details = Details { id, title, origin: Origin::Converted { from: file_name(input)? }, preview: None };
     let is_html = input.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
-    let background = if input.is_dir() {
+    if input.is_dir() {
         if !input.join("index.html").is_file() {
             bail!("{} has no index.html; give the page's .html file instead", input.display());
         }
@@ -321,7 +226,7 @@ fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
     } else {
         glassdeck_convert::video(input, &out, details, EncodeSettings { bitrate: mbps * 1_000_000 })?
     };
-    println!("Wrote {}; show it with `glassdeck bg {}`", background.path().display(), background.path().display());
+    println!("Wrote {}; show it with `glassdeck bg {}`", out.display(), out.display());
     Ok(())
 }
 
@@ -333,9 +238,9 @@ fn status() -> Result<()> {
     let status: Status = client::get("/status")?;
     let connected = if status.link.connected { "connected" } else { "not connected" };
     println!("Keyboard {}: {connected}", status.link.keyboard);
-    println!("{}", describe_bg(&status.bg));
+    theme::show_background()?;
     if let Some(playing) = &status.stream.playing {
-        println!("Stream: {playing} ({})", status.stream.state.describe());
+        println!("Source: {playing} ({})", status.stream.state.describe());
     }
     if let Some(ended) = &status.stream.last_ended {
         println!("Last stream: {}", ended.said);
@@ -353,10 +258,3 @@ fn streams() -> Result<()> {
     Ok(())
 }
 
-fn describe_bg(bg: &BgView) -> String {
-    match (&bg.bg, bg.runs_on) {
-        (None, _) => "Background: the keyboard's own choice (none set from here)".into(),
-        (Some(bg), RunsOn::Host) => format!("Background: {bg}, streamed from this host"),
-        (Some(bg), RunsOn::Keyboard) => format!("Background: {bg}, played by the keyboard itself"),
-    }
-}

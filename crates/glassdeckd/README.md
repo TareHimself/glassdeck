@@ -1,6 +1,6 @@
 # glassdeckd
 
-The host daemon, and the one program that talks to the keyboard. It owns the Link, runs sources in worker processes, runs the host halves of modules and canvases, and serves the local HTTP API that the CLI and the desktop app use. Windows only.
+The host daemon, and the one program that talks to the keyboard. It owns the Link, runs sources in worker processes, runs the host sides of the active theme's background and widgets, and serves the local HTTP API that the CLI and the desktop app use. Windows only.
 
 ```mermaid
 flowchart LR
@@ -18,16 +18,15 @@ flowchart LR
 
 | Module | What it does |
 |---|---|
-| `link` | The Link to the keyboard: a reconnecting state machine (`step`), plus `Uplink`, which queues streams, uploads, module data and the background choice |
+| `link` | The Link to the keyboard: a reconnecting state machine (`step`), plus `Uplink`, which queues streams, uploads, widget data, the background choice and the widget layout |
 | `runner` | Runs at most one source at a time, each in a worker process (`step` is the state table). `StatusBoard` holds its status for waiters and publishes every change |
 | `worker` | The worker side, run as `glassdeckd source`, because CEF can start only once per process |
-| `module_host` | Runs each widget's host side and the selected canvas's: options, plus `host.luau` or an implicit forwarder |
+| `module_host` | Runs the host side of the theme's background and of each widget: options, plus `host.luau` or an implicit forwarder. Restarts only what changed |
 | `host_api` | The host-only Luau APIs: `live`, `image` and `media` |
-| `options` | `OptionsStore` (`options.json`) for canvas options, and the panel views the API sends |
+| `theme` | The active theme: checked against the installed packages, kept in `theme.json`, and turned into the keyboard's widget layout |
 | `api` | The axum server. Its routes and types live in [glassdeck-api](../glassdeck-api) |
-| `error` | Maps failures to API error codes. A failure is marked where it happens (`not_found`, `bad_request`, `conflict`); unmarked ones are internal |
-| `streams` | `Choice` (what `bg` picks) and the built-in monitor streams |
-| `deploy` | Puts files on the keyboard, and keeps local copies of modules, the profile, and canvases that run on the host |
+| `error` | Maps failures to API error codes. A failure is marked where it happens (`bad_request`, `conflict`); unmarked ones are internal |
+| `streams` | `StreamName` and the built-in monitor streams a theme can show |
 | `config` | `Paths` and `config.json` |
 | `system` | One instance per user, logging to a file, and starting at login |
 
@@ -36,12 +35,10 @@ flowchart LR
 | Path | What |
 |---|---|
 | `%APPDATA%\Glassdeck\config.json` | The keyboard's address and the Link's rate |
-| `%APPDATA%\Glassdeck\profile.json` | The widgets in place, with their options |
-| `%APPDATA%\Glassdeck\options.json` | Canvas options, by background |
-| `%APPDATA%\Glassdeck\bg.json` | The remembered background choice |
-| `%APPDATA%\Glassdeck\modules\` | Installed modules |
+| `%APPDATA%\Glassdeck\theme.json` | The active theme, as the app last pushed it |
+| `%APPDATA%\Glassdeck\packages\` | Every package deployed, as `<id>.deck` |
 | `%LOCALAPPDATA%\Glassdeck\api.json` | The API's port and token |
-| `%LOCALAPPDATA%\Glassdeck\canvases\` | Copies of canvases that have options or a host half |
+| `%LOCALAPPDATA%\Glassdeck\staging\` | Keyboard copies of packages, made to be uploaded |
 
 ## Run
 
@@ -57,4 +54,4 @@ glassdeckd uninstall
 cargo test -p glassdeckd
 ```
 
-The tests walk the Link and runner state tables and cover options storage, deploy targets and error codes.
+The tests walk the Link and runner state tables and cover theme checks, what a new theme restarts, stream names and error codes.

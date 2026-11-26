@@ -1,5 +1,5 @@
-//! Files the PC installs on the keyboard. Pieces go into `<name>.tmp`, which is renamed into place
-//! once complete; the background director and widget host pick the new file up as usual.
+//! Packages the host installs on the keyboard. Pieces go into `<name>.tmp`, which is opened as a
+//! package to check it, then renamed into place; the director and widget host pick it up as usual.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::{Context, Result};
-use glassdeck_package::{EXTENSION, MODULE_EXTENSION, check_file_name};
+use glassdeck_package::{Package, check_file_name};
 use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES, Message, PutFile};
 
 use crate::director::{SharedDirector, lock};
@@ -62,9 +62,7 @@ fn show(widgets: &Sender<Input>, input: Input) {
 }
 
 pub struct Folders {
-    pub backgrounds: PathBuf,
-    pub modules: PathBuf,
-    pub profile: PathBuf,
+    pub packages: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -135,12 +133,8 @@ fn step(phase: Phase, put: &PutFile) -> (Phase, Vec<Effect>) {
 }
 
 fn check_name(target: &FileTarget) -> Result<(), String> {
-    let (name, extension) = match target {
-        FileTarget::Background(name) => (name, EXTENSION),
-        FileTarget::Module(name) => (name, MODULE_EXTENSION),
-        FileTarget::Profile => return Ok(()),
-    };
-    check_file_name(name, extension).map_err(|e| format!("{e:#}"))
+    let FileTarget::Package(name) = target;
+    check_file_name(name).map(drop).map_err(|e| format!("{e:#}"))
 }
 
 /// One connection's uploads.
@@ -208,10 +202,15 @@ impl<'a> Uploads<'a> {
             Effect::Install => {
                 let (file, path) = self.file.take().context("no file is open")?;
                 let place = self.place(&put.target);
-                let installed = file.sync_all().and_then(|()| {
+                let checked = file.sync_all().context("writing it out").and_then(|()| {
                     drop(file);
-                    fs::rename(&path, &place)
+                    check_package(&path, &put.target)
                 });
+                if let Err(e) = checked {
+                    remove_unfinished(&path);
+                    return Err(e);
+                }
+                let installed = fs::rename(&path, &place);
                 if let Err(e) = installed {
                     remove_unfinished(&path);
                     return Err(e).with_context(|| format!("installing {}", place.display()));
@@ -225,12 +224,18 @@ impl<'a> Uploads<'a> {
     }
 
     fn place(&self, target: &FileTarget) -> PathBuf {
-        match target {
-            FileTarget::Background(name) => self.folders.backgrounds.join(name),
-            FileTarget::Module(name) => self.folders.modules.join(name),
-            FileTarget::Profile => self.folders.profile.clone(),
-        }
+        let FileTarget::Package(name) = target;
+        self.folders.packages.join(name)
     }
+}
+
+/// A complete upload opens as a package whose id is its file name, before it replaces anything.
+fn check_package(path: &Path, target: &FileTarget) -> Result<()> {
+    let FileTarget::Package(name) = target;
+    let package = Package::open(path)?;
+    let expected = check_file_name(name)?;
+    anyhow::ensure!(*package.id() == expected, "{name} holds the package {}", package.id());
+    Ok(())
 }
 
 fn refused(put: &PutFile, reason: String) -> Message {
@@ -256,47 +261,49 @@ mod tests {
     use super::*;
 
     fn piece(name: &str, offset: u64, len: usize, total: u64) -> PutFile {
-        PutFile { target: FileTarget::Module(name.into()), offset, total, data: vec![0; len] }
+        PutFile { target: FileTarget::Package(name.into()), offset, total, data: vec![0; len] }
     }
 
     fn receiving(name: &str, written: u64, total: u64) -> Phase {
-        Phase::Receiving { target: FileTarget::Module(name.into()), written, total }
+        Phase::Receiving { target: FileTarget::Package(name.into()), written, total }
     }
 
     fn refusing(reason: &str) -> Phase {
         Phase::Refusing { reason: reason.into() }
     }
 
+    const BAD_NAME: &str = "\"../a.b.deck\" is not <id>.deck: id \"../a.b\" is not lowercase reverse-DNS, like dev.glassdeck.clock";
+
     #[test]
     fn walks_the_whole_transition_table() {
-        let out_of_order = "pieces of module a.deckmod arrived out of order";
+        let out_of_order = "pieces of package a.b.deck arrived out of order";
         let table = [
-            (Phase::Idle, piece("a.deckmod", 0, 4, 10), receiving("a.deckmod", 4, 10), vec![Create, Append]),
-            (Phase::Idle, piece("a.deckmod", 0, 10, 10), Phase::Idle, vec![Create, Append, Install]),
-            (Phase::Idle, piece("a.deckmod", 0, 0, 0), Phase::Idle, vec![Create, Append, Install]),
-            (Phase::Idle, piece("../a.deckmod", 0, 4, 10), refusing("\"../a.deckmod\" is not a plain file name"), vec![]),
-            (Phase::Idle, piece("a.deckbg", 0, 4, 10), refusing("\"a.deckbg\" does not end in .deckmod"), vec![]),
-            (Phase::Idle, piece("a.deckmod", 4, 4, 10), refusing("a piece at byte 4 arrived with no start"), vec![]),
+            (Phase::Idle, piece("a.b.deck", 0, 4, 10), receiving("a.b.deck", 4, 10), vec![Create, Append]),
+            (Phase::Idle, piece("a.b.deck", 0, 10, 10), Phase::Idle, vec![Create, Append, Install]),
+            (Phase::Idle, piece("a.b.deck", 0, 0, 0), Phase::Idle, vec![Create, Append, Install]),
+            (Phase::Idle, piece("../a.b.deck", 0, 4, 10), refusing(BAD_NAME), vec![]),
+            (Phase::Idle, piece("a.b.deckbg", 0, 4, 10), refusing("\"a.b.deckbg\" does not end in .deck"), vec![]),
+            (Phase::Idle, piece("a.b.deck", 4, 4, 10), refusing("a piece at byte 4 arrived with no start"), vec![]),
             (
                 Phase::Idle,
-                piece("a.deckmod", 4, 6, 10),
+                piece("a.b.deck", 4, 6, 10),
                 Phase::Idle,
                 vec![Refuse("a piece at byte 4 arrived with no start".into())],
             ),
-            (receiving("a.deckmod", 4, 10), piece("a.deckmod", 4, 4, 10), receiving("a.deckmod", 8, 10), vec![Append]),
-            (receiving("a.deckmod", 4, 10), piece("a.deckmod", 4, 6, 10), Phase::Idle, vec![Append, Install]),
+            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 4, 4, 10), receiving("a.b.deck", 8, 10), vec![Append]),
+            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 4, 6, 10), Phase::Idle, vec![Append, Install]),
             (
-                receiving("a.deckmod", 4, 10),
-                piece("a.deckmod", 4, 8, 10),
+                receiving("a.b.deck", 4, 10),
+                piece("a.b.deck", 4, 8, 10),
                 Phase::Idle,
                 vec![Append, Discard, Refuse("got 12 bytes of 10".into())],
             ),
-            (receiving("a.deckmod", 4, 10), piece("a.deckmod", 6, 2, 10), refusing(out_of_order), vec![Discard]),
-            (receiving("a.deckmod", 4, 10), piece("b.deckmod", 4, 2, 10), refusing(out_of_order), vec![Discard]),
-            (receiving("a.deckmod", 4, 10), piece("b.deckmod", 0, 2, 10), receiving("b.deckmod", 2, 10), vec![Discard, Create, Append]),
-            (refusing("full"), piece("a.deckmod", 4, 2, 10), refusing("full"), vec![]),
-            (refusing("full"), piece("a.deckmod", 4, 6, 10), Phase::Idle, vec![Refuse("full".into())]),
-            (refusing("full"), piece("a.deckmod", 0, 2, 10), receiving("a.deckmod", 2, 10), vec![Create, Append]),
+            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 6, 2, 10), refusing(out_of_order), vec![Discard]),
+            (receiving("a.b.deck", 4, 10), piece("c.d.deck", 4, 2, 10), refusing(out_of_order), vec![Discard]),
+            (receiving("a.b.deck", 4, 10), piece("c.d.deck", 0, 2, 10), receiving("c.d.deck", 2, 10), vec![Discard, Create, Append]),
+            (refusing("full"), piece("a.b.deck", 4, 2, 10), refusing("full"), vec![]),
+            (refusing("full"), piece("a.b.deck", 4, 6, 10), Phase::Idle, vec![Refuse("full".into())]),
+            (refusing("full"), piece("a.b.deck", 0, 2, 10), receiving("a.b.deck", 2, 10), vec![Create, Append]),
         ];
         for (from, put, phase, effects) in table {
             assert_eq!(step(from.clone(), &put), (phase, effects), "from {from:?} on {put:?}");
@@ -304,33 +311,27 @@ mod tests {
     }
 
     #[test]
-    fn only_plain_names_with_the_right_extension() {
-        assert!(check_name(&FileTarget::Background("we-1.deckbg".into())).is_ok());
-        assert!(check_name(&FileTarget::Profile).is_ok());
-        for bad in ["", ".deckbg", "a/b.deckbg", "a\\b.deckbg", "..", "c:a.deckbg", "a.deckbg.tmp", "a.mp4"] {
-            assert!(check_name(&FileTarget::Background(bad.into())).is_err(), "{bad:?}");
+    fn only_package_ids_with_the_deck_extension() {
+        assert!(check_name(&FileTarget::Package("wallpaper-engine.1.deck".into())).is_ok());
+        for bad in ["", ".deck", "a/b.c.deck", "a\\b.c.deck", "..", "c:a.b.deck", "a.b.deck.tmp", "a.b.mp4", "nodot.deck"] {
+            assert!(check_name(&FileTarget::Package(bad.into())).is_err(), "{bad:?}");
         }
     }
 
     #[test]
-    fn installs_a_file_sent_in_pieces_and_cleans_up_an_abandoned_one() {
+    fn a_complete_upload_must_open_as_its_package_and_an_abandoned_one_is_removed() {
         let root = std::env::temp_dir().join(format!("glassdeck-put-{}", std::process::id()));
-        let folders = Folders { backgrounds: root.join("bg"), modules: root.join("mods"), profile: root.join("profile.json") };
+        let folders = Folders { packages: root.join("packages") };
         let mut uploads = Uploads::new(&folders);
-        let bytes = b"{\"format\":1,\"widgets\":[]}".to_vec();
-        let (first, rest) = bytes.split_at(10);
-        let total = bytes.len() as u64;
-        assert_eq!(uploads.put(&PutFile { target: FileTarget::Profile, offset: 0, total, data: first.to_vec() }), None);
-        let answer = uploads.put(&PutFile { target: FileTarget::Profile, offset: 10, total, data: rest.to_vec() });
-        assert_eq!(answer, Some(Message::PutDone { target: FileTarget::Profile }));
-        assert_eq!(fs::read(&folders.profile).unwrap(), bytes);
+        let target = FileTarget::Package("a.b.deck".into());
+        let answer = uploads.put(&PutFile { target: target.clone(), offset: 0, total: 4, data: b"junk".to_vec() });
+        assert!(matches!(answer, Some(Message::PutRefused { .. })), "{answer:?}");
+        assert!(!folders.packages.join("a.b.deck").exists());
 
-        let module = FileTarget::Module("a.deckmod".into());
-        assert_eq!(uploads.put(&PutFile { target: module, offset: 0, total: 10, data: vec![1; 4] }), None);
-        assert!(folders.modules.join("a.deckmod.tmp").exists());
+        assert_eq!(uploads.put(&PutFile { target, offset: 0, total: 10, data: vec![1; 4] }), None);
+        assert!(folders.packages.join("a.b.deck.tmp").exists());
         uploads.abandon();
-        assert!(!folders.modules.join("a.deckmod.tmp").exists());
-        assert!(!folders.modules.join("a.deckmod").exists());
+        assert!(!folders.packages.join("a.b.deck.tmp").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -15,7 +15,8 @@ use crate::platform::{FallbackCanvas, Registrar};
 use crate::screen::{Effect, Event, Screen, Selection, step};
 
 /// Lives in the background folder; background names can't start with a dot, so it never collides with one.
-const RECENT_FILE: &str = ".recent";
+/// The keyboard's own record of the chosen background, in its state folder
+const RECENT_FILE: &str = "background";
 
 pub type SharedDirector = Arc<Mutex<Director>>;
 
@@ -41,16 +42,19 @@ pub struct Director {
     background_data: Option<Vec<u8>>,
     /// Counts starts, so a report from a background or canvas that was since replaced is ignored.
     generation: u64,
-    backgrounds: PathBuf,
+    packages: PathBuf,
+    /// Where the keyboard keeps its own state: the chosen background, here
+    state: PathBuf,
     registrar: Registrar,
     mailbox: Arc<Mailbox>,
     stopped: Sender<Stopped>,
 }
 
 impl Director {
-    pub fn start(backgrounds: PathBuf, registrar: Registrar, mailbox: Arc<Mailbox>) -> Result<SharedDirector> {
-        fs::create_dir_all(&backgrounds).with_context(|| format!("creating the background folder {}", backgrounds.display()))?;
-        let remembered = read_recent(&backgrounds).unwrap_or_else(|e| {
+    pub fn start(packages: PathBuf, state: PathBuf, registrar: Registrar, mailbox: Arc<Mailbox>) -> Result<SharedDirector> {
+        fs::create_dir_all(&packages).with_context(|| format!("creating the packages folder {}", packages.display()))?;
+        fs::create_dir_all(&state).with_context(|| format!("creating the state folder {}", state.display()))?;
+        let remembered = read_recent(&state).unwrap_or_else(|e| {
             eprintln!("error: forgetting the remembered background: {e:#}");
             None
         });
@@ -62,7 +66,8 @@ impl Director {
             fallback: None,
             background_data: None,
             generation: 0,
-            backgrounds,
+            packages,
+            state,
             registrar,
             mailbox,
             stopped,
@@ -86,15 +91,15 @@ impl Director {
         self.apply(effects)
     }
 
-    /// A background chosen from the host: the built-in canvas, or a file already in the background folder.
+    /// A background chosen from the host: the built-in canvas, or a package already in the packages folder.
     pub fn select(&mut self, name: &str) -> Result<()> {
         let selection = Selection::parse(name)?;
         let Selection::File(background) = selection else {
             println!("Background selected: the built-in canvas");
             return self.handle(Event::BackgroundSelected(Selection::BuiltIn));
         };
-        let path = self.backgrounds.join(background.as_str());
-        ensure!(path.is_file(), "{} is not in the background folder {}", background, self.backgrounds.display());
+        let path = self.packages.join(background.file_name());
+        ensure!(path.is_file(), "{} is not in the packages folder {}", background, self.packages.display());
         println!("Background selected: {background}");
         self.background_data = None;
         self.handle(Event::BackgroundSelected(Selection::File(background)))
@@ -152,11 +157,11 @@ impl Director {
                     Some(background) => background.stop(),
                     None => bail!("asked to stop a background while none was running"),
                 },
-                Effect::Remember(selection) => write_recent(&self.backgrounds, &selection)?,
+                Effect::Remember(selection) => write_recent(&self.state, &selection)?,
                 Effect::Start(background) => {
                     let report = self.report_for(Runner::Background);
                     match LocalBackground::start(
-                        &self.backgrounds.join(background.as_str()),
+                        &self.packages.join(background.file_name()),
                         self.registrar.clone(),
                         Arc::clone(&self.mailbox),
                         report,
@@ -201,16 +206,16 @@ pub fn lock(director: &SharedDirector) -> std::sync::MutexGuard<'_, Director> {
     director.lock().expect("director poisoned")
 }
 
-fn read_recent(backgrounds: &Path) -> Result<Option<Selection>> {
-    match fs::read_to_string(backgrounds.join(RECENT_FILE)) {
+fn read_recent(state: &Path) -> Result<Option<Selection>> {
+    match fs::read_to_string(state.join(RECENT_FILE)) {
         Ok(text) => Selection::parse(text.trim()).map(Some),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("reading the remembered background"),
     }
 }
 
-fn write_recent(backgrounds: &Path, selection: &Selection) -> Result<()> {
-    let staging = backgrounds.join(format!("{RECENT_FILE}.tmp"));
+fn write_recent(state: &Path, selection: &Selection) -> Result<()> {
+    let staging = state.join(format!("{RECENT_FILE}.tmp"));
     fs::write(&staging, selection.as_str()).context("remembering the background")?;
-    fs::rename(&staging, backgrounds.join(RECENT_FILE)).context("remembering the background")
+    fs::rename(&staging, state.join(RECENT_FILE)).context("remembering the background")
 }

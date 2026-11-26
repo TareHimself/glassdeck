@@ -1,0 +1,12 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
+  "id": "dev.glassdeck.cpu-meter",
+  "title": "CPU meter",
+  "version": "1.0.0",
+  "type": "widget",
+  "details": {
+    "size": { "w": 320, "h": 120 },
+    "min": { "w": 200, "h": 96 },
+    "max": { "w": 640, "h": 256 }
+  }
+}

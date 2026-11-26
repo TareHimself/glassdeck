@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
-use glassdeck_package::{Background, Entry};
+use glassdeck_package::{Package, Entry};
 use glassdeck_proto::unix_micros;
 use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -62,7 +62,7 @@ pub fn helper_process_exit_code() -> Option<i32> {
 pub struct WebSource {
     url: CString,
     init_script: CString,
-    background: Option<Arc<Background>>,
+    background: Option<Arc<Package>>,
     format: VideoFormat,
     settings: EncoderSettings,
     duration: Option<Duration>,
@@ -90,7 +90,7 @@ impl WebSource {
     }
 
     /// Serves `background://wallpaper/<entry>` from the background while the page runs.
-    pub fn with_background(self, background: Arc<Background>) -> Self {
+    pub fn with_background(self, background: Arc<Package>) -> Self {
         Self { background: Some(background), ..self }
     }
 }
@@ -266,7 +266,7 @@ impl FrameSink {
 }
 
 extern "C" fn background_lookup(user: *mut c_void, path: *const c_char, offset: *mut u64, len: *mut u64, mime: *mut c_char, mime_cap: u32) -> i32 {
-    let background = unsafe { &*(user as *const Background) };
+    let background = unsafe { &*(user as *const Package) };
     let Ok(path) = unsafe { CStr::from_ptr(path) }.to_str() else { return 1 };
     let Some(entry) = background.entry(path) else {
         eprintln!("background: the page asked for {path:?}, which the background does not hold");
@@ -284,7 +284,7 @@ extern "C" fn background_lookup(user: *mut c_void, path: *const c_char, offset: 
 }
 
 extern "C" fn background_read(user: *mut c_void, offset: u64, len: u64, at: u64, buf: *mut c_void, buf_len: u32) -> i64 {
-    let background = unsafe { &*(user as *const Background) };
+    let background = unsafe { &*(user as *const Package) };
     let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_len as usize) };
     match background.read_range(Entry { offset, len }, at, buf) {
         Ok(n) => n as i64,

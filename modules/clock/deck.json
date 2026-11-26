@@ -1,0 +1,12 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
+  "id": "dev.glassdeck.clock",
+  "title": "Clock",
+  "version": "1.0.0",
+  "type": "widget",
+  "details": {
+    "size": { "w": 320, "h": 160 },
+    "min": { "w": 160, "h": 80 },
+    "max": { "w": 640, "h": 256 }
+  }
+}

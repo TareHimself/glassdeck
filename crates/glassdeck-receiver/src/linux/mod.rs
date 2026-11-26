@@ -15,9 +15,8 @@ pub use canvas::{FallbackCanvas, CanvasBackground};
 pub use web::WebBackground;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";
-pub const DEFAULT_BACKGROUNDS: &str = "/var/lib/glassdeck/backgrounds";
-pub const DEFAULT_MODULES: &str = "/var/lib/glassdeck/modules";
-pub const DEFAULT_PROFILE: &str = "/var/lib/glassdeck/profile.json";
+pub const DEFAULT_PACKAGES: &str = "/var/lib/glassdeck/packages";
+pub const DEFAULT_STATE: &str = "/var/lib/glassdeck/state";
 
 /// What the compositor shows: our own decoder's output, or a buffer from a renderer on the keyboard.
 pub enum Picture {

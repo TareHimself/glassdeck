@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Glassdeck package source (deck.json)",
+  "description": "The hand-written part of a package's manifest; glassdeck pack fills in the rest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "version", "type"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": {
+      "description": "Lowercase reverse-DNS, like dev.glassdeck.clock; also the file name, <id>.deck",
+      "type": "string",
+      "pattern": "^[a-z0-9-]+(\.[a-z0-9-]+)+$"
+    },
+    "title": { "description": "Shown to people", "type": "string" },
+    "version": { "description": "The package's own version, major.minor.patch", "type": "string", "pattern": "^\d+\.\d+\.\d+$" },
+    "type": { "description": "background (with canvas.slang) or widget", "enum": ["background", "widget"] },
+    "details": { "$ref": "#/$defs/widget", "description": "A widget's sizes; a canvas has none, packing works them out" }
+  },
+  "if": { "properties": { "type": { "const": "widget" } } },
+  "then": { "required": ["details"] },
+  "else": { "not": { "required": ["details"] } },
+  "$defs": {
+    "widget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size"],
+      "properties": {
+        "size": { "$ref": "#/$defs/size", "description": "Default size in panel pixels" },
+        "min": { "$ref": "#/$defs/size", "description": "Smallest size; give min and max together, or neither for a fixed size" },
+        "max": { "$ref": "#/$defs/size", "description": "Largest size; give min and max together, or neither for a fixed size" }
+      },
+      "dependentRequired": { "min": ["max"], "max": ["min"] }
+    },
+    "size": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["w", "h"],
+      "properties": {
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

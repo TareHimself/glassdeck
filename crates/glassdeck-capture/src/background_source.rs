@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use glassdeck_package::{Content, Background, PANEL};
+use glassdeck_package::{Content, Kind, Package, PANEL};
 use glassdeck_proto::Codec;
 
 use crate::pipeline::{EncoderSettings, Source};
@@ -20,16 +20,17 @@ pub struct WebEncoding {
 }
 
 /// A video background streams its MP4 entry in place; a web background renders through CEF from `background://`.
-pub fn open(background: Background, looping: bool, web: WebEncoding) -> Result<Source> {
+pub fn open(background: Package, looping: bool, web: WebEncoding) -> Result<Source> {
     let background = Arc::new(background);
-    println!("{} ({})", background.manifest().title, background.path().display());
-    match background.manifest().content.clone() {
-        Content::Video { file, .. } => {
+    println!("{} ({})", background.manifest().title, background.id());
+    match background.manifest().kind.clone() {
+        Kind::Widget(_) => bail!("{} is a widget, not a background", background.id()),
+        Kind::Background(Content::Video { file, .. }) => {
             let entry = background.entry(&file).with_context(|| format!("the background has no {file}"))?;
             Ok(Source::Encoded(Box::new(FileSource::open(Media::BackgroundEntry { background, entry }, looping)?)))
         }
-        Content::Canvas { .. } => bail!("{} is a canvas, which the keyboard draws itself; it can't be streamed", background.manifest().title),
-        Content::Web { entry, properties } => {
+        Kind::Background(Content::Canvas(_)) => bail!("{} is a canvas, which the keyboard draws itself; it can't be streamed", background.manifest().title),
+        Kind::Background(Content::Web { entry, properties }) => {
             let settings = EncoderSettings {
                 width: PANEL.0 as u32,
                 height: PANEL.1 as u32,

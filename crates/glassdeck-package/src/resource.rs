@@ -5,7 +5,7 @@ use std::fmt;
 
 use anyhow::{Result, ensure};
 
-use crate::module::ASSETS_FOLDER;
+use crate::ASSETS_FOLDER;
 
 /// Which side a resource ships to; the kind picks its folder under `assets/`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

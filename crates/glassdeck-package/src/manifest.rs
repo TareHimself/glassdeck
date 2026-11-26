@@ -1,3 +1,5 @@
+//! `manifest.json`: what every package says about itself, with its type's own fields under `details`.
+
 use std::fmt;
 
 use anyhow::{Result, bail, ensure};
@@ -5,31 +7,36 @@ use glassdeck_proto::Codec;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{FORMAT_VERSION, PANEL, check_name};
+use crate::canvas::Canvas;
+use crate::{FORMAT_VERSION, KEYBOARD_SCRIPT, PANEL, SHADER, check_name};
 
+/// serde can't refuse unknown fields beside a flattened enum, so a misspelt optional field is ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub format: u32,
+    pub id: PackageId,
     pub title: String,
+    pub version: Version,
     pub origin: Origin,
-    pub content: Content,
     /// Entry name, such as `preview.jpg`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    #[serde(flatten)]
+    pub kind: Kind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Origin {
-    WallpaperEngine { workshop_id: String },
-    /// Made by `glassdeck convert` from the file or folder of this name
-    Converted { from: String },
-    /// Made by glassdeck pack from the canvas folder of this name; sources is source_digest of what it read
-    Packed { from: String, sources: String },
+/// What the package is, which decides the layer it draws on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "details", rename_all = "snake_case")]
+pub enum Kind {
+    /// Fills the panel behind everything
+    Background(Content),
+    /// Sits in the widget area
+    Widget(WidgetSize),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "content", rename_all = "snake_case")]
 pub enum Content {
     Video {
         file: String,
@@ -42,32 +49,202 @@ pub enum Content {
         /// Wallpaper Engine's user properties with their defaults, as `applyUserProperties` receives them
         properties: Map<String, Value>,
     },
-    /// Drawn on the keyboard's GPU by glassdeck-gpu, from a shader written in the glassdeck Slang API
-    Canvas {
-        /// The plan's entry, canvas/plan.json, which names the shader and the script
-        plan: String,
-    },
+    /// Drawn on the keyboard's GPU by glassdeck-gpu, from `shader.essl` and an optional `keyboard.luau`
+    Canvas(Canvas),
+}
+
+/// Lowercase reverse-DNS, such as `dev.glassdeck.clock`; also the package's file name, `<id>.deck`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PackageId(String);
+
+impl PackageId {
+    pub fn parse(text: &str) -> Result<Self> {
+        let part_ok = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        let parts: Vec<&str> = text.split('.').collect();
+        ensure!(parts.len() >= 2 && parts.iter().all(|p| part_ok(p)), "id {text:?} is not lowercase reverse-DNS, like dev.glassdeck.clock");
+        Ok(Self(text.to_owned()))
+    }
+
+    /// An id under `prefix` made from any name: lowercase, with runs of anything else as one `-`.
+    pub fn from_name(prefix: &str, name: &str) -> Result<Self> {
+        let mut slug = String::new();
+        for c in name.chars() {
+            match c.to_ascii_lowercase() {
+                c @ ('a'..='z' | '0'..='9') => slug.push(c),
+                _ if !slug.is_empty() && !slug.ends_with('-') => slug.push('-'),
+                _ => {}
+            }
+        }
+        Self::parse(&format!("{prefix}.{}", slug.trim_end_matches('-')))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Where the package lives in a packages folder.
+    pub fn file_name(&self) -> String {
+        format!("{}.{}", self.0, crate::EXTENSION)
+    }
+}
+
+impl TryFrom<String> for PackageId {
+    type Error = anyhow::Error;
+    fn try_from(text: String) -> Result<Self> {
+        Self::parse(&text)
+    }
+}
+
+impl From<PackageId> for String {
+    fn from(id: PackageId) -> Self {
+        id.0
+    }
+}
+
+impl fmt::Display for PackageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// `major.minor.patch`
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Version(String);
+
+impl Version {
+    pub fn parse(text: &str) -> Result<Self> {
+        let parts: Vec<&str> = text.split('.').collect();
+        let ok = parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        ensure!(ok, "version {text:?} is not major.minor.patch, like 1.0.0");
+        Ok(Self(text.to_owned()))
+    }
+}
+
+impl TryFrom<String> for Version {
+    type Error = anyhow::Error;
+    fn try_from(text: String) -> Result<Self> {
+        Self::parse(&text)
+    }
+}
+
+impl From<Version> for String {
+    fn from(version: Version) -> Self {
+        version.0
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Origin {
+    WallpaperEngine { workshop_id: String },
+    /// Made by `glassdeck convert` from the file or folder of this name
+    Converted { from: String },
+    /// Made by `glassdeck pack` from the folder of this name; `sources` is `source_digest` of what it read
+    Packed { from: String, sources: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Size {
+    pub w: u32,
+    pub h: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resize {
+    Fixed,
+    Between { min: Size, max: Size },
+}
+
+impl Resize {
+    pub fn allows(self, default: Size, size: Size) -> bool {
+        match self {
+            Resize::Fixed => size == default,
+            Resize::Between { min, max } => (min.w..=max.w).contains(&size.w) && (min.h..=max.h).contains(&size.h),
+        }
+    }
+}
+
+/// A widget's default size and how far it may be resized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawWidgetSize", into = "RawWidgetSize")]
+pub struct WidgetSize {
+    pub size: Size,
+    pub resize: Resize,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWidgetSize {
+    size: Size,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min: Option<Size>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max: Option<Size>,
+}
+
+impl TryFrom<RawWidgetSize> for WidgetSize {
+    type Error = anyhow::Error;
+    fn try_from(raw: RawWidgetSize) -> Result<Self> {
+        ensure!(raw.size.w > 0 && raw.size.h > 0, "size must not be zero");
+        let resize = match (raw.min, raw.max) {
+            (None, None) => Resize::Fixed,
+            (Some(min), Some(max)) => Resize::Between { min, max },
+            _ => bail!("give both min and max, or neither for a fixed size"),
+        };
+        ensure!(resize.allows(raw.size, raw.size), "size {}x{} is outside min and max", raw.size.w, raw.size.h);
+        Ok(Self { size: raw.size, resize })
+    }
+}
+
+impl From<WidgetSize> for RawWidgetSize {
+    fn from(widget: WidgetSize) -> Self {
+        let (min, max) = match widget.resize {
+            Resize::Fixed => (None, None),
+            Resize::Between { min, max } => (Some(min), Some(max)),
+        };
+        Self { size: widget.size, min, max }
+    }
 }
 
 impl Manifest {
-    /// Checks the format, the video spec, and that every entry the manifest names exists.
+    /// Checks the format, the type's own rules, and that every entry the package needs is there.
     pub fn validate(&self, has_entry: impl Fn(&str) -> bool) -> Result<()> {
-        ensure!(self.format == FORMAT_VERSION, "background format {} is not the {FORMAT_VERSION} this build reads", self.format);
-        let named = match &self.content {
-            Content::Video { file, format } => {
+        ensure!(self.format == FORMAT_VERSION, "package format {} is not the {FORMAT_VERSION} this build reads", self.format);
+        let needed: Vec<&str> = match &self.kind {
+            Kind::Background(Content::Video { file, format }) => {
                 if (format.width, format.height) != PANEL {
                     bail!("{}", SpecMismatch::Size { width: format.width, height: format.height });
                 }
-                file
+                vec![file]
             }
-            Content::Web { entry, .. } => entry,
-            Content::Canvas { plan } => plan,
+            Kind::Background(Content::Web { entry, .. }) => vec![entry],
+            Kind::Background(Content::Canvas(canvas)) => {
+                canvas.validate()?;
+                vec![SHADER]
+            }
+            Kind::Widget(_) => vec![KEYBOARD_SCRIPT],
         };
-        for name in std::iter::once(named).chain(&self.preview) {
+        for name in needed.into_iter().chain(self.preview.as_deref()) {
             check_name(name)?;
-            ensure!(has_entry(name), "the manifest names {name:?}, which the background does not hold");
+            ensure!(has_entry(name), "{} needs {name:?}, which it does not hold", self.id);
         }
         Ok(())
+    }
+
+    pub fn widget(&self) -> Option<&WidgetSize> {
+        match &self.kind {
+            Kind::Widget(size) => Some(size),
+            Kind::Background(_) => None,
+        }
     }
 }
 
@@ -178,20 +355,45 @@ mod tests {
     }
 
     #[test]
-    fn video_content_reads_as_one_flat_variant() {
-        let text = r#"{"format":2,"title":"t","origin":{"kind":"wallpaper_engine","workshop_id":"1"},
-            "content":{"kind":"video","file":"video.mp4","codec":"hevc","width":1920,"height":1080,
+    fn the_type_is_written_once_and_details_follow_it() {
+        let text = r#"{"format":4,"id":"wallpaper-engine.1","title":"t","version":"1.0.0",
+            "origin":{"kind":"wallpaper_engine","workshop_id":"1"},
+            "type":"background","details":{"content":"video","file":"video.mp4","codec":"hevc","width":1920,"height":1080,
             "frame_rate":{"numerator":24,"denominator":1}}}"#;
         let manifest: Manifest = serde_json::from_str(text).unwrap();
-        let Content::Video { file, format } = &manifest.content else { panic!("not video") };
+        let Kind::Background(Content::Video { file, format }) = &manifest.kind else { panic!("not video") };
         assert_eq!((file.as_str(), format.codec, format.frame_rate.numerator), ("video.mp4", Codec::Hevc, 24));
         assert_eq!(serde_json::from_str::<Manifest>(&serde_json::to_string(&manifest).unwrap()).unwrap(), manifest);
+
+        let widget_with_video = text.replace(r#""type":"background""#, r#""type":"widget""#);
+        assert!(serde_json::from_str::<Manifest>(&widget_with_video).is_err());
     }
 
     #[test]
-    fn web_content_without_properties_is_refused() {
-        let text = r#"{"format":2,"title":"t","origin":{"kind":"wallpaper_engine","workshop_id":"1"},
-            "content":{"kind":"web","entry":"web/index.html"}}"#;
-        assert!(serde_json::from_str::<Manifest>(text).is_err());
+    fn widget_sizes_are_checked_when_read() {
+        let widget = |details: &str| {
+            serde_json::from_str::<Manifest>(&format!(
+                r#"{{"format":4,"id":"dev.glassdeck.clock","title":"Clock","version":"1.0.0",
+                "origin":{{"kind":"packed","from":"clock","sources":"x"}},"type":"widget","details":{details}}}"#
+            ))
+        };
+        let read = widget(r#"{"size":{"w":240,"h":120},"min":{"w":160,"h":80},"max":{"w":480,"h":240}}"#).unwrap();
+        assert_eq!(read.widget().unwrap().resize, Resize::Between { min: Size { w: 160, h: 80 }, max: Size { w: 480, h: 240 } });
+        assert!(widget(r#"{"size":{"w":8,"h":8},"min":{"w":8,"h":8}}"#).is_err());
+        assert!(widget(r#"{"size":{"w":800,"h":8},"min":{"w":8,"h":8},"max":{"w":16,"h":16}}"#).is_err());
+        assert!(widget(r#"{"size":{"w":0,"h":8}}"#).is_err());
+    }
+
+    #[test]
+    fn ids_and_versions_are_checked_when_read() {
+        assert!(PackageId::parse("dev.glassdeck.clock").is_ok());
+        assert!(PackageId::parse("wallpaper-engine.1184945377").is_ok());
+        for bad in ["clock", "Dev.Glassdeck", "a..b", "a.b/c", "a b.c"] {
+            assert!(PackageId::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(PackageId::from_name("converted", "Late Night (2) v2!").unwrap().as_str(), "converted.late-night-2-v2");
+        assert!(PackageId::from_name("converted", "!!!").is_err());
+        assert!(Version::parse("1.0.0").is_ok());
+        assert!(Version::parse("1.0").is_err());
     }
 }

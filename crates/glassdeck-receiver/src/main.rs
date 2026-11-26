@@ -30,7 +30,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use fontdue::{Font, FontSettings};
-use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, step, unix_micros};
+use glassdeck_luau::placement::{Placement, PlacedWidget};
+use glassdeck_package::PackageId;
+use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
 
 use director::{Director, SharedDirector, lock};
 use glassdeck_layout::Variant;
@@ -60,15 +62,12 @@ struct Cli {
     /// The keyboard's physical layout, which places the key labels
     #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
     layout: KeyboardLayout,
-    /// Where the keyboard keeps backgrounds it plays with the PC off
-    #[arg(long, default_value = platform::DEFAULT_BACKGROUNDS)]
-    backgrounds: PathBuf,
-    /// Installed widget modules (.deckmod files)
-    #[arg(long, default_value = platform::DEFAULT_MODULES)]
-    modules: PathBuf,
-    /// Which modules go where in the widget area
-    #[arg(long, default_value = platform::DEFAULT_PROFILE)]
-    profile: PathBuf,
+    /// Installed packages (.deck files): backgrounds and widgets
+    #[arg(long, default_value = platform::DEFAULT_PACKAGES)]
+    packages: PathBuf,
+    /// Where the keyboard keeps its own state: the chosen background and the widget layout
+    #[arg(long, default_value = platform::DEFAULT_STATE)]
+    state: PathBuf,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -93,13 +92,14 @@ fn main() -> Result<()> {
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
     let compositor = Compositor::open(labels)?;
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
-    let folders = Folders { backgrounds: cli.backgrounds.clone(), modules: cli.modules.clone(), profile: cli.profile.clone() };
-    let widgets = widgets::start(widgets::Config { modules: cli.modules, profile: cli.profile, font }, Arc::clone(&tiles))?;
+    let folders = Folders { packages: cli.packages.clone() };
+    let config = widgets::Config { packages: cli.packages.clone(), state: cli.state.clone(), font };
+    let widgets = widgets::start(config, Arc::clone(&tiles))?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new(compositor.doorbell()));
-    let director = Director::start(cli.backgrounds, compositor.registrar(), Arc::clone(&mailbox))?;
+    let director = Director::start(cli.packages, cli.state, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders))?;
     compose_loop(&mailbox, &tiles, compositor)
@@ -201,6 +201,10 @@ fn serve(
                 lock(director).handle(Event::StreamEnded)?;
             }
             Action::SelectBackground(name) => report(lock(director).select(name)),
+            Action::SetWidgets(slots) => match placed_widgets(slots) {
+                Ok(layout) => widgets.send(Input::SetWidgets(layout)).context("the widget thread has stopped")?,
+                Err(e) => report(Err(e.context("the host's widget layout"))),
+            },
             Action::BackgroundData(payload) => report(lock(director).background_data(payload.to_vec())),
             Action::ModuleData { instance, payload } => {
                 widgets.send(Input::Data { instance, payload: payload.to_vec() }).context("the widget thread has stopped")?
@@ -216,6 +220,17 @@ fn serve(
         }
     }
     Ok(())
+}
+
+/// A layout from the Link, with each id checked; `widgets` checks sizes against what's installed.
+fn placed_widgets(slots: &[WidgetSlot]) -> Result<Vec<PlacedWidget>> {
+    slots
+        .iter()
+        .map(|slot| {
+            let placement = Placement { x: slot.x.into(), y: slot.y.into(), w: slot.w.into(), h: slot.h.into() };
+            Ok(PlacedWidget { package: PackageId::parse(&slot.package)?, placement })
+        })
+        .collect()
 }
 
 /// Clock replies and file answers come from different threads, so they share the socket through a lock.

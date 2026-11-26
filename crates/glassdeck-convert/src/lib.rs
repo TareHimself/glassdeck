@@ -1,4 +1,4 @@
-//! Turns a video file or a web page folder into a `.deckbg`. Knows nothing about where they came from:
+//! Turns a video file or a web page folder into a background `.deck`. Knows nothing about where they came from:
 //! importers such as the Wallpaper Engine converter call this with their own title and origin.
 
 pub mod video;
@@ -7,7 +7,7 @@ pub mod web_media;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use glassdeck_package::{Background, BackgroundWriter, Content, FORMAT_VERSION, Manifest, Origin, PANEL, VideoFormat};
+use glassdeck_package::{Content, FORMAT_VERSION, Kind, Manifest, Origin, PANEL, Package, PackageId, PackageWriter, Version, VideoFormat};
 use glassdeck_proto::Codec;
 use serde_json::{Map, Value};
 
@@ -18,20 +18,21 @@ const VIDEO_ENTRY: &str = "video.mp4";
 
 /// What a background says about itself.
 pub struct Details {
+    pub id: PackageId,
     pub title: String,
     pub origin: Origin,
     /// An image shown when choosing backgrounds
     pub preview: Option<PathBuf>,
 }
 
-/// Where converted backgrounds go unless told otherwise: `%LOCALAPPDATA%\Glassdeck\backgrounds`.
-pub fn default_backgrounds_dir() -> Result<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
-    Ok(PathBuf::from(local).join("Glassdeck").join("backgrounds"))
+/// Where packages go unless told otherwise: `%APPDATA%\Glassdeck\packages`, glassdeckd's own folder.
+pub fn default_packages_dir() -> Result<PathBuf> {
+    let roaming = std::env::var_os("APPDATA").context("APPDATA is not set")?;
+    Ok(PathBuf::from(roaming).join("Glassdeck").join("packages"))
 }
 
 /// A video goes in as it is when it meets the background spec, and is re-encoded otherwise.
-pub fn video(source: &Path, out: &Path, details: Details, settings: EncodeSettings) -> Result<Background> {
+pub fn video(source: &Path, out: &Path, details: Details, settings: EncodeSettings) -> Result<Package> {
     video::start_media_foundation()?;
     let content = |format| Content::Video { file: VIDEO_ENTRY.into(), format };
     let name = source.file_name().map_or_else(|| source.display().to_string(), |n| n.to_string_lossy().into_owned());
@@ -58,7 +59,7 @@ pub fn video(source: &Path, out: &Path, details: Details, settings: EncodeSettin
 /// The whole folder goes under `web/`, so its relative URLs keep working from `background://`.
 /// `entry` is the page to open, relative to the folder. Media goes through `web_media` first: VP9
 /// where needed, and no sound.
-pub fn web(folder: &Path, entry: &str, properties: Map<String, Value>, out: &Path, details: Details) -> Result<Background> {
+pub fn web(folder: &Path, entry: &str, properties: Map<String, Value>, out: &Path, details: Details) -> Result<Package> {
     let files = folder_files(folder)?;
     let content = Content::Web { entry: format!("{WEB_ROOT}/{}", entry.replace('\\', "/")), properties };
     let converted_dir = out.with_extension("media");
@@ -101,11 +102,22 @@ fn web_sources(folder: &Path, files: &[String], converted_dir: &Path) -> Result<
     Ok(sources)
 }
 
-fn write_background(details: Details, content: Content, out: &Path, add_content: impl FnOnce(&mut BackgroundWriter) -> Result<()>) -> Result<Background> {
+/// Converted backgrounds start at this version; converting again replaces them whole.
+const CONVERTED_VERSION: &str = "1.0.0";
+
+fn write_background(details: Details, content: Content, out: &Path, add_content: impl FnOnce(&mut PackageWriter) -> Result<()>) -> Result<Package> {
     let preview = details.preview.filter(|p| p.is_file());
     let preview_name = preview.as_deref().map(glassdeck_package::preview_name);
-    let manifest = Manifest { format: FORMAT_VERSION, title: details.title, origin: details.origin, content, preview: preview_name.clone() };
-    let mut writer = BackgroundWriter::create(out, manifest)?;
+    let manifest = Manifest {
+        format: FORMAT_VERSION,
+        id: details.id,
+        title: details.title,
+        version: Version::parse(CONVERTED_VERSION)?,
+        origin: details.origin,
+        preview: preview_name.clone(),
+        kind: Kind::Background(content),
+    };
+    let mut writer = PackageWriter::create(out, manifest)?;
     if let (Some(path), Some(name)) = (&preview, &preview_name) {
         writer.add_file(name, path)?;
     }

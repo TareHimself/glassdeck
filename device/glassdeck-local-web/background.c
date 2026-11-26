@@ -131,10 +131,12 @@ gboolean background_web_content(const struct background* d, struct background_we
   if (!json_parser_load_from_data(parser, (const char*)d->map + manifest.offset, (gssize)manifest.len, error)) return FALSE;
   JsonNode* root = json_parser_get_root(parser);
   JsonObject* top = JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : NULL;
-  if (!top || json_object_get_int_member_with_default(top, "format", 0) != BACKGROUND_FORMAT_VERSION)
-    return fail(error, MANIFEST, "not background format %d", BACKGROUND_FORMAT_VERSION);
-  JsonObject* content = json_object_get_object_member(top, "content");
-  const char* kind = content ? json_object_get_string_member_with_default(content, "kind", NULL) : NULL;
+  if (!top || json_object_get_int_member_with_default(top, "format", 0) != PACKAGE_FORMAT_VERSION)
+    return fail(error, MANIFEST, "not package format %d", PACKAGE_FORMAT_VERSION);
+  const char* type = json_object_get_string_member_with_default(top, "type", NULL);
+  if (g_strcmp0(type, "background") != 0) return fail(error, MANIFEST, "a \"%s\" package, not a background", type ? type : "missing");
+  JsonObject* content = json_object_get_object_member(top, "details");
+  const char* kind = content ? json_object_get_string_member_with_default(content, "content", NULL) : NULL;
   if (g_strcmp0(kind, "web") != 0) return fail(error, MANIFEST, "content is \"%s\", not a web page", kind ? kind : "missing");
   const char* entry = json_object_get_string_member_with_default(content, "entry", NULL);
   JsonNode* properties = json_object_get_member(content, "properties");

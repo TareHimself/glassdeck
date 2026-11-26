@@ -1,5 +1,5 @@
-//! `glassdeck pack` for a canvas folder: `canvas.slang` plus optional `keyboard.luau`, `options.luau`
-//! and `host.luau`, into a `.deckbg`.
+//! `glassdeck pack` for a canvas folder: `deck.json`, `canvas.slang`, and optional `keyboard.luau`,
+//! `options.luau` and `host.luau`, into a background `.deck`.
 
 use std::fs;
 use std::path::Path;
@@ -8,17 +8,14 @@ use anyhow::{Context, Result, bail};
 use glassdeck_luau::options::{OptionsScript, Panel};
 use glassdeck_luau_check::{LuauChecker, LuauFile, definitions};
 use glassdeck_package::{
-    Background, BackgroundWriter, Content, FORMAT_VERSION, Manifest, Origin, CANVAS_API, CANVAS_FRAGMENT, CANVAS_HOST, CANVAS_OPTIONS,
-    CANVAS_PLAN, CANVAS_SCRIPT, CanvasPlan, CanvasScripts, canvas_sources,
+    CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
+    SHADER, SourceType, canvas_sources,
 };
 
 use crate::canvas::{FRAGMENT_ENTRY, CanvasShape};
 use crate::{Slang, Source, Target, essl};
 
 pub const CANVAS_SOURCE: &str = "canvas.slang";
-pub const CANVAS_KEYBOARD_SCRIPT: &str = "keyboard.luau";
-pub const CANVAS_OPTIONS_SCRIPT: &str = "options.luau";
-pub const CANVAS_HOST_SCRIPT: &str = "host.luau";
 const API_MODULE: &str = include_str!("../slang/glassdeck.slang");
 /// Where packing writes a canvas's Luau type definitions, inside its folder
 pub const TYPES_FOLDER: &str = ".glassdeck";
@@ -29,12 +26,16 @@ pub fn is_canvas_folder(folder: &Path) -> bool {
     folder.join(CANVAS_SOURCE).is_file()
 }
 
-pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path) -> Result<Background> {
+pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path) -> Result<Package> {
+    let (deck, deck_text) = DeckSource::read(folder)?;
+    if deck.kind != SourceType::Background || deck.details.is_some() {
+        bail!("a canvas's deck.json says \"type\": \"background\" and no details; packing works them out from {CANVAS_SOURCE}");
+    }
     let source_path = folder.join(CANVAS_SOURCE);
     let source = fs::read_to_string(&source_path).with_context(|| format!("reading {}", source_path.display()))?;
-    let keyboard = read_optional(folder, CANVAS_KEYBOARD_SCRIPT)?;
-    let options = read_optional(folder, CANVAS_OPTIONS_SCRIPT)?;
-    let host = read_optional(folder, CANVAS_HOST_SCRIPT)?;
+    let keyboard = read_optional(folder, KEYBOARD_SCRIPT)?;
+    let options = read_optional(folder, OPTIONS_SCRIPT)?;
+    let host = read_optional(folder, HOST_SCRIPT)?;
 
     let shown_path = source_path.to_string_lossy();
     let api = Source { name: "glassdeck", path: "glassdeck.slang", text: API_MODULE };
@@ -54,30 +55,14 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let glsl = slang.compile(&[api, canvas, glue_module], FRAGMENT_ENTRY, Target::Glsl, GLSL_PROFILE)?;
     let fragment = essl::fragment_to_essl(&String::from_utf8(glsl).context("Slang's GLSL isn't UTF-8")?)?;
 
-    let plan = CanvasPlan {
-        api: CANVAS_API,
-        scale: shape.scale,
-        frame_rate: shape.frame_rate,
-        fragment: CANVAS_FRAGMENT.into(),
-        script: keyboard.as_ref().map(|_| CANVAS_SCRIPT.into()),
-        options: options.as_ref().map(|_| CANVAS_OPTIONS.into()),
-        host: host.as_ref().map(|_| CANVAS_HOST.into()),
-        inputs: shape.input_fields(),
-    };
-    plan.validate()?;
-    let title = folder.file_name().and_then(|n| n.to_str()).unwrap_or("canvas").to_owned();
+    let canvas = Canvas { api: CANVAS_API, scale: shape.scale, frame_rate: shape.frame_rate, inputs: shape.input_fields() };
+    canvas.validate()?;
+    let from = folder.file_name().and_then(|n| n.to_str()).unwrap_or("canvas").to_owned();
     let scripts = CanvasScripts { keyboard: keyboard.as_deref(), options: options.as_deref(), host: host.as_deref() };
-    let manifest = Manifest {
-        format: FORMAT_VERSION,
-        title: title.clone(),
-        origin: Origin::Packed { from: title, sources: canvas_sources(API_MODULE, &source, scripts) },
-        content: Content::Canvas { plan: CANVAS_PLAN.into() },
-        preview: None,
-    };
-    let mut writer = BackgroundWriter::create(out, manifest)?;
-    writer.add_bytes(CANVAS_PLAN, &serde_json::to_vec_pretty(&plan)?)?;
-    writer.add_bytes(CANVAS_FRAGMENT, fragment.as_bytes())?;
-    for (entry, text) in [(CANVAS_SCRIPT, &keyboard), (CANVAS_OPTIONS, &options), (CANVAS_HOST, &host)] {
+    let origin = Origin::Packed { from, sources: canvas_sources(&deck_text, API_MODULE, &source, scripts) };
+    let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(canvas))))?;
+    writer.add_bytes(SHADER, fragment.as_bytes())?;
+    for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host)] {
         if let Some(text) = text {
             writer.add_bytes(entry, text.as_bytes())?;
         }
@@ -122,7 +107,7 @@ fn check_scripts(luau: &LuauChecker, types: &Types, keyboard: Option<&str>, opti
     if let Some(keyboard) = keyboard {
         let definitions =
             [LuauFile { name: "canvas.d.luau", text: definitions::CANVAS }, LuauFile { name: "inputs.d.luau", text: &types.inputs }];
-        problems.extend(luau.check(&definitions, LuauFile { name: CANVAS_KEYBOARD_SCRIPT, text: keyboard })?);
+        problems.extend(luau.check(&definitions, LuauFile { name: KEYBOARD_SCRIPT, text: keyboard })?);
     }
     if let Some(options) = options {
         problems.extend(luau.check_options(options, &types.options)?);
@@ -136,11 +121,11 @@ fn check_scripts(luau: &LuauChecker, types: &Types, keyboard: Option<&str>, opti
     Ok(())
 }
 
-/// A widget module's `options.luau` and `host.luau`: run the first pass, write their types into
+/// A widget's `options.luau` and `host.luau`: run the first pass, write their types into
 /// `.glassdeck/`, and type-check both. `keyboard.luau` keeps the widget API's own rules.
-pub fn check_module(luau: &LuauChecker, folder: &Path) -> Result<()> {
-    let options = read_optional(folder, CANVAS_OPTIONS_SCRIPT)?;
-    let host = read_optional(folder, CANVAS_HOST_SCRIPT)?;
+pub fn check_widget(luau: &LuauChecker, folder: &Path) -> Result<()> {
+    let options = read_optional(folder, OPTIONS_SCRIPT)?;
+    let host = read_optional(folder, HOST_SCRIPT)?;
     let panel = match &options {
         Some(options) => OptionsScript::new(options).first_pass()?,
         None => Panel { items: Vec::new() },
@@ -165,7 +150,7 @@ pub fn check_module(luau: &LuauChecker, folder: &Path) -> Result<()> {
         problems.extend(luau.check_host(host, &generated)?);
     }
     if !problems.is_empty() {
-        bail!("the module's scripts don't type-check:\n  {}", problems.join("\n  "));
+        bail!("the widget's scripts don't type-check:\n  {}", problems.join("\n  "));
     }
     Ok(())
 }

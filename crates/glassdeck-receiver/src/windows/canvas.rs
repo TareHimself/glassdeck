@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use glassdeck_package::{Background, CanvasFiles};
+use glassdeck_package::{CanvasFiles, Package};
 use glassdeck_proto::unix_micros;
 use glassdeck_gpu::offscreen::Offscreen;
 use glassdeck_gpu::program::{CanvasProgram, render_size};
@@ -23,7 +23,7 @@ pub struct FallbackCanvas(PreviewCanvas);
 
 impl FallbackCanvas {
     pub fn start(_registrar: Registrar, mailbox: Arc<Mailbox>, stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
-        PreviewCanvas::start("built-in canvas", CanvasFiles::from_bytes(glassdeck_gpu::BUILT_IN)?, mailbox, stopped).map(Self)
+        PreviewCanvas::start("built-in canvas", glassdeck_gpu::built_in()?, mailbox, stopped).map(Self)
     }
 
     pub fn stop(self) {
@@ -31,7 +31,7 @@ impl FallbackCanvas {
     }
 }
 
-/// A canvas background (a `.deckbg` with canvas content).
+/// A canvas background (a background `.deck` with canvas content).
 pub struct CanvasBackground(PreviewCanvas);
 
 impl CanvasBackground {
@@ -42,7 +42,7 @@ impl CanvasBackground {
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         println!("Local background {}: canvas, drawn on this PC", background.display());
-        PreviewCanvas::start("canvas background", CanvasFiles::read(&Background::open(background)?)?, mailbox, stopped).map(Self)
+        PreviewCanvas::start("canvas background", CanvasFiles::read(&Package::open(background)?)?, mailbox, stopped).map(Self)
     }
 
     /// What the canvas's host half sent, for its script.
@@ -94,8 +94,8 @@ impl PreviewCanvas {
 
 /// Draws at the canvas's frame rate until asked to stop; frames where nothing changed aren't sent.
 fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, data: &Receiver<Vec<u8>>) -> Result<()> {
-    let size = render_size(files.plan.scale);
-    let period = Duration::from_secs_f64(1.0 / f64::from(files.plan.frame_rate));
+    let size = render_size(files.canvas.scale);
+    let period = Duration::from_secs_f64(1.0 / f64::from(files.canvas.frame_rate));
     let offscreen = Offscreen::new(size)?;
     let mut canvas = CanvasProgram::new(&offscreen.gl, files)?;
     println!("Preview {label}: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);

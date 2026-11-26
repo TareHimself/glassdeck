@@ -1,10 +1,10 @@
-// A .deckbg read in place: the slice of ZIP glassdeck-package writes (stored entries, no ZIP64), mapped once.
+// A .deck read in place: the slice of ZIP glassdeck-package writes (stored entries, no ZIP64), mapped once.
 #pragma once
 
 #include <glib.h>
 #include <stdint.h>
 
-#define BACKGROUND_FORMAT_VERSION 2
+#define PACKAGE_FORMAT_VERSION 4
 
 struct background_entry {
   uint64_t offset;

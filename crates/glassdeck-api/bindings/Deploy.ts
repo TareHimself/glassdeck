@@ -2,6 +2,6 @@
 
 export type Deploy = { 
 /**
- * A `.deckbg`, a `.deckmod` or a profile, as a path glassdeckd can read
+ * A `.deck`, as a path glassdeckd can read
  */
 path: string, };

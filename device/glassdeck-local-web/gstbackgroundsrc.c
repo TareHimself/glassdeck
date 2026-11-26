@@ -107,7 +107,7 @@ static void gst_background_src_class_init(GstBackgroundSrcClass* klass) {
   object_class->finalize = gst_background_src_finalize;
   gst_element_class_add_static_pad_template(element_class, &src_template);
   gst_element_class_set_static_metadata(element_class, "Glassdeck background source", "Source/File",
-                                        "Reads an entry of a .deckbg in place", "Glassdeck");
+                                        "Reads an entry of a .deck in place", "Glassdeck");
   base_class->start = gst_background_src_start;
   base_class->stop = gst_background_src_stop;
   base_class->is_seekable = gst_background_src_is_seekable;

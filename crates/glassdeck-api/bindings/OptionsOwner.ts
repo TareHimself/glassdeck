@@ -3,4 +3,4 @@
 /**
  * Whose options a view or change is about.
  */
-export type OptionsOwner = { "kind": "background", name: string, } | { "kind": "widget", index: number, module: string, };
+export type OptionsOwner = { "kind": "background", package: string, } | { "kind": "widget", index: number, package: string, };

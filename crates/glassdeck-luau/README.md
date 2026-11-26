@@ -18,14 +18,14 @@ flowchart LR
 | `color` | `color.hex`, `color.rgb`, `color.hsv` |
 | `options` | `options.luau`: `OptionsScript` (`first_pass`, `run`), `Panel`, `Item`, `OptionItem`, `Kind`, `OptionValue`, `Values`, `Resolved` |
 | `Panel::definitions` | Generates the `options.d.luau` that types `current` and `on_options` for the checker |
-| `profile` | The widget list: `Profile`, `Widget`, `Placement`, `WidgetArea`, `GRID`. An instance's number is its place in the list, on both sides |
+| `placement` | Where widgets sit: `WidgetArea`, `Placement`, `PlacedWidget`, `GRID`, and `check_widgets` for the rules a layout must keep. An instance's number is its place in the list, on both sides |
 | Resource handles | `keyboard.resource(name)`, `host.resource(name)` and `live.resource(name)` return an opaque handle: `ResourceRef`, `LiveName`, `resource_of`, `MAX_LIVE_RESOURCE_BYTES` |
 
 `types/` holds the Luau type definitions for the script APIs (`common`, `host`, `keyboard`, `canvas`, `options-api`). glassdeck-luau-check includes them.
 
 ## Used by
 
-glassdeckd, glassdeck-slang, glassdeck-gpu, glassdeck-receiver.
+glassdeckd, glassdeck, glassdeck-slang, glassdeck-gpu, glassdeck-receiver.
 
 ## Platform
 
@@ -37,4 +37,4 @@ Portable. `mlua` builds Luau from source, so no native libraries are needed.
 cargo test -p glassdeck-luau
 ```
 
-Covers the MessagePack round trip, the hang guard, timers, sealing, options, profiles and resource handles. No ignored tests.
+Covers the MessagePack round trip, the hang guard, timers, sealing, options, placement and resource handles. No ignored tests.

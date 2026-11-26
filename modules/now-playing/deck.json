@@ -1,0 +1,12 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
+  "id": "dev.glassdeck.now-playing",
+  "title": "Now playing",
+  "version": "1.0.0",
+  "type": "widget",
+  "details": {
+    "size": { "w": 400, "h": 160 },
+    "min": { "w": 320, "h": 120 },
+    "max": { "w": 640, "h": 240 }
+  }
+}

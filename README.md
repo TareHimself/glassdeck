@@ -12,8 +12,10 @@ Pre-release. Package formats and the protocol are versioned, and a build refuses
 | host | The Windows PC that runs glassdeckd and streams to the keyboard |
 | keyboard | The RK3566 board, running Linux |
 | stream | A named feed, such as `monitor-q27g4zd` |
-| canvas | A Slang `[Canvas]` shader plus optional `keyboard.luau`, `options.luau` and `host.luau`, packed as a `.deckbg` |
-| module | A widget package (`.deckmod`) with a keyboard half and an optional host half |
+| package | A `.deck`: a background or a widget, named by a reverse-DNS id such as `dev.glassdeck.gradient` |
+| canvas | A Slang `[Canvas]` shader plus optional `keyboard.luau`, `options.luau` and `host.luau`, packed as a background `.deck` |
+| widget | A widget package with a keyboard half and an optional host half |
+| theme | The background, an optional stream, and the placed widgets, each with its options. The desktop app owns themes and pushes the active one |
 | options | What `options.luau` declares and the user chooses |
 
 ## Processes
@@ -33,24 +35,24 @@ flowchart LR
 ```
 
 - Source and Encoder run in a source worker (one process per source, because CEF starts once per process).
-- glassdeckd owns the Link and runs the host halves of modules and canvases.
+- glassdeckd owns the Link, keeps the active theme, and runs the host halves of its background and widgets.
 - glassdeck-receiver decodes (Rockchip MPP) and composites (DRM/KMS planes). With nothing streaming it starts a renderer process for the chosen background.
 
 ## Crates
 
 | Crate | Side | What it is |
 |---|---|---|
-| [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of modules and canvases, and serves the local HTTP API. |
+| [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of the theme's background and widgets, and serves the local HTTP API. |
 | [glassdeck](crates/glassdeck) | host | The CLI. |
 | [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types, with generated TypeScript types. |
 | [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds, Wallpaper Engine scenes. |
-| [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a `.deckbg`. |
+| [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a background `.deck`. |
 | [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder. |
 | [glassdeck-slang](crates/glassdeck-slang) | host | Slang compiler bindings and `glassdeck pack` for canvases. |
 | [glassdeck-luau-check](crates/glassdeck-luau-check) | host | Luau type checker bindings, for checking scripts when packing. |
 | [glassdeck-proto](crates/glassdeck-proto) | both | The Link wire protocol and the keyboard's compositor socket protocol. |
-| [glassdeck-package](crates/glassdeck-package) | both | The `.deckbg` and `.deckmod` container formats. |
-| [glassdeck-luau](crates/glassdeck-luau) | both | Shared Luau VM core, options, profiles and resource handles. |
+| [glassdeck-package](crates/glassdeck-package) | both | The `.deck` package format. |
+| [glassdeck-luau](crates/glassdeck-luau) | both | Shared Luau VM core, options, widget placement and resource handles. |
 | [glassdeck-layout](crates/glassdeck-layout) | both | Key and widget area geometry on the 1920x1080 panel. |
 | [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas renderer process, and its core shared with the host preview. |
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
@@ -106,5 +108,5 @@ cargo test --workspace -- --ignored
 | `crates/` | Rust crates, one workspace |
 | `native/` | C++ wrappers over Slang and Luau's Analysis library, and their silo recipes |
 | `device/` | Keyboard build scripts, `.ipk` packaging, and glassdeck-local-web |
-| `canvases/` | Canvas sources. `gradient` is the built-in canvas |
-| `modules/` | Example widget modules and a sample `profile.json` |
+| `canvases/` | Canvas sources, each with a `deck.json`. `gradient` is the built-in canvas |
+| `modules/` | Example widget sources, each with a `deck.json` |

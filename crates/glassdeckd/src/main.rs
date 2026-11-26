@@ -3,16 +3,15 @@
 
 mod api;
 mod config;
-mod deploy;
 mod error;
 mod host_api;
 mod link;
 mod media;
 mod module_host;
-mod options;
 mod runner;
 mod streams;
 mod system;
+mod theme;
 mod worker;
 
 use std::net::SocketAddr;
@@ -88,7 +87,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
         system::log_to(&paths.log)?;
     }
     let config = config::load(&paths, keyboard)?;
-    println!("glassdeckd: keyboard at {}, profile {}", config.keyboard, paths.profile.display());
+    println!("glassdeckd: keyboard at {}, theme {}", config.keyboard, paths.theme.display());
 
     let token = new_token()?;
     let (published, _) = broadcast::channel(api::EVENT_BACKLOG);
@@ -108,30 +107,40 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
-    let module_host =
-        module_host::start(paths.profile.clone(), paths.modules.clone(), paths.options.clone(), Arc::clone(&uplink), media::start()?)?;
-    let (modules, profile, staging) = (paths.modules.clone(), paths.profile.clone(), paths.staging.clone());
+    let (kept, active) = restored_theme(&paths)?;
+    let module_host = module_host::start(paths.packages.clone(), active.clone(), Arc::clone(&uplink), media::start()?)?;
     let api = Api {
         token,
         runner,
         uplink,
         keyboard: config.keyboard,
-        modules,
-        profile,
-        staging,
+        packages: paths.packages.clone(),
+        staging: paths.staging.clone(),
         large_uploads: Mutex::new(0),
-        bg_file: paths.bg.clone(),
-        bg: Mutex::new(None),
-        choosing: Mutex::new(()),
-        canvases: paths.canvases.clone(),
-        options: Mutex::new(options::OptionsStore::new(paths.options.clone())),
+        theme_file: paths.theme.clone(),
+        theme: Mutex::new((kept, active)),
         module_host,
         events: published,
     };
     if let Err(e) = api.restore() {
-        eprintln!("error: restoring the background: {e:#}; the keyboard keeps its own");
+        eprintln!("error: restoring the theme: {e:#}; the keyboard keeps its own");
     }
     api.serve(&paths.api)
+}
+
+/// The theme kept from last time, or the starting one if it no longer checks out against what's installed.
+fn restored_theme(paths: &Paths) -> Result<(glassdeck_api::Theme, theme::ActiveTheme)> {
+    let installed = theme::installed(&paths.packages)?;
+    let kept = theme::load(&paths.theme)?;
+    match theme::ActiveTheme::check(&kept, &installed) {
+        Ok(active) => Ok((kept, active)),
+        Err(e) => {
+            eprintln!("error: the kept theme: {e:#}; starting from the built-in gradient");
+            let starting = glassdeck_api::Theme::starting(glassdeck_proto::BUILT_IN_BACKGROUND);
+            let active = theme::ActiveTheme::check(&starting, &installed)?;
+            Ok((starting, active))
+        }
+    }
 }
 
 fn new_token() -> Result<String> {

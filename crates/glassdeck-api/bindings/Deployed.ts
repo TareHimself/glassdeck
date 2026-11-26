@@ -2,6 +2,6 @@
 
 export type Deployed = { 
 /**
- * What the keyboard installed, such as `module dev.glassdeck.clock.deckmod`
+ * What the keyboard installed, such as `package dev.glassdeck.clock.deck`
  */
 deployed: string, };

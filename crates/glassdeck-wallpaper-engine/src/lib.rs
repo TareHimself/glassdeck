@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use glassdeck_convert::{Details, EncodeSettings};
-use glassdeck_package::{Background, Origin};
+use glassdeck_package::{Origin, Package, PackageId};
 use serde_json::{Map, Value};
 
 pub use library::{Item, find, subscribed};
@@ -27,13 +27,19 @@ pub fn why_unsupported(kind: &Kind) -> Option<String> {
     })
 }
 
-pub fn background_path(backgrounds_dir: &Path, item: &Item) -> PathBuf {
-    backgrounds_dir.join(format!("we-{}.{}", item.id, glassdeck_package::EXTENSION))
+/// Wallpaper Engine items are `wallpaper-engine.<workshop id>`.
+pub fn package_id(item: &Item) -> Result<PackageId> {
+    PackageId::parse(&format!("wallpaper-engine.{}", item.id))
+}
+
+pub fn package_path(packages_dir: &Path, item: &Item) -> Result<PathBuf> {
+    Ok(packages_dir.join(package_id(item)?.file_name()))
 }
 
 /// Converts a video or web item into a background at `out`; other kinds are refused.
-pub fn convert(item: &Item, project: &Project, out: &Path, settings: EncodeSettings) -> Result<Background> {
+pub fn convert(item: &Item, project: &Project, out: &Path, settings: EncodeSettings) -> Result<Package> {
     let details = Details {
+        id: package_id(item)?,
         title: project.title.clone(),
         origin: Origin::WallpaperEngine { workshop_id: item.id.clone() },
         preview: project.preview.as_ref().map(|name| item.dir.join(name)),

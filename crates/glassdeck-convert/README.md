@@ -1,6 +1,6 @@
 # glassdeck-convert
 
-Turns a video file or a web page folder into a `.deckbg`. Host only, Windows only. It knows nothing about where the input came from: importers such as glassdeck-wallpaper-engine pass their own title and origin.
+Turns a video file or a web page folder into a background `.deck`. Host only, Windows only. It knows nothing about where the input came from: importers such as glassdeck-wallpaper-engine pass their own id, title and origin.
 
 ## API
 
@@ -8,9 +8,9 @@ Turns a video file or a web page folder into a `.deckbg`. Host only, Windows onl
 |---|---|
 | `video(source, out, details, settings)` | Keeps the video as it is if it meets the background spec (H.264 or HEVC at 1920x1080), else re-encodes it to HEVC |
 | `web(folder, entry, properties, out, details)` | Packs the whole folder under `web/`, with `entry` as the page to open |
-| `Details` | Title, `Origin`, optional preview image |
+| `Details` | Id, title, `Origin`, optional preview image |
 | `EncodeSettings` | Re-encode bitrate |
-| `default_backgrounds_dir()` | `%LOCALAPPDATA%\Glassdeck\backgrounds` |
+| `default_packages_dir()` | `%APPDATA%\Glassdeck\packages`, glassdeckd's own folder |
 | `video::{probe, transcode, cover}` | Media Foundation probe and re-encode. `cover` crops to fill the panel |
 | `web_media::{probe, plan, convert}` | Media inside web pages |
 

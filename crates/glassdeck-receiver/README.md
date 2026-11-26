@@ -15,10 +15,10 @@ flowchart LR
 
 - Accepts one host at a time on `--listen` and runs each message through glassdeck-proto's session table.
 - Decodes `Live` frames on arrival (dropping stale ones) and `Paced` frames at their time (`playout`, `PACED_PLAYOUT_DELAY_US` behind).
-- `screen`: which source owns the screen. A host stream first, then the most recent local background, then the built-in canvas. `Screen`, `Event` and `Effect` form one table, and `director::Director` carries out the effects.
+- `screen`: which source owns the screen. A host stream first, then the chosen local background, then the built-in canvas. `Screen`, `Event` and `Effect` form one table, and `director::Director` carries out the effects.
 - `local`: backgrounds played with no host. Video through its own decoder (`mp4` parses the MP4), web through glassdeck-local-web, canvases through glassdeck-gpu.
-- `put`: installs files the host sends (backgrounds, modules, the profile) through `<name>.tmp` and a rename.
-- `widgets`: runs each placed module's `keyboard.luau` in its own glassdeck-luau VM and draws its tiles into the key layer. Picks up profile and module changes while running.
+- `put`: installs the `.deck` packages the host sends through `<name>.tmp` and a rename. An upload must open as the package its file name says before it replaces anything.
+- `widgets`: runs each placed widget's `keyboard.luau` in its own glassdeck-luau VM and draws its tiles into the key layer. Takes the layout from `SetWidgets` and picks up package changes while running.
 - `overlay` and `keymap`: key labels from the keymap's base layer, in Noto Sans JP Bold (`fonts/`, OFL).
 
 ## Platforms
@@ -39,7 +39,10 @@ sh device/keyboard-build.sh glassdeck-receiver
 
 ## Options
 
-`--listen`, `--font`, `--no-labels`, `--layout ansi|iso`, `--backgrounds`, `--modules`, `--profile`.
+`--listen`, `--font`, `--no-labels`, `--layout ansi|iso`, `--packages`, `--state`.
+
+- `--packages` (default `/var/lib/glassdeck/packages/`): every installed `.deck`, backgrounds and widgets.
+- `--state` (default `/var/lib/glassdeck/state/`): `background` (the chosen background) and `widgets.json` (the layout). Written only when they change, and restored at boot.
 
 ## Depends on, used by
 

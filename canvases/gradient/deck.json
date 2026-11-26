@@ -1,0 +1,7 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
+  "id": "dev.glassdeck.gradient",
+  "title": "Gradient",
+  "version": "1.0.0",
+  "type": "background"
+}

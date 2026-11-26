@@ -9,12 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 9;
+pub const VERSION: u8 = 10;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
-/// `SelectBackground` with this name chooses the built-in canvas: the default, always on the keyboard.
-/// Not a file name, so it can never clash with a background in the folder.
-pub const BUILT_IN_BACKGROUND: &str = "builtin:gradient";
+/// The built-in canvas's package id: the default background, always on the keyboard and never a file.
+pub const BUILT_IN_BACKGROUND: &str = "dev.glassdeck.gradient";
 /// Files at least this big pause the stream while they go to the keyboard, which shows their
 /// progress; smaller ones finish too quickly to be worth changing the screen for.
 pub const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -37,6 +36,7 @@ const KIND_PUT_DONE: u8 = 9;
 const KIND_PUT_REFUSED: u8 = 10;
 const KIND_MODULE_RESOURCE: u8 = 11;
 const KIND_BACKGROUND_DATA: u8 = 12;
+const KIND_SET_WIDGETS: u8 = 13;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
@@ -46,9 +46,10 @@ const MODULE_DATA_FIXED_LEN: usize = 4;
 const MODULE_RESOURCE_FIXED_LEN: usize = 4;
 const TARGET_FIXED_LEN: usize = 4;
 const PUT_FILE_FIXED_LEN: usize = TARGET_FIXED_LEN + 16;
-const TARGET_BACKGROUND: u8 = 1;
-const TARGET_MODULE: u8 = 2;
-const TARGET_PROFILE: u8 = 3;
+const TARGET_PACKAGE: u8 = 1;
+const SET_WIDGETS_FIXED_LEN: usize = 4;
+/// x, y, w, h as u16, then the id's length
+const WIDGET_SLOT_FIXED_LEN: usize = 9;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,20 +89,26 @@ pub struct Frame {
 /// Where a file sent to the keyboard goes. The keyboard checks the names before writing anything.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileTarget {
-    Background(String),
-    Module(String),
-    /// The widget profile, which has one fixed place
-    Profile,
+    /// A `.deck` for the packages folder, by its file name `<id>.deck`
+    Package(String),
 }
 
 impl fmt::Display for FileTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Background(name) => write!(f, "background {name}"),
-            Self::Module(name) => write!(f, "module {name}"),
-            Self::Profile => write!(f, "the profile"),
+            Self::Package(name) => write!(f, "package {name}"),
         }
     }
+}
+
+/// One widget in a `SetWidgets` layout: its package id, and where it sits in the widget area.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WidgetSlot {
+    pub package: String,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
 }
 
 /// One piece of a file. The file is complete once a piece ends at `total`.
@@ -139,13 +146,18 @@ pub enum Message {
         probe_sent_us: u64,
         received_us: u64,
     },
-    /// Sender to receiver: play this background from the keyboard's background folder whenever no stream is open,
-    /// and remember it across restarts.
+    /// Host to keyboard: play this background package, by id, whenever no stream is open, and remember
+    /// it across restarts.
     SelectBackground {
         name: String,
     },
+    /// Host to keyboard: the widgets to run, in order, and remember them across restarts. An
+    /// instance's number is its place in this list.
+    SetWidgets {
+        widgets: Vec<WidgetSlot>,
+    },
     /// Host to keyboard: what a widget's `host.luau` sent, for the instance numbered by its place in
-    /// the profile's widget list. `payload` is MessagePack.
+    /// the widget list. `payload` is MessagePack.
     ModuleData {
         instance: u16,
         payload: Vec<u8>,
@@ -186,6 +198,7 @@ pub enum ProtoError {
     UnknownMode(u8),
     BackgroundNameNotUtf8,
     BadFileTarget,
+    BadWidgetList,
     TextNotUtf8,
     Io(io::Error),
 }
@@ -201,6 +214,7 @@ impl fmt::Display for ProtoError {
             Self::UnknownMode(m) => write!(f, "unknown mode {m}"),
             Self::BackgroundNameNotUtf8 => write!(f, "background name is not UTF-8"),
             Self::BadFileTarget => write!(f, "malformed file target"),
+            Self::BadWidgetList => write!(f, "malformed widget list"),
             Self::TextNotUtf8 => write!(f, "text is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
@@ -266,6 +280,7 @@ impl Message {
             Self::PutFile(put) => put.data.len() + 64,
             Self::ModuleData { payload, .. } | Self::BackgroundData { payload } => payload.len() + 4,
             Self::ModuleResource { name, data, .. } => name.len() + data.len() + 4,
+            Self::SetWidgets { widgets } => SET_WIDGETS_FIXED_LEN + widgets.iter().map(|w| WIDGET_SLOT_FIXED_LEN + w.package.len()).sum::<usize>(),
             _ => 64,
         }
     }
@@ -319,6 +334,19 @@ impl Message {
             Self::BackgroundData { payload } => {
                 out.extend_from_slice(payload);
                 KIND_BACKGROUND_DATA
+            }
+            Self::SetWidgets { widgets } => {
+                let count = u16::try_from(widgets.len()).expect("a layout holds at most u16::MAX widgets");
+                out.extend_from_slice(&count.to_le_bytes());
+                out.extend_from_slice(&[0, 0]);
+                for slot in widgets {
+                    for n in [slot.x, slot.y, slot.w, slot.h] {
+                        out.extend_from_slice(&n.to_le_bytes());
+                    }
+                    out.push(u8::try_from(slot.package.len()).expect("package ids are at most 255 bytes"));
+                    out.extend_from_slice(slot.package.as_bytes());
+                }
+                KIND_SET_WIDGETS
             }
             Self::PutFile(put) => {
                 let (head, name) = encode_target(&put.target);
@@ -402,6 +430,7 @@ impl Message {
                 Ok(Self::ModuleData { instance: u16::from_le_bytes([body[0], body[1]]), payload })
             }
             KIND_BACKGROUND_DATA => Ok(Self::BackgroundData { payload: body }),
+            KIND_SET_WIDGETS if body.len() >= SET_WIDGETS_FIXED_LEN => decode_widgets(&body).map(|widgets| Self::SetWidgets { widgets }),
             KIND_PUT_FILE if body.len() >= PUT_FILE_FIXED_LEN => {
                 let (target, name_end) = decode_target(&body, PUT_FILE_FIXED_LEN)?;
                 let (offset, total) = (u64_at(&body, 4), u64_at(&body, 12));
@@ -426,7 +455,7 @@ impl Message {
                 Ok(Self::ModuleResource { instance, name, data: body.split_off(name_end) })
             }
             KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA | KIND_PUT_FILE
-            | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE => Err(bad_length()),
+            | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE | KIND_SET_WIDGETS => Err(bad_length()),
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
@@ -436,9 +465,7 @@ impl Message {
 /// the message's other fixed fields.
 fn encode_target(target: &FileTarget) -> ([u8; TARGET_FIXED_LEN], &[u8]) {
     let (kind, name) = match target {
-        FileTarget::Background(name) => (TARGET_BACKGROUND, name.as_bytes()),
-        FileTarget::Module(name) => (TARGET_MODULE, name.as_bytes()),
-        FileTarget::Profile => (TARGET_PROFILE, &[][..]),
+        FileTarget::Package(name) => (TARGET_PACKAGE, name.as_bytes()),
     };
     let len = u8::try_from(name.len()).expect("file names are at most 255 bytes");
     ([kind, len, 0, 0], name)
@@ -450,12 +477,29 @@ fn decode_target(body: &[u8], name_at: usize) -> Result<(FileTarget, usize), Pro
     let name = body.get(name_at..name_end).ok_or(ProtoError::BadFileTarget)?;
     let text = || String::from_utf8(name.to_vec()).map_err(|_| ProtoError::TextNotUtf8);
     let target = match body[0] {
-        TARGET_BACKGROUND => FileTarget::Background(text()?),
-        TARGET_MODULE => FileTarget::Module(text()?),
-        TARGET_PROFILE if name.is_empty() => FileTarget::Profile,
+        TARGET_PACKAGE => FileTarget::Package(text()?),
         _ => return Err(ProtoError::BadFileTarget),
     };
     Ok((target, name_end))
+}
+
+fn decode_widgets(body: &[u8]) -> Result<Vec<WidgetSlot>, ProtoError> {
+    let count = u16::from_le_bytes([body[0], body[1]]);
+    let mut at = SET_WIDGETS_FIXED_LEN;
+    let mut widgets = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let fixed = body.get(at..at + WIDGET_SLOT_FIXED_LEN).ok_or(ProtoError::BadWidgetList)?;
+        let n = |i: usize| u16::from_le_bytes([fixed[i * 2], fixed[i * 2 + 1]]);
+        let id_end = at + WIDGET_SLOT_FIXED_LEN + usize::from(fixed[8]);
+        let id = body.get(at + WIDGET_SLOT_FIXED_LEN..id_end).ok_or(ProtoError::BadWidgetList)?;
+        let package = String::from_utf8(id.to_vec()).map_err(|_| ProtoError::TextNotUtf8)?;
+        widgets.push(WidgetSlot { package, x: n(0), y: n(1), w: n(2), h: n(3) });
+        at = id_end;
+    }
+    if at != body.len() {
+        return Err(ProtoError::BadWidgetList);
+    }
+    Ok(widgets)
 }
 
 fn parse_header(header: &[u8; HEADER_LEN]) -> Result<(u8, u32), ProtoError> {
@@ -506,17 +550,24 @@ mod tests {
         round_trip(Message::StreamEnd { stream_id: 3 });
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
-        round_trip(Message::SelectBackground { name: "late-night.deckbg".into() });
+        round_trip(Message::SelectBackground { name: "converted.late-night".into() });
+        round_trip(Message::SetWidgets {
+            widgets: vec![
+                WidgetSlot { package: "dev.glassdeck.clock".into(), x: 792, y: 16, w: 320, h: 160 },
+                WidgetSlot { package: "dev.glassdeck.pomodoro".into(), x: 1736, y: 16, w: 160, h: 160 },
+            ],
+        });
+        round_trip(Message::SetWidgets { widgets: vec![] });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
         round_trip(Message::PutFile(PutFile {
-            target: FileTarget::Background("late-night.deckbg".into()),
+            target: FileTarget::Package("converted.late-night.deck".into()),
             offset: 262_144,
             total: 300_000,
             data: vec![1, 2, 3],
         }));
-        round_trip(Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 0, data: vec![] }));
-        round_trip(Message::PutDone { target: FileTarget::Module("cpu.deckmod".into()) });
-        round_trip(Message::PutRefused { target: FileTarget::Profile, reason: "no space left".into() });
+        round_trip(Message::PutFile(PutFile { target: FileTarget::Package("a.b.deck".into()), offset: 0, total: 0, data: vec![] }));
+        round_trip(Message::PutDone { target: FileTarget::Package("dev.glassdeck.cpu-meter.deck".into()) });
+        round_trip(Message::PutRefused { target: FileTarget::Package("a.b.deck".into()), reason: "no space left".into() });
         round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![0x89, b'P', b'N', b'G'] });
         round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![] });
         round_trip(Message::BackgroundData { payload: vec![0x81, 0xa1, b'a', 1] });
@@ -559,11 +610,15 @@ mod tests {
 
     #[test]
     fn refuses_malformed_file_targets() {
-        let mut named_profile = Message::PutDone { target: FileTarget::Module("a.deckmod".into()) }.encode();
-        named_profile[HEADER_LEN] = TARGET_PROFILE;
-        assert!(matches!(Message::read_from(&mut named_profile.as_slice()), Err(ProtoError::BadFileTarget)));
+        let mut unknown_target = Message::PutDone { target: FileTarget::Package("a.b.deck".into()) }.encode();
+        unknown_target[HEADER_LEN] = 9;
+        assert!(matches!(Message::read_from(&mut unknown_target.as_slice()), Err(ProtoError::BadFileTarget)));
+        let mut short_widgets = Message::SetWidgets { widgets: vec![WidgetSlot { package: "a.b".into(), x: 0, y: 0, w: 8, h: 8 }] }.encode();
+        short_widgets.pop();
+        short_widgets[4] -= 1;
+        assert!(matches!(Message::read_from(&mut short_widgets.as_slice()), Err(ProtoError::BadWidgetList)));
 
-        let mut long_name = Message::PutDone { target: FileTarget::Module("a.deckmod".into()) }.encode();
+        let mut long_name = Message::PutDone { target: FileTarget::Package("a.b.deck".into()) }.encode();
         long_name[HEADER_LEN + 1] = 200;
         assert!(matches!(Message::read_from(&mut long_name.as_slice()), Err(ProtoError::BadFileTarget)));
     }

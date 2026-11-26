@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail, ensure};
-use glassdeck_package::{CanvasFiles, CanvasPlan};
+use glassdeck_package::{Canvas, CanvasFiles};
 use glow::HasContext;
 
 use crate::script::{InputValue, CanvasScript};
@@ -29,7 +29,7 @@ pub fn render_size(scale: f32) -> (u32, u32) {
 }
 
 pub struct CanvasProgram {
-    pub plan: CanvasPlan,
+    pub canvas: Canvas,
     program: glow::Program,
     /// Active uniforms by their Slang names (`frame.time`), without the `_0` Slang adds to each part.
     uniforms: HashMap<String, glow::UniformLocation>,
@@ -43,15 +43,15 @@ pub struct CanvasProgram {
 
 impl CanvasProgram {
     pub fn new(gl: &glow::Context, files: CanvasFiles) -> Result<Self> {
-        let CanvasFiles { plan, fragment, script, .. } = files;
+        let CanvasFiles { canvas, fragment, script, .. } = files;
         let program = compile(gl, &fragment)?;
         let uniforms = active_uniforms(gl, program);
         let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
         let script = match script {
-            Some(source) => Some(CanvasScript::load(&source, &plan.inputs)?),
+            Some(source) => Some(CanvasScript::load(&source, &canvas.inputs)?),
             None => None,
         };
-        Ok(Self { plan, program, uniforms, animated, script, last: None, index: 0, drawn: false })
+        Ok(Self { canvas, program, uniforms, animated, script, last: None, index: 0, drawn: false })
     }
 
     /// What the host half sent, for the script's `on_data`; a canvas without a script has nothing to give it to.

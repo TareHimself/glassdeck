@@ -15,7 +15,7 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result, anyhow};
 use glassdeck_capture::link::Link;
-use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo};
+use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo, WidgetSlot};
 
 /// Realistic USB 2.0 bulk throughput, what the TCP stand-in is throttled to by default.
 pub const USB2_PRACTICAL_BYTES_PER_SEC: u64 = 35_000_000;
@@ -108,6 +108,8 @@ struct Queues {
     resources: BTreeMap<(u16, String), Vec<u8>>,
     unsent_resources: BTreeSet<(u16, String)>,
     selected: Option<String>,
+    /// The widget layout, kept like `selected` for a reconnect
+    widgets: Option<Vec<WidgetSlot>>,
     /// The selected canvas's latest data from its host half, kept like `latest` for a reconnect.
     background_data: Option<Vec<u8>>,
     background_data_unsent: bool,
@@ -176,6 +178,16 @@ impl Uplink {
             queues.background_data_unsent = false;
         }
         queues.selected = Some(name);
+        self.changed.notify_all();
+    }
+
+    /// The widgets the keyboard runs, in order; sent now if connected, and again on every reconnect.
+    pub fn set_widgets(&self, widgets: Vec<WidgetSlot>) {
+        let mut queues = self.lock();
+        if queues.connected {
+            queues.control.push_back(Message::SetWidgets { widgets: widgets.clone() });
+        }
+        queues.widgets = Some(widgets);
         self.changed.notify_all();
     }
 
@@ -327,6 +339,9 @@ impl Uplink {
                 if let Some(name) = queues.selected.clone() {
                     queues.control.push_back(Message::SelectBackground { name });
                 }
+                if let Some(widgets) = queues.widgets.clone() {
+                    queues.control.push_back(Message::SetWidgets { widgets });
+                }
             }
             LinkEffect::DropQueued => {
                 queues.connected = false;
@@ -465,7 +480,7 @@ mod tests {
         uplink.apply(Resend);
         uplink.put_module_data(0, vec![1]);
         uplink.push_stream(Message::StreamEnd { stream_id: 7 }).unwrap();
-        uplink.select_background("a.deckbg".into());
+        uplink.select_background("a.b".into());
         assert!(matches!(uplink.next_outgoing(), Outgoing::Control(Message::SelectBackground { .. })));
         assert!(matches!(uplink.next_outgoing(), Outgoing::Stream(Message::StreamEnd { stream_id: 7 })));
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 0, .. }));
@@ -476,17 +491,17 @@ mod tests {
         let path = std::env::temp_dir().join(format!("glassdeckd-upload-{}", std::process::id()));
         std::fs::write(&path, [7u8; 10]).unwrap();
         let uplink = Uplink::new(|_| {});
-        assert!(uplink.put_file(FileTarget::Profile, &path).is_err());
+        assert!(uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).is_err());
         uplink.apply(Resend);
-        let first = uplink.put_file(FileTarget::Profile, &path).unwrap();
-        let second = uplink.put_file(FileTarget::Profile, &path).unwrap();
+        let first = uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).unwrap();
+        let second = uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).unwrap();
         uplink.put_module_data(0, vec![1]);
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { .. }));
         let Outgoing::Put(mut upload) = uplink.next_outgoing() else { panic!("expected the first upload") };
         let piece = upload.next_piece().unwrap();
         assert_eq!((piece.offset, piece.total, piece.data.len(), piece.completes()), (0, 10, 10, true));
         uplink.sending_piece(upload, true);
-        uplink.answered(Message::PutDone { target: FileTarget::Profile });
+        uplink.answered(Message::PutDone { target: FileTarget::Package("a.b.deck".into()) });
         assert!(first.recv().unwrap().is_ok());
         uplink.apply(DropQueued);
         assert!(second.recv().unwrap().is_err());
@@ -522,7 +537,7 @@ mod tests {
     #[test]
     fn reconnecting_resends_every_widget_and_the_selection() {
         let uplink = Uplink::new(|_| {});
-        uplink.select_background("a.deckbg".into());
+        uplink.select_background("a.b".into());
         uplink.put_module_data(1, vec![9]);
         uplink.apply(Resend);
         assert!(matches!(uplink.next_outgoing(), Outgoing::Control(_)));

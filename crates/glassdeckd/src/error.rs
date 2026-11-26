@@ -34,10 +34,6 @@ pub fn bad_request(message: impl fmt::Display) -> anyhow::Error {
     refused(ErrorCode::BadRequest, message)
 }
 
-pub fn not_found(message: impl fmt::Display) -> anyhow::Error {
-    refused(ErrorCode::NotFound, message)
-}
-
 pub fn conflict(message: impl fmt::Display) -> anyhow::Error {
     refused(ErrorCode::Conflict, message)
 }
@@ -96,8 +92,8 @@ mod tests {
 
     #[test]
     fn a_mark_survives_added_context_and_unmarked_errors_are_internal() {
-        let marked = Err::<(), _>(not_found("no option x")).context("widget 1").unwrap_err();
-        assert_eq!(code_of(&marked), ErrorCode::NotFound);
+        let marked = Err::<(), _>(bad_request("no option x")).context("widget 1").unwrap_err();
+        assert_eq!(code_of(&marked), ErrorCode::BadRequest);
         assert_eq!(format!("{marked:#}"), "widget 1: no option x");
         let down = anyhow::Error::from(LinkDown).context("deploying");
         assert_eq!(code_of(&down), ErrorCode::Unavailable);

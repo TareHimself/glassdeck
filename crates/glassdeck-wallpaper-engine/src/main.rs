@@ -1,5 +1,5 @@
 //! The Wallpaper Engine converter: turns video and web wallpapers already in this PC's Steam workshop
-//! folder into backgrounds. Separate from Glassdeck, which only ever sees the `.deckbg` files.
+//! folder into backgrounds. Separate from Glassdeck, which only ever sees the `.deck` files.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,7 +10,7 @@ use glassdeck_convert::EncodeSettings;
 use glassdeck_wallpaper_engine::{self as we, Kind};
 
 #[derive(Parser)]
-#[command(about = "Turn Wallpaper Engine wallpapers into Glassdeck backgrounds (.deckbg)")]
+#[command(about = "Turn Wallpaper Engine wallpapers into Glassdeck backgrounds (.deck)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -20,11 +20,11 @@ struct Cli {
 enum Command {
     /// List subscribed items with their type, and why any can't become a background
     List,
-    /// Turn a video or web wallpaper into a .deckbg (a video is kept as is if it meets the background spec)
+    /// Turn a video or web wallpaper into a background .deck (a video is kept as is if it meets the background spec)
     Import {
         /// Workshop ID, or a folder holding a project.json
         item: String,
-        /// Background file (default: %LOCALAPPDATA%\Glassdeck\backgrounds\we-<id>.deckbg)
+        /// Package file (default: %APPDATA%\Glassdeck\packages\wallpaper-engine.<id>.deck)
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when re-encoding
@@ -51,10 +51,10 @@ fn run(command: Command) -> Result<()> {
             let project = item.project()?;
             let out = match out {
                 Some(out) => out,
-                None => we::background_path(&glassdeck_convert::default_backgrounds_dir()?, &item),
+                None => we::package_path(&glassdeck_convert::default_packages_dir()?, &item)?,
             };
-            let background = we::convert(&item, &project, &out, EncodeSettings { bitrate: mbps * 1_000_000 })?;
-            println!("Wrote {}; put it on the keyboard with `glassdeck bg {}`", background.path().display(), background.path().display());
+            we::convert(&item, &project, &out, EncodeSettings { bitrate: mbps * 1_000_000 })?;
+            println!("Wrote {}; show it with `glassdeck bg {}`", out.display(), out.display());
             Ok(())
         }
     }

@@ -306,6 +306,26 @@ impl OptionValue {
 }
 
 /// `options` for `host.luau`: the values, nested by section like the panel.
+/// Stored values by path (from a theme entry), read for each option's kind. One that doesn't read is
+/// left out with a warning naming `owner`, so its default applies.
+pub fn read_values<'a>(owner: &str, panel: &Panel, stored: impl Iterator<Item = (&'a String, &'a serde_json::Value)>) -> Values {
+    let kinds: BTreeMap<&str, &Kind> = panel.options().into_iter().map(|o| (o.path.as_str(), &o.kind)).collect();
+    let mut values = Values::new();
+    for (path, json) in stored {
+        let Some(kind) = kinds.get(path.as_str()) else {
+            eprintln!("Options: {owner} has no option {path} any more; its stored value is ignored");
+            continue;
+        };
+        match OptionValue::from_json(kind, json) {
+            Ok(value) => {
+                values.insert(path.clone(), value);
+            }
+            Err(e) => eprintln!("Options: {owner} {path}: {e:#}; the default applies"),
+        }
+    }
+    values
+}
+
 pub fn options_table(lua: &Lua, panel: &Panel, values: &Values) -> Result<Table> {
     nested(lua, &panel.items, &|option| values.get(&option.path).cloned().unwrap_or_else(|| option.kind.default_value()).to_lua(lua))
 }

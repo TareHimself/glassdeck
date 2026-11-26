@@ -1,21 +1,14 @@
-//! What `bg` chooses, and the streams it can choose from. The keyboard plays the built-in canvas or a
-//! `.deckbg` itself; a stream comes from the host while it's shown. For now the only streams are the
-//! built-in ones, one per monitor.
+//! The streams a theme can show while the host is on. For now the only streams are the built-in
+//! ones, one per monitor.
 
 use std::fmt;
-use std::path::Path;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, ensure};
 use glassdeck_capture::EncoderKind;
 use glassdeck_capture::monitors::MonitorInfo;
 use glassdeck_capture::pipeline::VideoCodec;
 use glassdeck_capture::sources::{Play, SourceRequest};
-use glassdeck_api::RunsOn;
-use serde::{Deserialize, Serialize};
 
-pub const BG_FORMAT_VERSION: u32 = 1;
-const BUILT_IN: &str = "gradient";
-const STREAM_PREFIX: &str = "stream:";
 const MONITOR_PREFIX: &str = "monitor-";
 const MAX_NAME_BYTES: usize = 64;
 
@@ -38,66 +31,6 @@ impl StreamName {
 impl fmt::Display for StreamName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-/// What the video layer shows when nothing else asks for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Choice {
-    /// The keyboard's built-in canvas
-    BuiltIn,
-    /// A `.deckbg` in the keyboard's background folder, by file name
-    Background(String),
-    Stream(StreamName),
-}
-
-impl Choice {
-    pub fn parse(text: &str) -> Result<Self> {
-        if text == BUILT_IN {
-            return Ok(Self::BuiltIn);
-        }
-        if let Some(name) = text.strip_prefix(STREAM_PREFIX) {
-            return StreamName::parse(name).map(Self::Stream);
-        }
-        let is_background = !text.contains(['/', '\\']) && text.strip_suffix(glassdeck_package::EXTENSION).is_some_and(|stem| stem.len() > 1 && stem.ends_with('.'));
-        ensure!(is_background, "{text:?} isn't {BUILT_IN}, a background file name like late-night.deckbg, or {STREAM_PREFIX}<name>");
-        Ok(Self::Background(text.to_owned()))
-    }
-
-    pub fn runs_on(&self) -> RunsOn {
-        match self {
-            Self::BuiltIn | Self::Background(_) => RunsOn::Keyboard,
-            Self::Stream(_) => RunsOn::Host,
-        }
-    }
-}
-
-impl fmt::Display for Choice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BuiltIn => f.write_str(BUILT_IN),
-            Self::Background(name) => f.write_str(name),
-            Self::Stream(name) => write!(f, "{STREAM_PREFIX}{name}"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Effect {
-    /// Tell the keyboard what to play on its own, by its `SelectBackground` name
-    SelectOnKeyboard(String),
-    /// End the stream being shown, if any; the keyboard falls back to its own choice
-    StopStream,
-    ShowStream(StreamName),
-}
-
-/// What choosing `choice` does. The keyboard keeps its own choice while a stream is shown, and
-/// returns to it when the stream ends.
-pub fn effects(choice: &Choice) -> Vec<Effect> {
-    match choice {
-        Choice::BuiltIn => vec![Effect::StopStream, Effect::SelectOnKeyboard(glassdeck_proto::BUILT_IN_BACKGROUND.to_owned())],
-        Choice::Background(name) => vec![Effect::StopStream, Effect::SelectOnKeyboard(name.clone())],
-        Choice::Stream(name) => vec![Effect::ShowStream(name.clone())],
     }
 }
 
@@ -143,34 +76,6 @@ pub fn monitor_streams(monitors: &[MonitorInfo]) -> Vec<MonitorStream> {
         .collect()
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Saved {
-    format: u32,
-    bg: String,
-}
-
-/// The remembered choice, if one was ever made.
-pub fn load(path: &Path) -> Result<Option<Choice>> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-    };
-    let saved: Saved = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-    if saved.format != BG_FORMAT_VERSION {
-        bail!("{} is format {}, not the {BG_FORMAT_VERSION} this build reads", path.display(), saved.format);
-    }
-    Choice::parse(&saved.bg).map(Some).with_context(|| format!("reading {}", path.display()))
-}
-
-pub fn save(path: &Path, choice: &Choice) -> Result<()> {
-    let text = serde_json::to_string_pretty(&Saved { format: BG_FORMAT_VERSION, bg: choice.to_string() })?;
-    let staging = path.with_extension("json.tmp");
-    std::fs::write(&staging, text).with_context(|| format!("writing {}", staging.display()))?;
-    std::fs::rename(&staging, path).with_context(|| format!("moving {} into place", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,21 +85,11 @@ mod tests {
     }
 
     #[test]
-    fn choices_parse_and_print_back() {
-        for text in ["gradient", "late-night.deckbg", "stream:monitor-q27g4zd"] {
-            assert_eq!(Choice::parse(text).unwrap().to_string(), text);
+    fn stream_names_are_plain() {
+        assert!(StreamName::parse("monitor-q27g4zd").is_ok());
+        for bad in ["", "Big", "a/b", "a b"] {
+            assert!(StreamName::parse(bad).is_err(), "{bad:?}");
         }
-        for bad in ["", "late-night.mp4", "a/b.deckbg", ".deckbg", "stream:", "stream:Big", "monitor-q27g4zd"] {
-            assert!(Choice::parse(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn keyboard_choices_end_any_stream_and_streams_leave_the_keyboard_alone() {
-        assert_eq!(effects(&Choice::BuiltIn), vec![Effect::StopStream, Effect::SelectOnKeyboard(glassdeck_proto::BUILT_IN_BACKGROUND.into())]);
-        assert_eq!(effects(&Choice::Background("a.deckbg".into())), vec![Effect::StopStream, Effect::SelectOnKeyboard("a.deckbg".into())]);
-        let name = StreamName::parse("monitor-benq").unwrap();
-        assert_eq!(effects(&Choice::Stream(name.clone())), vec![Effect::ShowStream(name)]);
     }
 
     #[test]
@@ -204,15 +99,5 @@ mod tests {
             .map(|s| s.name.0)
             .collect();
         assert_eq!(names, ["monitor-q27g4zd", "monitor-benq-ex270qm", "monitor-vdd-by-mtt", "monitor-dell-3", "monitor-dell-4", "monitor-5"]);
-    }
-
-    #[test]
-    fn the_choice_is_remembered() {
-        let path = std::env::temp_dir().join(format!("glassdeckd-bg-{}.json", std::process::id()));
-        assert_eq!(load(&path).unwrap(), None);
-        let choice = Choice::Stream(StreamName::parse("monitor-benq").unwrap());
-        save(&path, &choice).unwrap();
-        assert_eq!(load(&path).unwrap(), Some(choice));
-        std::fs::remove_file(&path).unwrap();
     }
 }

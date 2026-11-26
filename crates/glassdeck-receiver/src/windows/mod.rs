@@ -12,9 +12,8 @@ pub use canvas::{FallbackCanvas, CanvasBackground};
 pub use web::{Registrar, WebBackground};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
-pub const DEFAULT_BACKGROUNDS: &str = r"C:\ProgramData\Glassdeck\backgrounds";
-pub const DEFAULT_MODULES: &str = r"C:\ProgramData\Glassdeck\modules";
-pub const DEFAULT_PROFILE: &str = r"C:\ProgramData\Glassdeck\profile.json";
+pub const DEFAULT_PACKAGES: &str = r"C:\ProgramData\Glassdeck\packages";
+pub const DEFAULT_STATE: &str = r"C:\ProgramData\Glassdeck\state";
 
 pub fn decoded(picture: Picture) -> Picture {
     picture

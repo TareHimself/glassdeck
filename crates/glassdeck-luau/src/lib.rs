@@ -3,7 +3,7 @@
 
 pub mod color;
 pub mod options;
-pub mod profile;
+pub mod placement;
 mod resource;
 
 pub use resource::{LiveName, MAX_LIVE_RESOURCE_BYTES, ResourceReader, ResourceRef, resource_of};

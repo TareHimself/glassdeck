@@ -16,7 +16,7 @@ Geometry adapted from Keyglass (see `NOTICE`).
 
 ## Used by
 
-- glassdeck-luau (`profile`: the widget area's size)
+- glassdeck-luau (`placement`: the widget area's size)
 - glassdeck-receiver (key labels, keymap, Windows preview window)
 
 ## Platform

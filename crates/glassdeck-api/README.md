@@ -12,17 +12,15 @@ glassdeckd listens on `127.0.0.1` at a random port and writes `%LOCALAPPDATA%\Gl
 |---|---|---|
 | `GET /status` | | `Status` |
 | `GET /streams` | | `Streams` |
-| `GET /bg` | | `BgView` |
-| `PUT /bg` | `SetBg` | `BgChosen` |
-| `GET /bg/options` | | `OptionsView` |
-| `PUT /bg/options` | `SetOption` | `OptionSet` |
-| `GET /widgets/{index}/options` | | `OptionsView` |
-| `PUT /widgets/{index}/options` | `SetOption` | `OptionSet` |
+| `GET /theme` | | `Theme` |
+| `PUT /theme` | `Theme` | `ThemeApplied` |
 | `PUT /deploy` | `Deploy` | `Deployed` |
 | `GET /events` | | server-sent `Event`s |
 
-- **Options values are JSON:** a number, a boolean or a string, with colours as `#rrggbbaa`. A `null` value resets the option to its default.
-- **`/events` first sends `Event::Status` with everything,** then one event per change: link, stream, bg, options, deployed. A client that falls behind gets `Event::Status` again.
+- **A `Theme` is one whole setup:** `format` 1, `background` (`{package, options}`), an optional `stream` shown whenever it's available, and `widgets`, each `{package, x, y, w, h, options}`. Packages are named by id.
+- **`PUT /theme` makes a theme the active one,** and glassdeckd acts only on what changed. `ThemeApplied` says where its stream got to (`ShowState`, including `unavailable`).
+- **Options values are JSON:** a number, a boolean or a string, with colours as `#rrggbbaa`. The panel types (`OptionsView`) are for the app, which runs `options.luau` itself.
+- **`/events` first sends `Event::Status` with everything,** then one event per change: link, stream, theme, deployed. A client that falls behind gets `Event::Status` again.
 
 ## Errors
 

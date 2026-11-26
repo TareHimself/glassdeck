@@ -14,7 +14,7 @@ struct Cli {
     /// The receiver's compositor socket, which it passes when it starts us
     #[arg(long)]
     compositor_fd: Option<i32>,
-    /// Draw this canvas background (.deckbg) instead of the built-in gradient
+    /// Draw this canvas background (.deck) instead of the built-in gradient
     #[arg(long)]
     canvas: Option<std::path::PathBuf>,
     /// Draw this many frames with no receiver, then print what they cost
@@ -29,17 +29,17 @@ struct Cli {
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    use glassdeck_package::{Background, CanvasFiles};
+    use glassdeck_package::{CanvasFiles, Package};
     use glassdeck_gpu::offscreen::Offscreen;
     use glassdeck_gpu::program::CanvasProgram;
 
     let cli = Cli::parse();
     let path = cli.snapshot.context("on the PC, glassdeck-gpu only takes --snapshot")?;
     let files = match &cli.canvas {
-        Some(canvas) => CanvasFiles::read(&Background::open(canvas)?)?,
-        None => CanvasFiles::from_bytes(glassdeck_gpu::BUILT_IN)?,
+        Some(canvas) => CanvasFiles::read(&Package::open(canvas)?)?,
+        None => glassdeck_gpu::built_in()?,
     };
-    let size = glassdeck_gpu::program::render_size(files.plan.scale);
+    let size = glassdeck_gpu::program::render_size(files.canvas.scale);
     let offscreen = Offscreen::new(size)?;
     println!("glassdeck-gpu: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
     let mut canvas = CanvasProgram::new(&offscreen.gl, files)?;
@@ -63,13 +63,12 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use anyhow::{Context, Result, bail};
-    use glassdeck_package::{Background, CanvasFiles};
+    use glassdeck_package::{CanvasFiles, Package};
     use glassdeck_proto::compositor::FromCompositor;
 
     use super::Cli;
     use crate::compositor::{Compositor, Received};
     use crate::gpu::{Gpu, Target};
-    use glassdeck_gpu::BUILT_IN;
     use glassdeck_gpu::program::CanvasProgram as Canvas;
 
     /// One on screen, one waiting for the flip, one being drawn.
@@ -79,11 +78,11 @@ mod linux {
     pub fn run(cli: Cli) -> Result<()> {
         let gpu = Gpu::open()?;
         let files = match &cli.canvas {
-            Some(path) => CanvasFiles::read(&Background::open(path)?).with_context(|| format!("opening the canvas {}", path.display()))?,
-            None => CanvasFiles::from_bytes(BUILT_IN).context("opening the built-in gradient")?,
+            Some(path) => CanvasFiles::read(&Package::open(path)?).with_context(|| format!("opening the canvas {}", path.display()))?,
+            None => glassdeck_gpu::built_in()?,
         };
         let mut canvas = Canvas::new(&gpu.gl, files)?;
-        let (scale, fps) = (canvas.plan.scale, canvas.plan.frame_rate);
+        let (scale, fps) = (canvas.canvas.scale, canvas.canvas.frame_rate);
         let size = glassdeck_gpu::program::render_size(scale);
         let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
         println!("glassdeck-gpu: {} at {}x{}, modifier {:#x}", gpu.renderer_name(), size.0, size.1, targets[0].layout.modifier);

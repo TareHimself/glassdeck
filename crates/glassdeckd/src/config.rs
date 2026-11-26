@@ -12,18 +12,14 @@ pub const CONFIG_FORMAT_VERSION: u32 = 1;
 
 pub struct Paths {
     pub config: PathBuf,
-    pub profile: PathBuf,
-    /// The remembered `bg` choice
-    pub bg: PathBuf,
-    pub modules: PathBuf,
+    /// The active theme, as the app last pushed it
+    pub theme: PathBuf,
+    /// glassdeckd's own copy of every package it deployed
+    pub packages: PathBuf,
     pub api: PathBuf,
     pub log: PathBuf,
-    /// Files made only to be uploaded, such as a module's keyboard copy.
+    /// Files made only to be uploaded, such as a package's keyboard copy.
     pub staging: PathBuf,
-    /// What the user chose for each background's options
-    pub options: PathBuf,
-    /// Copies of canvas backgrounds with options or a host half, which glassdeckd runs the host side of
-    pub canvases: PathBuf,
 }
 
 impl Paths {
@@ -32,14 +28,11 @@ impl Paths {
         let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA isn't set")?).join("Glassdeck");
         Ok(Self {
             config: roaming.join("config.json"),
-            profile: roaming.join("profile.json"),
-            bg: roaming.join("bg.json"),
-            modules: roaming.join("modules"),
+            theme: roaming.join("theme.json"),
+            packages: roaming.join("packages"),
             api: glassdeck_api::api_file()?,
             log: local.join("logs").join("glassdeckd.log"),
             staging: local.join("staging"),
-            options: roaming.join("options.json"),
-            canvases: local.join("canvases"),
         })
     }
 }

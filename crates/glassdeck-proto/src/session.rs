@@ -22,6 +22,8 @@ pub enum Action<'a> {
     },
     /// Make this the background shown when no stream is open; the session itself doesn't change.
     SelectBackground(&'a str),
+    /// Run these widgets, in order, and remember them.
+    SetWidgets(&'a [crate::WidgetSlot]),
     /// Hand a widget instance what its host half sent; widgets run whether or not a stream is open.
     ModuleData {
         instance: u16,
@@ -70,6 +72,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
         (_, Message::ModuleResource { instance, name, data }) => Ok((state, Action::ModuleResource { instance: *instance, name, data })),
         (_, Message::BackgroundData { payload }) => Ok((state, Action::BackgroundData(payload))),
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
+        (_, Message::SetWidgets { widgets }) => Ok((state, Action::SetWidgets(widgets))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
         (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
@@ -119,6 +122,7 @@ mod tests {
             Ok((next, Action::End)) => Expect::Moves(next, "end"),
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
             Ok((next, Action::SelectBackground(_))) => Expect::Moves(next, "select background"),
+            Ok((next, Action::SetWidgets(_))) => Expect::Moves(next, "set widgets"),
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
             Ok((next, Action::ModuleResource { .. })) => Expect::Moves(next, "module resource"),
@@ -134,12 +138,12 @@ mod tests {
         let b = info(2);
         let probe = Message::ClockProbe { sent_us: 5 };
         let reply = Message::ClockReply { probe_sent_us: 5, received_us: 6 };
-        let select = Message::SelectBackground { name: "a.deckbg".into() };
+        let select = Message::SelectBackground { name: "a.b".into() };
         let data = Message::ModuleData { instance: 0, payload: vec![0xc0] };
-        let put = Message::PutFile(PutFile { target: FileTarget::Profile, offset: 0, total: 1, data: vec![b'{'] });
-        let done = Message::PutDone { target: FileTarget::Profile };
+        let put = Message::PutFile(PutFile { target: FileTarget::Package("a.b.deck".into()), offset: 0, total: 1, data: vec![b'{'] });
+        let done = Message::PutDone { target: FileTarget::Package("a.b.deck".into()) };
         let resource = Message::ModuleResource { instance: 0, name: "cover".into(), data: vec![1] };
-        let refused = Message::PutRefused { target: FileTarget::Profile, reason: "full".into() };
+        let refused = Message::PutRefused { target: FileTarget::Package("a.b.deck".into()), reason: "full".into() };
         let table = [
             (Idle, put.clone(), Expect::Moves(Idle, "put file")),
             (Idle, resource.clone(), Expect::Moves(Idle, "module resource")),

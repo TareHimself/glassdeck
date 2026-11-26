@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
-use glassdeck_package::{Background, Entry};
+use glassdeck_package::{Package, Entry};
 use windows::Win32::Foundation::{E_FAIL, E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION};
 use windows::Win32::Media::MediaFoundation::{IMFAttributes, IMFByteStream, MF_BYTESTREAM_CONTENT_TYPE, MFCreateMFByteStreamOnStream};
 use windows::Win32::System::Com::{
@@ -13,7 +13,7 @@ use windows::Win32::System::Com::{
 };
 use windows::core::{HRESULT, Interface, Ref, implement, w};
 
-pub fn mp4_byte_stream(background: Arc<Background>, entry: Entry) -> Result<IMFByteStream> {
+pub fn mp4_byte_stream(background: Arc<Package>, entry: Entry) -> Result<IMFByteStream> {
     let stream: IStream = RangeStream { background, entry, position: AtomicU64::new(0) }.into();
     unsafe {
         let bytes = MFCreateMFByteStreamOnStream(&stream).context("wrapping the background's video for Media Foundation")?;
@@ -24,7 +24,7 @@ pub fn mp4_byte_stream(background: Arc<Background>, entry: Entry) -> Result<IMFB
 
 #[implement(IStream)]
 struct RangeStream {
-    background: Arc<Background>,
+    background: Arc<Package>,
     entry: Entry,
     position: AtomicU64,
 }

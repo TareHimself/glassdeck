@@ -3,31 +3,36 @@
 use std::fmt;
 
 use anyhow::Result;
+use glassdeck_package::PackageId;
 use glassdeck_proto::BUILT_IN_BACKGROUND;
 
-/// A background's file name inside the background folder, checked so it can't name anything outside it.
+/// A background package's id, checked so its file in the packages folder can't be anywhere else.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BackgroundName(String);
+pub struct BackgroundName(PackageId);
 
 impl BackgroundName {
     pub fn parse(name: &str) -> Result<Self> {
-        glassdeck_package::check_file_name(name, glassdeck_package::EXTENSION)?;
-        Ok(Self(name.to_owned()))
+        PackageId::parse(name).map(Self)
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
+    }
+
+    /// Its file in the packages folder.
+    pub fn file_name(&self) -> String {
+        self.0.file_name()
     }
 }
 
 impl fmt::Display for BackgroundName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
 /// The background the user chose for when nothing streams: the built-in canvas, which is the default
-/// and always on the keyboard, or a file in the background folder.
+/// and always on the keyboard, or a background package in the packages folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
     BuiltIn,
@@ -152,6 +157,7 @@ pub fn step(screen: Screen, event: Event) -> Result<(Screen, Vec<Effect>), Scree
             (Local(background.clone()), vec![HideFallback, Remember(Selection::File(background.clone())), Start(background)])
         }
         (Fallback { .. }, Event::BackgroundSelected(Selection::BuiltIn)) => (Fallback { recent: None }, vec![Remember(Selection::BuiltIn)]),
+        (Local(running), Event::BackgroundSelected(Selection::File(background))) if running == background => (Local(running), vec![]),
         (Local(_), Event::BackgroundSelected(Selection::File(background))) => {
             (Local(background.clone()), vec![Stop, Remember(Selection::File(background.clone())), Start(background)])
         }
@@ -201,7 +207,7 @@ mod tests {
         use Effect::{HideFallback, Remember, ShowFallback, Start, Stop};
         use Event::{BackgroundSelected, BackgroundStopped, InstallEnded, InstallStarted, StreamEnded, StreamStarted};
         use ScreenError::{AlreadyInstalling, NoBackgroundRunning, NoInstallToEnd, NoStreamToEnd};
-        let (a, b) = (background("a.deckbg"), background("b.deckbg"));
+        let (a, b) = (background("a.one"), background("b.two"));
         let fallback = Screen::Fallback { recent: None };
         let fallback_after_a = Screen::Fallback { recent: Some(a.clone()) };
         let stream = Screen::Stream { recent: None, installing: false };
@@ -231,6 +237,7 @@ mod tests {
             (fallback.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, remember_b(), Start(b.clone())]))),
             (fallback_after_a.clone(), select_b(), Ok((local_b.clone(), vec![HideFallback, remember_b(), Start(b.clone())]))),
             (local_a.clone(), select_b(), Ok((local_b.clone(), vec![Stop, remember_b(), Start(b.clone())]))),
+            (local_b.clone(), select_b(), Ok((local_b.clone(), vec![]))),
             (
                 stream_over_a.clone(),
                 select_b(),
@@ -270,16 +277,17 @@ mod tests {
 
     #[test]
     fn boots_into_the_remembered_background_or_the_built_in_canvas() {
-        let a = background("a.deckbg");
+        let a = background("a.one");
         assert_eq!(Screen::at_boot(Some(Selection::File(a.clone()))), (Screen::Local(a.clone()), vec![Effect::Start(a)]));
         assert_eq!(Screen::at_boot(Some(Selection::BuiltIn)), (Screen::Fallback { recent: None }, vec![Effect::ShowFallback]));
         assert_eq!(Screen::at_boot(None), (Screen::Fallback { recent: None }, vec![Effect::ShowFallback]));
     }
 
     #[test]
-    fn background_names_stay_inside_the_background_folder() {
-        assert!(BackgroundName::parse("Late Night_2.deckbg").is_ok());
-        for bad in ["", ".deckbg", "../x.deckbg", "a/b.deckbg", ".hidden.deckbg", "x.mp4", "xdeckbg", "x.deckbg\0"] {
+    fn background_names_are_package_ids() {
+        assert!(BackgroundName::parse("converted.late-night-2").is_ok());
+        assert_eq!(BackgroundName::parse("a.b").unwrap().file_name(), "a.b.deck");
+        for bad in ["", "late", "../x.y", "a/b.c", ".hidden.x", "x.deck\0", "Late.Night"] {
             assert!(BackgroundName::parse(bad).is_err(), "{bad:?} should be refused");
         }
     }

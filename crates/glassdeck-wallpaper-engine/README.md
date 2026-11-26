@@ -8,10 +8,10 @@ It is a library and a binary of the same name.
 
 ```sh
 glassdeck-wallpaper-engine list                      # subscribed items, their type, and why any can't become a background
-glassdeck-wallpaper-engine import <id-or-folder> [--out file.deckbg] [--mbps 12]
+glassdeck-wallpaper-engine import <id-or-folder> [--out file.deck] [--mbps 12]
 ```
 
-The default output is `%LOCALAPPDATA%\Glassdeck\backgrounds\we-<id>.deckbg`.
+The default output is `%APPDATA%\Glassdeck\packages\wallpaper-engine.<id>.deck`.
 
 ## API
 
@@ -20,9 +20,9 @@ The default output is `%LOCALAPPDATA%\Glassdeck\backgrounds\we-<id>.deckbg`.
 | `library::{subscribed, find, workshop_dirs}`, `Item` | Workshop items for app `431960` |
 | `project::{read, parse}`, `Project`, `Kind` | An item's `project.json`. `Kind` is `Video`, `Web`, `Scene`, `Application`, `Preset` or `Unknown` |
 | `why_unsupported(kind)` | Why a kind can't become a background |
-| `convert(item, project, out, settings)` | Video and web items to `.deckbg`, through glassdeck-convert |
+| `convert(item, project, out, settings)` | Video and web items to a `.deck`, through glassdeck-convert |
 | `init_script(properties)` | JavaScript standing in for Wallpaper Engine's hooks: user property defaults go to `applyUserProperties`, audio and media listeners stay silent |
-| `background_path(dir, item)` | Where an item's background goes |
+| `package_id(item)`, `package_path(dir, item)` | An item's id, `wallpaper-engine.<workshop id>`, and where its package goes |
 | `steam::{steam_root, library_folders, parse_vdf}` | Finds Steam and its library folders |
 
 Scenes can't be converted. glassdeck-capture streams them live instead, rendered by Wallpaper Engine itself.

@@ -40,7 +40,7 @@ static void refuses_a_compressed_entry_by_name(void) {
   for (char* p = bytes; (p = memmem(p, len - (gsize)(p - bytes), central, 4)); p++) last = p;
   g_assert_nonnull(last);
   last[10] = 8;
-  g_autofree char* path = g_build_filename(g_get_tmp_dir(), "glassdeck-deflated.deckbg", NULL);
+  g_autofree char* path = g_build_filename(g_get_tmp_dir(), "glassdeck-deflated.deck", NULL);
   g_assert_true(g_file_set_contents(path, bytes, (gssize)len, NULL));
 
   g_autoptr(GError) error = NULL;
@@ -52,7 +52,7 @@ static void refuses_a_compressed_entry_by_name(void) {
 
 int main(int argc, char** argv) {
   g_test_init(&argc, &argv, NULL);
-  fixture = g_test_build_filename(G_TEST_DIST, "tests", "web.deckbg", NULL);
+  fixture = g_test_build_filename(G_TEST_DIST, "tests", "web.deck", NULL);
   g_test_add_func("/background/reads", reads_the_converters_web_background);
   g_test_add_func("/background/refuses-compressed", refuses_a_compressed_entry_by_name);
   return g_test_run();

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
-use glassdeck_package::{Background, Content, Entry};
+use glassdeck_package::{Content, Entry, Kind, Package};
 use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
@@ -35,11 +35,12 @@ impl LocalBackground {
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        let background = Background::open(path)?;
-        let entry = match &background.manifest().content {
-            Content::Video { file, .. } => background.entry(file).context("the background's video is missing")?,
-            Content::Web { .. } => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
-            Content::Canvas { .. } => return CanvasBackground::start(path, registrar, mailbox, stopped).map(Self::Canvas),
+        let background = Package::open(path)?;
+        let entry = match &background.manifest().kind {
+            Kind::Widget(_) => anyhow::bail!("{} is a widget, not a background", background.id()),
+            Kind::Background(Content::Video { file, .. }) => background.entry(file).context("the background's video is missing")?,
+            Kind::Background(Content::Web { .. }) => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
+            Kind::Background(Content::Canvas(_)) => return CanvasBackground::start(path, registrar, mailbox, stopped).map(Self::Canvas),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
@@ -78,7 +79,7 @@ impl LocalBackground {
 }
 
 struct BackgroundEntry<'a> {
-    background: &'a Background,
+    background: &'a Package,
     entry: Entry,
 }
 
@@ -99,7 +100,7 @@ impl ReadAt for BackgroundEntry<'_> {
 }
 
 /// Loops the video forever; presentation times keep rising across loops so the decoder and clock never rewind.
-fn play_video(background: &Background, entry: Entry, mailbox: &Mailbox, stop: &AtomicBool) -> Result<()> {
+fn play_video(background: &Package, entry: Entry, mailbox: &Mailbox, stop: &AtomicBool) -> Result<()> {
     platform::init_decoder_thread()?;
     let video = BackgroundEntry { background, entry };
     let track = VideoTrack::read(&video).context("reading the background's video")?;
@@ -107,7 +108,7 @@ fn play_video(background: &Background, entry: Entry, mailbox: &Mailbox, stop: &A
     let mut decoder = Decoder::new(&info)?;
     println!(
         "Local background {}: {:?} {}x{}, {} frames, {:.1} s via {}",
-        background.path().display(),
+        background.id(),
         track.codec,
         track.width,
         track.height,

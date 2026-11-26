@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use glassdeck_package::Background;
+use glassdeck_package::Package;
 use serde::{Deserialize, Serialize};
 
 use crate::background_source::{self, WebEncoding};
@@ -33,7 +33,7 @@ pub enum Play {
     Web { url: String, width: u32, height: u32, codec: VideoCodec, mbps: u32, fps: u32, keyframe_every: u32 },
     /// An H.264 or HEVC file, sent without re-encoding
     File { path: PathBuf, looping: bool },
-    /// A .deckbg: video sent as it is, web rendered and encoded
+    /// A background .deck: video sent as it is, web rendered and encoded
     Background { path: PathBuf, looping: bool, mbps: u32, fps: u32 },
     /// A Wallpaper Engine item from this PC's workshop folder
     Wallpaper { item: String, rebuild: bool, mbps: u32, fps: u32 },
@@ -82,7 +82,7 @@ pub fn build(request: SourceRequest) -> Result<Source> {
         }
         Play::Background { path, looping, mbps, fps } => {
             let web = WebEncoding { fps, bitrate: mbps * 1_000_000, duration };
-            background_source::open(Background::open(&path)?, looping, web)?
+            background_source::open(Package::open(&path)?, looping, web)?
         }
         Play::Wallpaper { item, rebuild, mbps, fps } => wallpaper::source(&item, rebuild, mbps, fps, duration)?,
     })

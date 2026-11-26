@@ -25,7 +25,7 @@
 #define PANEL_HEIGHT 1080
 #define INSIDE_FLAG "--inside-sandbox"
 #define SANDBOXED_SELF "/app/glassdeck-local-web"
-#define SANDBOXED_BACKGROUND "/app/wallpaper.deckbg"
+#define SANDBOXED_BACKGROUND "/app/wallpaper.deck"
 #define BACKGROUND_ORIGIN "background://wallpaper/"
 #define BACKGROUND_FLAG "--background="
 #define DISPLAY_DRIVER "rockchip"
@@ -45,7 +45,7 @@ enum output_kind {
   OUTPUT_COMPOSITOR,
 };
 
-// What to show: a page by URI (for tests), or a web .deckbg, served to WebKit as background://.
+// What to show: a page by URI (for tests), or a web background .deck, served to WebKit as background://.
 enum content_kind {
   CONTENT_NONE,
   CONTENT_URI,

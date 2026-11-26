@@ -24,7 +24,7 @@ impl FallbackCanvas {
     }
 }
 
-/// A canvas background (a `.deckbg` with canvas content), drawn by glassdeck-gpu from its plan, shader and script.
+/// A canvas background (a background `.deck` with canvas content), drawn by glassdeck-gpu from its shader and script.
 pub struct CanvasBackground(RendererProcess);
 
 impl CanvasBackground {

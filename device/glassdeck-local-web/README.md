@@ -14,8 +14,8 @@ useradd --system --no-create-home --shell /usr/sbin/nologin --groups video,rende
 runuser -u glassdeck-local-web -- glassdeck-local-web --seconds=15 file:///path/to/index.html
 # with no receiver running, --display previews straight on the screen
 runuser -u glassdeck-local-web -- glassdeck-local-web --display file:///path/to/index.html
-# a web .deckbg, as the receiver runs it: it spawns this as glassdeck-local-web with its socket end as fd 3
-runuser -u glassdeck-local-web -- glassdeck-local-web --compositor-fd=3 --background=/var/lib/glassdeck/backgrounds/name.deckbg
+# a web background .deck, as the receiver runs it: it spawns this as glassdeck-local-web with its socket end as fd 3
+runuser -u glassdeck-local-web -- glassdeck-local-web --compositor-fd=3 --background=/var/lib/glassdeck/packages/<id>.deck
 ```
 
 Outputs: none (headless test), `--display` (drives the screen; only while no receiver runs), or

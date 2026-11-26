@@ -9,7 +9,7 @@ mod ui;
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -18,8 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_luau::profile::{Placement, Profile, WidgetArea};
-use glassdeck_package::{KeyboardModule, is_module};
+use glassdeck_luau::placement::{Placement, PlacedWidget, WidgetArea, check_widgets};
+use glassdeck_package::{Package, PackageId, is_package};
+use serde::{Deserialize, Serialize};
 
 use glassdeck_luau::LiveName;
 use installing::Installing;
@@ -65,10 +66,13 @@ impl Tiles {
     }
 }
 
-/// A module package, and when the file was written, so a rewrite counts as a new version.
+/// The keyboard's own record of the widget layout, in its state folder
+const LAYOUT_FILE: &str = "widgets.json";
+
+/// A widget package, and when the file was written, so a rewrite counts as a new version.
 #[derive(Clone)]
 pub struct Installed {
-    pub package: Rc<KeyboardModule>,
+    pub package: Rc<Package>,
     pub modified: SystemTime,
 }
 
@@ -95,11 +99,14 @@ pub enum Input {
         fraction: f32,
     },
     InstallEnded,
+    /// The host's new layout: run these, in order, and remember them.
+    SetWidgets(Vec<PlacedWidget>),
 }
 
 pub struct Config {
-    pub modules: PathBuf,
-    pub profile: PathBuf,
+    pub packages: PathBuf,
+    /// Where the keyboard keeps its own state: the widget layout, here
+    pub state: PathBuf,
     pub font: Font,
 }
 
@@ -114,8 +121,10 @@ struct Host {
     area: WidgetArea,
     tiles: Arc<Tiles>,
     instances: Vec<Instance>,
-    /// What the last scan saw, to notice changes.
-    seen: Option<Snapshot>,
+    /// What the host last asked for, kept across restarts
+    layout: Vec<PlacedWidget>,
+    /// The widget packages the last scan saw, to notice installs.
+    seen: Option<Vec<(PathBuf, SystemTime)>>,
     last_frame: Option<Instant>,
     /// When the widgets last drew, so a burst of inputs draws once per frame
     last_publish: Option<Instant>,
@@ -123,23 +132,22 @@ struct Host {
     draw_due: bool,
     /// While set, widgets keep running but their redraws wait until the install ends.
     installing: Option<Installing>,
-    /// Each instance's live resources, by its number in the profile.
+    /// Each instance's live resources, by its number in the layout.
     live: HashMap<u16, LiveCache>,
-}
-
-#[derive(PartialEq)]
-struct Snapshot {
-    profile: Option<SystemTime>,
-    modules: Vec<(PathBuf, SystemTime)>,
 }
 
 impl Host {
     fn new(config: Config, tiles: Arc<Tiles>) -> Self {
+        let layout = read_layout(&config.state).unwrap_or_else(|e| {
+            eprintln!("error: forgetting the saved widget layout: {e:#}");
+            Vec::new()
+        });
         Self {
             config,
             area: WidgetArea::of_panel(),
             tiles,
             instances: Vec::new(),
+            layout,
             seen: None,
             last_frame: None,
             last_publish: None,
@@ -193,6 +201,7 @@ impl Host {
                 _ => self.installing = Some(Installing::new(what, fraction)),
             },
             Input::InstallEnded => self.end_install(),
+            Input::SetWidgets(layout) => self.set_layout(layout),
         }
     }
 
@@ -276,6 +285,19 @@ impl Host {
         self.tiles.put(Tile { x: self.area.x + x, y: self.area.y + y, w, h, pixels: vec![0; (w * h) as usize] });
     }
 
+    /// Saves a new layout from the host and runs it; an unchanged one isn't written again.
+    fn set_layout(&mut self, layout: Vec<PlacedWidget>) {
+        if layout == self.layout {
+            return;
+        }
+        if let Err(e) = write_layout(&self.config.state, &layout) {
+            eprintln!("error: saving the widget layout: {e:#}");
+        }
+        self.layout = layout;
+        self.seen = None;
+        self.rescan();
+    }
+
     fn rescan(&mut self) {
         let snapshot = self.snapshot();
         if self.seen.as_ref() == Some(&snapshot) {
@@ -283,65 +305,64 @@ impl Host {
         }
         self.seen = Some(snapshot);
         match self.load() {
-            Ok((profile, packages)) => self.apply(profile, packages),
+            Ok(packages) => self.apply(self.layout.clone(), packages),
             Err(e) => {
                 eprintln!("error: widgets: {e:#}");
-                self.apply(Profile { widgets: Vec::new() }, HashMap::new());
+                self.apply(Vec::new(), HashMap::new());
             }
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
-        let modified = |path: &std::path::Path| fs::metadata(path).and_then(|m| m.modified()).ok();
-        let mut modules: Vec<(PathBuf, SystemTime)> = fs::read_dir(&self.config.modules)
+    fn snapshot(&self) -> Vec<(PathBuf, SystemTime)> {
+        let modified = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok();
+        let mut packages: Vec<(PathBuf, SystemTime)> = fs::read_dir(&self.config.packages)
             .into_iter()
             .flatten()
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| is_module(path))
+            .filter(|path| is_package(path))
             .filter_map(|path| modified(&path).map(|at| (path, at)))
             .collect();
-        modules.sort();
-        Snapshot { profile: modified(&self.config.profile), modules }
+        packages.sort();
+        packages
     }
 
-    fn load(&self) -> Result<(Profile, HashMap<String, Installed>)> {
-        let mut packages: HashMap<String, Installed> = HashMap::new();
-        let folder = &self.config.modules;
-        let entries = fs::read_dir(folder).with_context(|| format!("reading the module folder {}", folder.display()))?;
+    /// The installed widget packages, once the layout checks out against them.
+    fn load(&self) -> Result<HashMap<PackageId, Installed>> {
+        let mut packages: HashMap<PackageId, Installed> = HashMap::new();
+        let folder = &self.config.packages;
+        let entries = fs::read_dir(folder).with_context(|| format!("reading the packages folder {}", folder.display()))?;
         for entry in entries {
             let path = entry?.path();
-            if !is_module(&path) {
+            if !is_package(&path) {
                 continue;
             }
             let opened = fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .map_err(anyhow::Error::from)
-                .and_then(|modified| KeyboardModule::open(&path).map(|package| Installed { package: Rc::new(package), modified }));
+                .and_then(|modified| Package::open(&path).map(|package| Installed { package: Rc::new(package), modified }));
             match opened {
-                Ok(installed) => {
-                    let id = installed.package.manifest().id.clone();
-                    if let Some(other) = packages.insert(id.clone(), installed) {
-                        anyhow::bail!("{} and {} both have the id {id}", other.package.path().display(), path.display());
-                    }
+                Ok(installed) if installed.package.manifest().widget().is_some() => {
+                    packages.insert(installed.package.id().clone(), installed);
                 }
+                Ok(_) => {}
                 Err(e) => eprintln!("error: {e:#}"),
             }
         }
-        let profile = Profile::read(&self.config.profile, self.area.size, |id| packages.get(id).map(|i| i.package.manifest().clone()))?;
-        println!("Widgets: {} placed from {} installed modules", profile.widgets.len(), packages.len());
-        Ok((profile, packages))
+        check_widgets(&self.layout, self.area.size, |id| packages.get(id).and_then(|i| i.package.manifest().widget().copied()))?;
+        println!("Widgets: {} placed from {} installed widget packages", self.layout.len(), packages.len());
+        Ok(packages)
     }
 
     /// Keeps instances whose module didn't change, telling them about moves and resizes; their options
     /// reach them from the host half as data. Others restart, carrying over what `unload` saved when it is the same module.
-    fn apply(&mut self, profile: Profile, packages: HashMap<String, Installed>) {
+    fn apply(&mut self, layout: Vec<PlacedWidget>, packages: HashMap<PackageId, Installed>) {
         let mut old: Vec<Option<Instance>> = std::mem::take(&mut self.instances).into_iter().map(Some).collect();
-        for (index, widget) in profile.widgets.iter().enumerate() {
-            let installed = packages[&widget.module].clone();
+        for (index, widget) in layout.iter().enumerate() {
+            let installed = packages[&widget.package].clone();
             let previous = old.get_mut(index).and_then(Option::take);
             let instance = match previous {
-                Some(mut kept) if kept.module == widget.module && kept.installed.same_version(&installed) => {
+                Some(mut kept) if kept.package == widget.package.as_str() && kept.installed.same_version(&installed) => {
                     if kept.placement != widget.placement {
                         self.clear(kept.placement);
                         match (kept.placement.w, kept.placement.h) == (widget.placement.w, widget.placement.h) {
@@ -353,7 +374,7 @@ impl Host {
                 }
                 Some(replaced) => {
                     self.clear(replaced.placement);
-                    let same_module = replaced.module == widget.module;
+                    let same_module = replaced.package == widget.package.as_str();
                     let saved = replaced.unload();
                     Instance::start(index, widget, installed, if same_module { saved } else { None })
                 }
@@ -368,4 +389,39 @@ impl Host {
         let count = self.instances.len();
         self.live.retain(|number, _| usize::from(*number) < count);
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedWidget {
+    package: String,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+fn read_layout(state: &Path) -> Result<Vec<PlacedWidget>> {
+    let path = state.join(LAYOUT_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let saved: Vec<SavedWidget> = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    saved
+        .into_iter()
+        .map(|w| Ok(PlacedWidget { package: PackageId::parse(&w.package)?, placement: Placement { x: w.x, y: w.y, w: w.w, h: w.h } }))
+        .collect()
+}
+
+fn write_layout(state: &Path, layout: &[PlacedWidget]) -> Result<()> {
+    fs::create_dir_all(state).with_context(|| format!("creating {}", state.display()))?;
+    let saved: Vec<SavedWidget> = layout
+        .iter()
+        .map(|w| SavedWidget { package: w.package.to_string(), x: w.placement.x, y: w.placement.y, w: w.placement.w, h: w.placement.h })
+        .collect();
+    let path = state.join(LAYOUT_FILE);
+    let staging = state.join(format!("{LAYOUT_FILE}.tmp"));
+    fs::write(&staging, serde_json::to_vec(&saved)?).with_context(|| format!("writing {}", staging.display()))?;
+    fs::rename(&staging, &path).with_context(|| format!("moving {} into place", path.display()))
 }

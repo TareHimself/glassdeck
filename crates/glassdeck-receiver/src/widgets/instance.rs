@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_luau::profile::{Placement, Widget};
+use glassdeck_luau::placement::{Placement, PlacedWidget};
 use glassdeck_luau::{LiveName, LuaResultExt, ResourceRef, Vm, decode, encode};
-use glassdeck_package::{KeyboardModule, ResourceKind};
+use glassdeck_package::{Package, ResourceKind};
 use mlua::{Function, Table, Value};
 
 use super::Installed;
@@ -23,7 +23,7 @@ const ERROR_CHAR_WIDTH: f32 = 7.0;
 
 pub struct Instance {
     pub label: String,
-    pub module: String,
+    pub package: String,
     pub placement: Placement,
     pub installed: Installed,
     run: Run,
@@ -52,8 +52,8 @@ pub struct DrawnTile {
 
 impl Instance {
     /// Never fails: a module that can't start shows its error in its own rectangle.
-    pub fn start(index: usize, widget: &Widget, installed: Installed, saved: Option<Vec<u8>>) -> Self {
-        let label = format!("widget {index} ({})", widget.module);
+    pub fn start(index: usize, widget: &PlacedWidget, installed: Installed, saved: Option<Vec<u8>>) -> Self {
+        let label = format!("widget {index} ({})", widget.package);
         let run = match Live::start(&installed.package, widget, saved) {
             Ok(live) => Run::Running(live),
             Err(e) => failed(&label, e),
@@ -61,7 +61,7 @@ impl Instance {
         Self {
             error_unshown: matches!(run, Run::Failed(_)),
             label,
-            module: widget.module.clone(),
+            package: widget.package.to_string(),
             placement: widget.placement,
             installed,
             run,
@@ -200,7 +200,7 @@ impl Instance {
             }
         }
         match &self.run {
-            Run::Failed(message) if std::mem::take(&mut self.error_unshown) => Some(error_tile(&self.module, message, size, font)),
+            Run::Failed(message) if std::mem::take(&mut self.error_unshown) => Some(error_tile(&self.package, message, size, font)),
             _ => None,
         }
     }
@@ -216,8 +216,8 @@ impl Instance {
 }
 
 impl Live {
-    fn start(package: &Rc<KeyboardModule>, widget: &Widget, saved: Option<Vec<u8>>) -> Result<Self> {
-        let source = package.keyboard_script()?;
+    fn start(package: &Rc<Package>, widget: &PlacedWidget, saved: Option<Vec<u8>>) -> Result<Self> {
+        let source = package.keyboard_script()?.with_context(|| format!("{} has no keyboard.luau", package.id()))?;
         let vm = Vm::new()?;
         let ui = Ui::new(widget.placement.w, widget.placement.h, vm.every_function()?);
         let lua = vm.lua();
@@ -336,19 +336,19 @@ mod tests {
             fs::write(path, contents).unwrap();
         }
         fs::write(
-            dir.join("src/module.json"),
-            r#"{ "format": 3, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#,
+            dir.join("src/deck.json"),
+            r#"{ "id": "dev.test.widget", "title": "Test", "version": "1.0.0", "type": "widget", "details": { "size": { "w": 64, "h": 32 } } }"#,
         )
         .unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
-        let package = pack_folder(&dir.join("src"), &dir.join("widget.deckmod")).unwrap();
-        let package = package.write_keyboard_copy(&dir.join("widget-keyboard.deckmod")).unwrap();
-        let modified = fs::metadata(package.path()).unwrap().modified().unwrap();
+        let package = pack_folder(&dir.join("src"), &dir.join("dev.test.widget.deck")).unwrap();
+        let package = package.write_keyboard_copy(&dir.join("keyboard.deck")).unwrap();
+        let modified = fs::metadata(package.path().unwrap()).unwrap().modified().unwrap();
         (Scratch(dir), Installed { package: Rc::new(package), modified })
     }
 
-    fn widget() -> Widget {
-        Widget { module: "dev.test.widget".into(), placement: Placement { x: 0, y: 0, w: 64, h: 32 }, options: serde_json::Map::new() }
+    fn widget() -> PlacedWidget {
+        PlacedWidget { package: glassdeck_package::PackageId::parse("dev.test.widget").unwrap(), placement: Placement { x: 0, y: 0, w: 64, h: 32 } }
     }
 
     fn font() -> Font {

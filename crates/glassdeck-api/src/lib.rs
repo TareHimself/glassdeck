@@ -5,14 +5,13 @@
 //! |---|---|---|
 //! | `GET /status` | | [`Status`] |
 //! | `GET /streams` | | [`Streams`] |
-//! | `GET /bg` | | [`BgView`] |
-//! | `PUT /bg` | [`SetBg`] | [`BgChosen`] |
-//! | `GET /bg/options` | | [`OptionsView`] |
-//! | `PUT /bg/options` | [`SetOption`] | [`OptionSet`] |
-//! | `GET /widgets/{index}/options` | | [`OptionsView`] |
-//! | `PUT /widgets/{index}/options` | [`SetOption`] | [`OptionSet`] |
+//! | `GET /theme` | | [`Theme`] |
+//! | `PUT /theme` | [`Theme`] | [`ThemeApplied`] |
 //! | `PUT /deploy` | [`Deploy`] | [`Deployed`] |
 //! | `GET /events` | | server-sent [`Event`]s, starting with [`Event::Status`] |
+//!
+//! `PUT /theme` makes a whole theme the active one; glassdeckd acts only on what differs from the
+//! running one. The options panel types are for the app, which runs `options.luau` itself.
 //!
 //! Every request carries `Authorization: Bearer <token>`, with the token from [`ApiFile`]. A
 //! refusal answers with an [`ApiError`] and the status code its [`ErrorCode`] names.
@@ -24,7 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use ts_rs::TS;
 
-pub const API_FORMAT_VERSION: u32 = 2;
+pub const API_FORMAT_VERSION: u32 = 3;
+pub const THEME_FORMAT_VERSION: u32 = 1;
 
 /// Where glassdeckd writes [`ApiFile`] when it starts.
 pub fn api_file() -> Result<PathBuf> {
@@ -88,7 +88,6 @@ pub struct ApiError {
 #[ts(export)]
 pub struct Status {
     pub link: LinkStatus,
-    pub bg: BgView,
     pub stream: StreamStatus,
 }
 
@@ -100,39 +99,68 @@ pub struct LinkStatus {
     pub connected: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export)]
-pub enum RunsOn {
-    Keyboard,
-    Host,
-}
-
-/// The chosen background: `gradient`, a `.deckbg` name, or `stream:<name>`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct BgView {
-    /// Nothing chosen yet, so the keyboard shows its own
-    pub bg: Option<String>,
-    pub runs_on: RunsOn,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// One whole setup: the background, the stream to show when it's available, and the widgets. Each
+/// entry names a package by id and carries its own chosen options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
-pub struct SetBg {
-    pub bg: String,
+pub struct Theme {
+    pub format: u32,
+    pub background: ThemeBackground,
+    /// Shown whenever it's available; otherwise the keyboard plays `background`
+    #[serde(default)]
+    pub stream: Option<String>,
+    #[serde(default)]
+    pub widgets: Vec<ThemeWidget>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct ThemeBackground {
+    /// A background package's id, such as `dev.glassdeck.gradient`
+    pub package: String,
+    /// Chosen values by option path, as in [`OptionView::value`]
+    #[serde(default)]
+    pub options: serde_json::Map<String, Json>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct ThemeWidget {
+    /// A widget package's id, such as `dev.glassdeck.clock`
+    pub package: String,
+    /// Where it sits in the widget area, in panel pixels on an 8 px grid
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub options: serde_json::Map<String, Json>,
+}
+
+impl Theme {
+    /// The built-in gradient and no widgets: what a fresh install shows.
+    pub fn starting(built_in_background: &str) -> Self {
+        Self {
+            format: THEME_FORMAT_VERSION,
+            background: ThemeBackground { package: built_in_background.to_owned(), options: Default::default() },
+            stream: None,
+            widgets: Vec::new(),
+        }
+    }
+}
+
+/// What `PUT /theme` did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct BgChosen {
-    pub bg: String,
-    pub runs_on: RunsOn,
-    pub state: ShowState,
+pub struct ThemeApplied {
+    /// Where the theme's stream got to, when it has one
+    pub stream: Option<ShowState>,
 }
 
-/// Where a chosen background got to by the time `PUT /bg` answered.
+/// Where a theme's stream got to by the time `PUT /theme` answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -144,6 +172,8 @@ pub enum ShowState {
     AfterUpload,
     /// A stream is taking a while to start (web pages are the slow ones)
     Starting,
+    /// The stream isn't there now, such as an unplugged monitor; the theme keeps it for when it is
+    Unavailable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -221,17 +251,17 @@ pub struct Ended {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export)]
 pub enum OptionsOwner {
-    /// The selected background, a canvas
-    Background { name: String },
-    /// A widget, by its place in the profile
-    Widget { index: u32, module: String },
+    /// The theme's background
+    Background { package: String },
+    /// A widget, by its place in the theme
+    Widget { index: u32, package: String },
 }
 
 impl std::fmt::Display for OptionsOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Background { name } => f.write_str(name),
-            Self::Widget { index, module } => write!(f, "widget {index} ({module})"),
+            Self::Background { package } => f.write_str(package),
+            Self::Widget { index, package } => write!(f, "widget {index} ({package})"),
         }
     }
 }
@@ -281,41 +311,23 @@ pub enum OptionKind {
     Choice { default: String, values: Vec<String> },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(export)]
-pub struct SetOption {
-    pub path: String,
-    /// The value for the option's kind, as in [`OptionView::value`]; `null` goes back to the default
-    pub value: Option<Json>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct OptionSet {
-    pub owner: OptionsOwner,
-    pub path: String,
-    /// The value now in use, the default after a reset
-    pub value: Json,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct Deploy {
-    /// A `.deckbg`, a `.deckmod` or a profile, as a path glassdeckd can read
+    /// A `.deck`, as a path glassdeckd can read
     pub path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Deployed {
-    /// What the keyboard installed, such as `module dev.glassdeck.clock.deckmod`
+    /// What the keyboard installed, such as `package dev.glassdeck.clock.deck`
     pub deployed: String,
 }
 
 /// What `GET /events` sends, each as one server-sent event's JSON data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum Event {
@@ -323,9 +335,8 @@ pub enum Event {
     Status { status: Status },
     Link { connected: bool },
     Stream { status: StreamStatus },
-    Bg { bg: BgView },
-    /// An owner's chosen values changed; fetch its view again to see them
-    Options { owner: OptionsOwner },
+    /// A new active theme
+    Theme { theme: Theme },
     Deployed { deployed: String },
 }
 
@@ -335,11 +346,10 @@ mod tests {
 
     #[test]
     fn wire_shapes_are_tagged_and_snake_case() {
-        let event = Event::Options { owner: OptionsOwner::Widget { index: 1, module: "dev.glassdeck.clock".into() } };
-        assert_eq!(
-            serde_json::to_value(&event).unwrap(),
-            serde_json::json!({ "type": "options", "owner": { "kind": "widget", "index": 1, "module": "dev.glassdeck.clock" } })
-        );
+        let event = Event::Deployed { deployed: "package a.b.deck".into() };
+        assert_eq!(serde_json::to_value(&event).unwrap(), serde_json::json!({ "type": "deployed", "deployed": "package a.b.deck" }));
+        let owner = OptionsOwner::Widget { index: 1, package: "dev.glassdeck.clock".into() };
+        assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "dev.glassdeck.clock" }));
         let item = PanelItem::Heading { text: "Look".into() };
         assert_eq!(serde_json::to_value(&item).unwrap(), serde_json::json!({ "item": "heading", "text": "Look" }));
         let kind = OptionKind::Toggle { default: true };
@@ -349,8 +359,9 @@ mod tests {
 
     #[test]
     fn unknown_fields_in_requests_are_refused() {
-        assert!(serde_json::from_str::<SetBg>(r#"{"bg":"gradient","extra":1}"#).is_err());
-        let set: SetOption = serde_json::from_str(r#"{"path":"seconds","value":null}"#).unwrap();
-        assert_eq!(set.value, None);
+        assert!(serde_json::from_str::<Deploy>(r#"{"path":"a.b.deck","extra":1}"#).is_err());
+        let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"dev.glassdeck.gradient"}}"#).unwrap();
+        assert_eq!(theme, Theme::starting("dev.glassdeck.gradient"));
+        assert!(serde_json::from_str::<Theme>(r#"{"format":1,"background":{"package":"a.b"},"effects":[]}"#).is_err());
     }
 }
