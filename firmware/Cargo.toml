@@ -1,0 +1,40 @@
+[workspace]
+
+[package]
+name = "glassdeck-scanner-firmware"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "glassdeck-scanner"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+glassdeck-scanner-dsp = { path = "../crates/glassdeck-scanner-dsp" }
+glassdeck-scanner-proto = { path = "../crates/glassdeck-scanner-proto" }
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+critical-section = "1.2.0"
+rp2040-boot2 = "0.3.0"
+rp2040-flash = "0.6.0"
+rp2040-hal = { version = "0.11.0", features = ["rt", "critical-section-impl", "rom-func-cache"] }
+usb-device = "0.3.2"
+
+[build-dependencies]
+cc = "1.2"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = 3
+overflow-checks = false
+panic = "abort"
+
+[profile.dev]
+opt-level = "s"
+panic = "abort"
