@@ -57,6 +57,7 @@ flowchart LR
 | [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas renderer process, and its core shared with the host preview. |
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
 | [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's (RP2040) serial-link framing and messages, byte for byte as the stock firmware sends them. Tested against vectors printed by Keyglass's C firmware ([firmware/vectors](firmware/vectors)). |
+| [glassdeck-scanner-dsp](crates/glassdeck-scanner-dsp) | key scanner | `no_std`: the key scanner's signal processing, from sensor readings to key decisions, ported from Keyglass's C firmware and checked against it scan by scan. |
 
 ## Build
 
