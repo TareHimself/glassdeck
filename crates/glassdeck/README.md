@@ -26,11 +26,12 @@ These don't go through glassdeckd. They're for getting onto a stock keyboard and
 |---|---|
 | `scanner version \| backup \| check-backup \| bootloader \| flash \| restore` | The key scanner (RP2040); see [firmware/README.md](../../firmware/README.md) |
 | `keyboard versions` | The stock bridge's bridge, display and OS versions, and free space |
+| `keyboard logs` | The end of Glassdeck's own logs on the keyboard: the bootstrap's install, the launcher, the receiver |
 | `keyboard install <file.ipk>` | Uploads one `.ipk` to `/home/root`, where the stock system installs it as root, and waits for it to be picked up |
 | `keyboard probe` | Installs `target/packages/glassdeck-probe.ipk` and saves its report as `glassdeck-probe.txt` |
 | `keyboard backup <dir>` | Installs `glassdeck-backup.ipk`, waits for it, downloads every piece into a new folder and checks each partition against its SHA-256 |
 
-`keyboard` offers only these steps. It never uploads anything but a checked `.ipk` to `/home/root`, reads only the probe report and the backup folder, and deletes only the last probe report and the backup's `DONE` marker. The bridge itself can move any file under `/home`; this keeps that out of everyday reach.
+`keyboard` offers only these steps. It never uploads anything but a checked `.ipk` to `/home/root`, reads only the probe report, the backup folder and Glassdeck's own logs, and deletes only the last probe report and the backup's `DONE` marker. The bridge itself can move any file under `/home`; this keeps that out of everyday reach.
 
 ## Native libraries
 

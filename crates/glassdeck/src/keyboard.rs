@@ -42,6 +42,13 @@ const GET_FREE_SPACE: u8 = 104;
 const HOME: &str = "/home/root";
 const PROBE_REPORT: &str = "glassdeck-probe.txt";
 const BACKUP_DIR: &str = "/home/root/glassdeck-backup";
+/// Glassdeck's own logs on the keyboard, the only other files `logs` reads.
+const LOGS: [&str; 3] = [
+    "/home/root/glassdeck-bootstrap.log",
+    "/home/root/glassdeck/launch.log",
+    "/home/root/glassdeck/receiver.log",
+];
+const LOG_TAIL_LINES: usize = 40;
 /// How long the stock installer may take to pick a package up.
 const INSTALL_WAIT: Duration = Duration::from_secs(60);
 const PROBE_WAIT: Duration = Duration::from_secs(120);
@@ -54,6 +61,8 @@ pub enum KeyboardCommand {
     Versions,
     /// Install an .ipk: it goes to /home/root, where the keyboard installs it as root
     Install { ipk: PathBuf },
+    /// The end of Glassdeck's logs on the keyboard: the bootstrap's install, the launcher, the receiver
+    Logs,
     /// Install glassdeck-probe, wait for its report and save it
     Probe {
         #[arg(long, default_value = "target/packages/glassdeck-probe.ipk")]
@@ -76,6 +85,7 @@ pub fn run(command: KeyboardCommand) -> Result<()> {
     // Packages are checked before anything touches the keyboard.
     match command {
         KeyboardCommand::Versions => versions(&mut Bridge::open()?),
+        KeyboardCommand::Logs => logs(&mut Bridge::open()?),
         KeyboardCommand::Install { ipk } => {
             let package = Package::read(&ipk)?;
             install(&mut Bridge::open()?, &package)
@@ -201,6 +211,28 @@ fn versions(pipe: &mut impl Pipe) -> Result<()> {
         );
     }
     println!("free: {} MiB", free_bytes(pipe)? / (1024 * 1024));
+    Ok(())
+}
+
+fn logs(pipe: &mut impl Pipe) -> Result<()> {
+    for path in LOGS {
+        let (dir, name) = path.rsplit_once('/').expect("an absolute path");
+        if !list(pipe, dir).unwrap_or_default().contains_key(name) {
+            println!("===== {path}: not there");
+            continue;
+        }
+        let data = acked(pipe, GET_FILE, &c_path(path), &format!("send {path}"))?;
+        let text = String::from_utf8_lossy(&data);
+        let lines: Vec<&str> = text.lines().collect();
+        println!(
+            "===== {path} (last {} of {} lines)",
+            lines.len().min(LOG_TAIL_LINES),
+            lines.len()
+        );
+        for line in &lines[lines.len().saturating_sub(LOG_TAIL_LINES)..] {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
