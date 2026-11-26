@@ -26,7 +26,7 @@ use crate::flash_image::{
     self, CALIBRATION_FACTORS, CALIBRATION_INFO, FactoryCalibration, PARTITION_LEN,
     PARTITION_OFFSET,
 };
-use crate::picoboot::{self, BootRom, FLASH_SIZE};
+use crate::picoboot::{self, BootRom, FLASH_SIZE, SECTOR};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 /// How long the boot ROM may take to appear after the reboot, and its drive to mount.
@@ -52,6 +52,17 @@ pub enum ScannerCommand {
     CheckBackup { dir: PathBuf },
     /// Reboot the key scanner into its USB boot ROM (the RPI-RP2 drive)
     Bootloader,
+    /// Put the backup's firmware (stock, for a backup taken before flashing) back on this
+    /// keyboard. Rewrites only the 4 KiB sectors that differ and reads each one back.
+    Restore {
+        /// A folder made by `glassdeck scanner backup` from this keyboard
+        #[arg(long)]
+        backup: PathBuf,
+        /// Also put back the settings partition (keymap, profiles, rest references). Its factory
+        /// calibration bytes are the ones already checked to match.
+        #[arg(long)]
+        settings: bool,
+    },
     /// Flash a .uf2 firmware; refuses unless --backup is a complete backup of this keyboard
     Flash {
         /// For example firmware/target/thumbv6m-none-eabi/release/glassdeck-scanner.uf2
@@ -85,6 +96,7 @@ pub fn run(command: ScannerCommand) -> Result<()> {
             Ok(())
         }
         ScannerCommand::Flash { uf2, backup } => flash(&uf2, &backup),
+        ScannerCommand::Restore { backup, settings } => restore(&backup, settings),
     }
 }
 
@@ -295,6 +307,7 @@ impl Manifest {
 struct Backup {
     manifest: Manifest,
     calibration: FactoryCalibration,
+    flash: Vec<u8>,
 }
 
 impl Backup {
@@ -331,6 +344,7 @@ impl Backup {
         Ok(Self {
             manifest,
             calibration,
+            flash,
         })
     }
 }
@@ -507,46 +521,70 @@ fn wait_for_drive() -> Result<PathBuf> {
     wait_for("the boot ROM's drive", find_drive)
 }
 
-fn flash(uf2: &Path, backup_dir: &Path) -> Result<()> {
-    let backup = Backup::load(backup_dir).with_context(|| {
-        format!(
-            "{} isn't a usable backup, so nothing was flashed",
-            backup_dir.display()
-        )
-    })?;
+fn load_backup(dir: &Path, refused: &str) -> Result<Backup> {
+    let backup = Backup::load(dir)
+        .with_context(|| format!("{} isn't a usable backup, so {refused}", dir.display()))?;
     println!("backup checked: {}", backup.manifest.describe());
+    Ok(backup)
+}
+
+/// Gets the keyboard into its boot ROM. With `allow_boot_rom`, a lone RP2040 already in its
+/// boot ROM (as after three crashes in a row) is taken to be this keyboard; the calibration
+/// check that follows proves it or stops.
+fn into_boot_rom(backup: &Backup, allow_boot_rom: bool) -> Result<BootRom> {
+    match (UsbPipe::open(), picoboot::count()) {
+        (Ok(mut pipe), 0) => {
+            if let (Some(now), Some(then)) = (&pipe.serial, &backup.manifest.usb_serial)
+                && now != then
+            {
+                bail!(
+                    "this keyboard's USB serial is {now}, the backup's is {then}; back up this keyboard first"
+                );
+            }
+            enter_bootloader(&mut pipe)?;
+        }
+        (Err(_), 1) if allow_boot_rom => println!("the key scanner is already in its boot ROM"),
+        (Err(e), 0) => return Err(e),
+        _ => bail!(
+            "an RP2040 is already in its boot ROM; unplug it (or, if it's this keyboard, replug it \
+             so it starts its firmware) so this can't write the wrong board"
+        ),
+    }
+    wait_for_boot_rom()
+}
+
+/// Reads the keyboard's settings partition and checks its factory calibration is the backup's.
+/// On a mismatch it reboots the keyboard and stops.
+fn check_same_keyboard(mut rom: BootRom, backup: &Backup) -> Result<(BootRom, Vec<u8>)> {
+    let live = read_flash(&mut rom, PARTITION_OFFSET as u32, PARTITION_LEN as u32)?;
+    let same = match flash_image::factory_calibration(&live) {
+        Ok(cal) => cal.info == backup.calibration.info && cal.factors == backup.calibration.factors,
+        Err(e) => {
+            rom.reboot().context("rebooting back into the firmware")?;
+            return Err(e).context("this keyboard's factory calibration; nothing was written");
+        }
+    };
+    if !same {
+        rom.reboot().context("rebooting back into the firmware")?;
+        bail!(
+            "this keyboard's factory calibration isn't the one in the backup, so it's another \
+             keyboard; nothing was written"
+        );
+    }
+    Ok((rom, live))
+}
+
+fn flash(uf2: &Path, backup_dir: &Path) -> Result<()> {
+    let backup = load_backup(backup_dir, "nothing was flashed")?;
     let image = fs::read(uf2).with_context(|| format!("reading {}", uf2.display()))?;
     if !image.len().is_multiple_of(512) || image.get(..8) != Some(b"UF2\nWQ]\x9e".as_slice()) {
         bail!("{} isn't a UF2 file", uf2.display());
     }
-    if find_drive().is_some() || picoboot::count() > 0 {
-        bail!(
-            "an RP2040 is already in its boot ROM; unplug it (or, if it's this keyboard, replug it \
-             so it starts its firmware) so this can't flash the wrong board"
-        );
+    if find_drive().is_some() {
+        bail!("an RP2040 boot drive is already mounted; unplug that board so this can't flash it");
     }
-
-    let mut pipe = UsbPipe::open()?;
-    if let (Some(now), Some(then)) = (&pipe.serial, &backup.manifest.usb_serial)
-        && now != then
-    {
-        bail!(
-            "this keyboard's USB serial is {now}, the backup's is {then}; back up this keyboard first"
-        );
-    }
-    enter_bootloader(&mut pipe)?;
-    drop(pipe);
-
-    let mut rom = wait_for_boot_rom()?;
-    let live = read_flash(&mut rom, PARTITION_OFFSET as u32, PARTITION_LEN as u32)?;
-    let live =
-        flash_image::factory_calibration(&live).context("this keyboard's factory calibration")?;
-    if live.info != backup.calibration.info || live.factors != backup.calibration.factors {
-        rom.reboot().context("rebooting back into the firmware")?;
-        bail!(
-            "this keyboard's factory calibration isn't the one in the backup, so it's another keyboard; nothing was flashed"
-        );
-    }
+    let rom = into_boot_rom(&backup, false)?;
+    let (rom, _) = check_same_keyboard(rom, &backup)?;
     drop(rom);
 
     let drive = wait_for_drive()?;
@@ -561,6 +599,58 @@ fn flash(uf2: &Path, backup_dir: &Path) -> Result<()> {
         }
         Err(e) => return Err(e).with_context(|| format!("writing {}", target.display())),
     }
+    Ok(())
+}
+
+/// Offsets of the 4 KiB sectors where `current` differs from `wanted`; both start at `base`.
+fn changed_sectors(wanted: &[u8], current: &[u8], base: usize) -> Vec<usize> {
+    assert_eq!(wanted.len(), current.len());
+    wanted
+        .chunks(SECTOR as usize)
+        .zip(current.chunks(SECTOR as usize))
+        .enumerate()
+        .filter(|(_, (w, c))| w != c)
+        .map(|(i, _)| base + i * SECTOR as usize)
+        .collect()
+}
+
+fn restore(backup_dir: &Path, settings: bool) -> Result<()> {
+    let backup = load_backup(backup_dir, "nothing was restored")?;
+    let rom = into_boot_rom(&backup, true)?;
+    let (mut rom, live_partition) = check_same_keyboard(rom, &backup)?;
+
+    let firmware = read_flash(&mut rom, 0, PARTITION_OFFSET as u32)?;
+    let mut sectors = changed_sectors(&backup.flash[..PARTITION_OFFSET], &firmware, 0);
+    if settings {
+        sectors.extend(changed_sectors(
+            partition(&backup.flash),
+            &live_partition,
+            PARTITION_OFFSET,
+        ));
+    }
+    if sectors.is_empty() {
+        println!("flash already matches the backup");
+    }
+    for (i, &at) in sectors.iter().enumerate() {
+        print!(
+            "\rrewriting sector {} of {} ({at:#08x})",
+            i + 1,
+            sectors.len()
+        );
+        let _ = std::io::stdout().flush();
+        rom.rewrite_sector(at as u32, &backup.flash[at..at + SECTOR as usize])?;
+    }
+    if !sectors.is_empty() {
+        println!();
+    }
+    rom.reboot()
+        .context("rebooting into the restored firmware")?;
+    let what = if settings {
+        "firmware and settings partition"
+    } else {
+        "firmware"
+    };
+    println!("restored the {what} from the backup; the key scanner is rebooting");
     Ok(())
 }
 
@@ -679,6 +769,16 @@ mod tests {
         };
         fs::write(dir.join(MANIFEST), manifest.encode()).unwrap();
         dir
+    }
+
+    #[test]
+    fn only_changed_sectors_are_rewritten() {
+        let wanted = vec![0xFFu8; 4 * SECTOR as usize];
+        let mut current = wanted.clone();
+        current[SECTOR as usize + 7] = 0;
+        current[4 * SECTOR as usize - 1] = 0;
+        assert_eq!(changed_sectors(&wanted, &current, 0x1000), [0x2000, 0x4000]);
+        assert!(changed_sectors(&wanted, &wanted, 0).is_empty());
     }
 
     #[test]

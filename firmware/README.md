@@ -57,6 +57,14 @@ The backup reads flash through the RP2040 boot ROM's USB interface (PICOBOOT, as
 
 `glassdeck scanner check-backup <folder>` checks a backup without touching the keyboard.
 
+### Back to stock
+
+```powershell
+glassdeck scanner restore --backup D:\keyboard-backups\stock
+```
+
+This puts the backup's firmware back. It checks the keyboard's calibration matches the backup first, rewrites only the 4 KiB sectors that differ, reads each one back, then reboots. It works from the running firmware or from the boot ROM, for example after a crash loop. The settings partition is left alone unless you add `--settings`, which also puts back the backup's keymap, profiles and rest references.
+
 ### If something goes wrong
 
 | Problem | What to do |
@@ -64,5 +72,5 @@ The backup reads flash through the RP2040 boot ROM's USB interface (PICOBOOT, as
 | `backup` fails at "claiming the boot ROM's PICOBOOT interface" | The driver isn't installed. The keyboard is in boot mode right now, so do step 2 of the driver setup, replug, and back up again into a new folder. A backup never reuses a folder. |
 | `flash` says another RP2040 is in its boot ROM | Unplug the other board. If it's this keyboard, replug it so it starts its firmware. |
 | `flash` says the calibration doesn't match | The backup is of a different keyboard. Back up this one first. |
-| The new firmware crashes | After three crashes in a row it reboots into the boot ROM by itself. Copy a working `.uf2` onto the RPI-RP2 drive. |
-| You want stock back | Not built yet: `flash.bin` has the stock firmware, but nothing turns it back into a `.uf2` or writes it yet. |
+| The new firmware crashes | After three crashes in a row it reboots into the boot ROM by itself. Run `restore`, or copy a working `.uf2` onto the RPI-RP2 drive. |
+| The new firmware misbehaves | `glassdeck scanner restore --backup <folder>` puts stock back. |

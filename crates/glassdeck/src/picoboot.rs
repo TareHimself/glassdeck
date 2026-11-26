@@ -16,11 +16,15 @@ const PICOBOOT_INTERFACE: u8 = 1;
 const MAGIC: u32 = 0x431F_D10B;
 const EXCLUSIVE_ACCESS: u8 = 0x01;
 const REBOOT: u8 = 0x02;
+const FLASH_ERASE: u8 = 0x03;
 const READ: u8 = 0x84;
+const WRITE: u8 = 0x05;
 const EXIT_XIP: u8 = 0x06;
 /// Locks the drive against writes while we read.
 const EXCLUSIVE: u8 = 1;
 const NOT_EXCLUSIVE: u8 = 0;
+/// The smallest flash erase.
+pub const SECTOR: u32 = 4096;
 /// Flash reads must start on a 256-byte page.
 const READ_CHUNK: u32 = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -144,6 +148,41 @@ impl BootRom {
         }
         self.exclusive(NOT_EXCLUSIVE)?;
         Ok(data)
+    }
+
+    /// Erases the 4 KiB sector at `offset`, writes `data` into it and reads it back.
+    pub fn rewrite_sector(&mut self, offset: u32, data: &[u8]) -> Result<()> {
+        if !offset.is_multiple_of(SECTOR)
+            || data.len() != SECTOR as usize
+            || offset + SECTOR > FLASH_SIZE
+        {
+            bail!("a sector rewrite must be one whole 4 KiB sector inside the 16 MiB chip");
+        }
+        let range = |len: u32| {
+            let mut args = [0u8; 8];
+            args[..4].copy_from_slice(&(FLASH_BASE + offset).to_le_bytes());
+            args[4..].copy_from_slice(&len.to_le_bytes());
+            args
+        };
+        self.exclusive(EXCLUSIVE)?;
+        self.simple(EXIT_XIP, &[])?;
+        self.simple(FLASH_ERASE, &range(SECTOR))?;
+        self.command(WRITE, &range(SECTOR), SECTOR)?;
+        let mut buf = Buffer::new(data.len());
+        buf.extend_from_slice(data);
+        self.out
+            .transfer_blocking(buf, TIMEOUT)
+            .into_result()
+            .with_context(|| format!("writing flash at {offset:#08x}"))?;
+        self.input
+            .transfer_blocking(Buffer::new(64), TIMEOUT)
+            .into_result()
+            .with_context(|| format!("the write at {offset:#08x} wasn't acknowledged"))?;
+        let back = self.read_flash(offset, SECTOR, |_| {})?;
+        if back != data {
+            bail!("the sector at {offset:#08x} reads back differently after writing it");
+        }
+        Ok(())
     }
 
     /// Reboots into the firmware in flash.
