@@ -58,7 +58,7 @@ flowchart LR
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
 | [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's (RP2040) serial-link framing and messages, byte for byte as the stock firmware sends them. Tested against vectors printed by Keyglass's C firmware ([firmware/vectors](firmware/vectors)). |
 | [glassdeck-scanner-dsp](crates/glassdeck-scanner-dsp) | key scanner | `no_std`: the key scanner's signal processing, from sensor readings to key decisions, ported from Keyglass's C firmware and checked against it scan by scan. |
-| [firmware](firmware) | key scanner | The key scanner's firmware (RP2040, its own Cargo workspace): Keyglass's main loop with USB, the serial link and littlefs storage, reporting `glassdeck-scanner 0.0.1`. Build the UF2 with `firmware/build.sh` (Docker, since littlefs is C). |
+| [firmware](firmware) | key scanner | The key scanner's firmware (RP2040, its own Cargo workspace): Keyglass's main loop with USB, the serial link and littlefs storage, reporting `glassdeck-scanner 0.0.1`. Build, back up and flash: [firmware/README.md](firmware/README.md). |
 
 ## Build
 
