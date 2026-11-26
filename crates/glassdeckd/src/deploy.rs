@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_luau::profile::{Profile, WidgetArea};
-use glassdeck_package::{Background, EXTENSION, MODULE_EXTENSION, ModulePackage};
+use glassdeck_package::{Background, Content, EXTENSION, MODULE_EXTENSION, ModulePackage, CanvasFiles};
 use glassdeck_proto::FileTarget;
 
 use crate::module_host;
@@ -71,10 +71,14 @@ pub fn keyboard_file(target: &FileTarget, path: &Path, staging: &Path) -> Result
     Ok(KeyboardFile { path: copy, made_for_upload: true })
 }
 
-/// Copies a deployed module or profile into glassdeckd's own folder; the module host reloads from there.
-pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &Path) -> Result<()> {
+/// Copies a deployed module, profile or canvas (one with options or a host half) into glassdeckd's own
+/// folder; the module host runs host sides from there.
+pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &Path, canvases: &Path) -> Result<()> {
     let place = match target {
-        FileTarget::Background(_) => return Ok(()),
+        FileTarget::Background(name) => match runs_on_host(from)? {
+            true => canvases.join(name),
+            false => return Ok(()),
+        },
         FileTarget::Module(name) => modules.join(name),
         FileTarget::Profile => profile.to_owned(),
     };
@@ -87,6 +91,16 @@ pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &
     let staging = staging(&place);
     fs::copy(from, &staging).with_context(|| format!("copying {} to {}", from.display(), staging.display()))?;
     fs::rename(&staging, &place).with_context(|| format!("moving {} into place", place.display()))
+}
+
+/// A canvas with options or a host half, which glassdeckd runs part of.
+fn runs_on_host(path: &Path) -> Result<bool> {
+    let background = Background::open(path)?;
+    if !matches!(background.manifest().content, Content::Canvas { .. }) {
+        return Ok(false);
+    }
+    let plan = CanvasFiles::read(&background)?.plan;
+    Ok(plan.options.is_some() || plan.host.is_some())
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {

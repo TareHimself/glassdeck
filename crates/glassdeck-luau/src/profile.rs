@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use glassdeck_package::{ModuleManifest, Size};
 use glassdeck_layout::{Layout, Variant};
+use glassdeck_package::{ModuleManifest, Size};
 use serde::Deserialize;
 
 /// Positions snap to this, so widgets line up.
@@ -47,8 +47,9 @@ struct RawWidget {
     y: u32,
     w: u32,
     h: u32,
+    /// What the user chose for this instance's options, by path; only the host reads it.
     #[serde(default)]
-    settings: serde_json::Map<String, serde_json::Value>,
+    options: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Where an instance sits, relative to the widget area.
@@ -70,7 +71,7 @@ impl Placement {
 pub struct Widget {
     pub module: String,
     pub placement: Placement,
-    pub settings: serde_json::Value,
+    pub options: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A widget list that fits the area, lines up on the grid, respects each module's sizes and never overlaps.
@@ -91,7 +92,7 @@ impl Profile {
         ensure!(raw.widgets.len() <= usize::from(u16::MAX), "a profile holds at most {} widgets", u16::MAX);
         let mut widgets: Vec<Widget> = Vec::with_capacity(raw.widgets.len());
         for (index, raw) in raw.widgets.into_iter().enumerate() {
-            let RawWidget { module, x, y, w, h, settings } = raw;
+            let RawWidget { module, x, y, w, h, options } = raw;
             let placement = Placement { x, y, w, h };
             let name = format!("widget {index} ({module})");
             let Some(manifest) = manifest(&module) else { bail!("{name}: no module with that id is installed") };
@@ -101,7 +102,7 @@ impl Profile {
             if let Some(other) = widgets.iter().position(|o| o.placement.overlaps(&placement)) {
                 bail!("{name}: overlaps widget {other} ({})", widgets[other].module);
             }
-            widgets.push(Widget { module, placement, settings: serde_json::Value::Object(settings) });
+            widgets.push(Widget { module, placement, options });
         }
         Ok(Self { widgets })
     }
@@ -144,7 +145,7 @@ mod tests {
         let profile = profile(&[widget(8, 0, 240, 120), widget(248, 0, 240, 120)]).unwrap();
         assert_eq!(profile.widgets.len(), 2);
         assert_eq!(profile.widgets[1].placement, Placement { x: 248, y: 0, w: 240, h: 120 });
-        assert_eq!(profile.widgets[0].settings, serde_json::json!({}));
+        assert!(profile.widgets[0].options.is_empty());
     }
 
     #[test]

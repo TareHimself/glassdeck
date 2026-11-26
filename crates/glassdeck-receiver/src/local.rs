@@ -1,4 +1,4 @@
-//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web, scenes through glassdeck-scene.
+//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web, canvases through glassdeck-gpu.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -6,12 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
-use glassdeck_package::{Content, Background, Entry};
+use glassdeck_package::{Background, Content, Entry};
 use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
-use crate::platform::{self, Decoder, Registrar, SceneBackground, WebBackground};
+use crate::platform::{self, Decoder, Registrar, CanvasBackground, WebBackground};
 use crate::playout::{PlayoutClock, wait_until};
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
@@ -23,8 +23,8 @@ pub enum LocalBackground {
     Video { stop: Arc<AtomicBool>, thread: JoinHandle<()> },
     /// Rendered by glassdeck-local-web
     Web(WebBackground),
-    /// Drawn by glassdeck-scene
-    Scene(SceneBackground),
+    /// Drawn by glassdeck-gpu
+    Canvas(CanvasBackground),
 }
 
 impl LocalBackground {
@@ -39,7 +39,7 @@ impl LocalBackground {
         let entry = match &background.manifest().content {
             Content::Video { file, .. } => background.entry(file).context("the background's video is missing")?,
             Content::Web { .. } => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
-            Content::Scene { .. } => return SceneBackground::start(path, registrar, mailbox, stopped).map(Self::Scene),
+            Content::Canvas { .. } => return CanvasBackground::start(path, registrar, mailbox, stopped).map(Self::Canvas),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
@@ -55,6 +55,14 @@ impl LocalBackground {
         Ok(Self::Video { stop, thread })
     }
 
+    /// What the host half sent; only a canvas has a script to take it.
+    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+        match self {
+            Self::Canvas(canvas) => canvas.deliver(payload),
+            Self::Video { .. } | Self::Web(_) => Ok(()),
+        }
+    }
+
     pub fn stop(self) {
         match self {
             Self::Video { stop, thread } => {
@@ -64,7 +72,7 @@ impl LocalBackground {
                 }
             }
             Self::Web(web) => web.stop(),
-            Self::Scene(scene) => scene.stop(),
+            Self::Canvas(canvas) => canvas.stop(),
         }
     }
 }
@@ -95,8 +103,7 @@ fn play_video(background: &Background, entry: Entry, mailbox: &Mailbox, stop: &A
     platform::init_decoder_thread()?;
     let video = BackgroundEntry { background, entry };
     let track = VideoTrack::read(&video).context("reading the background's video")?;
-    let info =
-        StreamInfo { stream_id: 0, codec: track.codec, mode: Mode::Paced, width: track.width, height: track.height };
+    let info = StreamInfo { stream_id: 0, codec: track.codec, mode: Mode::Paced, width: track.width, height: track.height };
     let mut decoder = Decoder::new(&info)?;
     println!(
         "Local background {}: {:?} {}x{}, {} frames, {:.1} s via {}",
@@ -121,8 +128,7 @@ fn play_video(background: &Background, entry: Entry, mailbox: &Mailbox, stop: &A
             let access_unit = track.access_unit(sample, &data)?;
             let pts_us = lap * track.duration_us + sample.pts_us;
             for picture in decoder.decode(&access_unit, pts_us)? {
-                let clock =
-                    *clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), LOCAL_PLAYOUT_DELAY_US));
+                let clock = *clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), LOCAL_PLAYOUT_DELAY_US));
                 let late_us = wait_until(clock.due_us(picture.time_us));
                 mailbox.put(ShownFrame { picture: platform::decoded(picture), timing: Timing::Paced { late_us } });
             }

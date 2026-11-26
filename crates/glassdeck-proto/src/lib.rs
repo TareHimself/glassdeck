@@ -9,10 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 8;
+pub const VERSION: u8 = 9;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
-/// `SelectBackground` with this name chooses the built-in scene: the default, always on the keyboard.
+/// `SelectBackground` with this name chooses the built-in canvas: the default, always on the keyboard.
 /// Not a file name, so it can never clash with a background in the folder.
 pub const BUILT_IN_BACKGROUND: &str = "builtin:gradient";
 /// Files at least this big pause the stream while they go to the keyboard, which shows their
@@ -36,6 +36,7 @@ const KIND_PUT_FILE: u8 = 8;
 const KIND_PUT_DONE: u8 = 9;
 const KIND_PUT_REFUSED: u8 = 10;
 const KIND_MODULE_RESOURCE: u8 = 11;
+const KIND_BACKGROUND_DATA: u8 = 12;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
@@ -126,27 +127,53 @@ impl PutFile {
 pub enum Message {
     StreamStart(StreamInfo),
     Frame(Frame),
-    StreamEnd { stream_id: u32 },
+    StreamEnd {
+        stream_id: u32,
+    },
     /// Sender to receiver, before a stream: "my clock reads `sent_us`".
-    ClockProbe { sent_us: u64 },
+    ClockProbe {
+        sent_us: u64,
+    },
     /// Receiver to sender: the probe's `sent_us`, and the receiver's clock when the probe arrived.
-    ClockReply { probe_sent_us: u64, received_us: u64 },
+    ClockReply {
+        probe_sent_us: u64,
+        received_us: u64,
+    },
     /// Sender to receiver: play this background from the keyboard's background folder whenever no stream is open,
     /// and remember it across restarts.
-    SelectBackground { name: String },
+    SelectBackground {
+        name: String,
+    },
     /// Host to keyboard: what a widget's `host.luau` sent, for the instance numbered by its place in
     /// the profile's widget list. `payload` is MessagePack.
-    ModuleData { instance: u16, payload: Vec<u8> },
+    ModuleData {
+        instance: u16,
+        payload: Vec<u8>,
+    },
     /// Host to keyboard: a piece of a file to install. The keyboard answers only the piece that
     /// completes the file, with `PutDone` or `PutRefused`.
     PutFile(PutFile),
     /// Keyboard to host: the file is in place.
-    PutDone { target: FileTarget },
+    PutDone {
+        target: FileTarget,
+    },
     /// Keyboard to host: the file was not installed.
-    PutRefused { target: FileTarget, reason: String },
+    PutRefused {
+        target: FileTarget,
+        reason: String,
+    },
     /// Host to keyboard: a resource a widget's host half made at run time, such as album art, for
     /// its keyboard half to draw. Empty `data` removes it.
-    ModuleResource { instance: u16, name: String, data: Vec<u8> },
+    ModuleResource {
+        instance: u16,
+        name: String,
+        data: Vec<u8>,
+    },
+    /// Host to keyboard: what the selected canvas background's host half sent (or its options, with no
+    /// host half), for its keyboard script. `payload` is MessagePack.
+    BackgroundData {
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -253,9 +280,8 @@ impl Message {
                 (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
             }
             Self::SelectBackground { name } => (KIND_SELECT_BACKGROUND, name.as_bytes().to_vec()),
-            Self::ModuleData { instance, payload } => {
-                (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat())
-            }
+            Self::ModuleData { instance, payload } => (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat()),
+            Self::BackgroundData { payload } => (KIND_BACKGROUND_DATA, payload.clone()),
             Self::PutFile(put) => {
                 let (head, name) = encode_target(&put.target);
                 (KIND_PUT_FILE, [&head[..], &put.offset.to_le_bytes(), &put.total.to_le_bytes(), name, &put.data].concat())
@@ -330,6 +356,7 @@ impl Message {
                 let payload = body.split_off(MODULE_DATA_FIXED_LEN);
                 Ok(Self::ModuleData { instance: u16::from_le_bytes([body[0], body[1]]), payload })
             }
+            KIND_BACKGROUND_DATA => Ok(Self::BackgroundData { payload: body }),
             KIND_PUT_FILE if body.len() >= PUT_FILE_FIXED_LEN => {
                 let (target, name_end) = decode_target(&body, PUT_FILE_FIXED_LEN)?;
                 let (offset, total) = (u64_at(&body, 4), u64_at(&body, 12));
@@ -353,10 +380,8 @@ impl Message {
                 let mut body = body;
                 Ok(Self::ModuleResource { instance, name, data: body.split_off(name_end) })
             }
-            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA
-            | KIND_PUT_FILE | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE => {
-                Err(bad_length())
-            }
+            KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA | KIND_PUT_FILE
+            | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE => Err(bad_length()),
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
@@ -409,10 +434,7 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 
 /// Wall-clock microseconds. Comparing two machines' readings needs the offset from clock sync.
 pub fn unix_micros() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before 1970")
-        .as_micros() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before 1970").as_micros() as u64
 }
 
 #[cfg(test)]
@@ -427,13 +449,7 @@ mod tests {
 
     #[test]
     fn every_message_round_trips() {
-        round_trip(Message::StreamStart(StreamInfo {
-            stream_id: 3,
-            codec: Codec::Hevc,
-            mode: Mode::Paced,
-            width: 1920,
-            height: 1080,
-        }));
+        round_trip(Message::StreamStart(StreamInfo { stream_id: 3, codec: Codec::Hevc, mode: Mode::Paced, width: 1920, height: 1080 }));
         round_trip(Message::StreamStart(StreamInfo {
             stream_id: 4,
             codec: Codec::H264,
@@ -441,13 +457,7 @@ mod tests {
             width: 1920,
             height: 1080,
         }));
-        round_trip(Message::Frame(Frame {
-            stream_id: 3,
-            seq: 9,
-            time_us: 1_234_567,
-            keyframe: true,
-            payload: vec![0, 0, 0, 1, 0x65],
-        }));
+        round_trip(Message::Frame(Frame { stream_id: 3, seq: 9, time_us: 1_234_567, keyframe: true, payload: vec![0, 0, 0, 1, 0x65] }));
         round_trip(Message::StreamEnd { stream_id: 3 });
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
@@ -464,6 +474,7 @@ mod tests {
         round_trip(Message::PutRefused { target: FileTarget::Profile, reason: "no space left".into() });
         round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![0x89, b'P', b'N', b'G'] });
         round_trip(Message::ModuleResource { instance: 4, name: "cover".into(), data: vec![] });
+        round_trip(Message::BackgroundData { payload: vec![0x81, 0xa1, b'a', 1] });
     }
 
     #[test]
@@ -498,10 +509,7 @@ mod tests {
         let mut short = Message::StreamEnd { stream_id: 1 }.encode();
         short[4] = 2;
         short.truncate(HEADER_LEN + 2);
-        assert!(matches!(
-            Message::read_from(&mut short.as_slice()),
-            Err(ProtoError::BadBodyLength { kind: KIND_STREAM_END, len: 2 })
-        ));
+        assert!(matches!(Message::read_from(&mut short.as_slice()), Err(ProtoError::BadBodyLength { kind: KIND_STREAM_END, len: 2 })));
     }
 
     #[test]

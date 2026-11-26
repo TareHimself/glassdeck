@@ -17,13 +17,23 @@ pub enum Action<'a> {
     Decode(&'a Frame),
     End,
     /// Reply to a clock probe at once with `ClockReply`, stamped with the probe's arrival time.
-    AnswerProbe { probe_sent_us: u64 },
+    AnswerProbe {
+        probe_sent_us: u64,
+    },
     /// Make this the background shown when no stream is open; the session itself doesn't change.
     SelectBackground(&'a str),
     /// Hand a widget instance what its host half sent; widgets run whether or not a stream is open.
-    ModuleData { instance: u16, payload: &'a [u8] },
+    ModuleData {
+        instance: u16,
+        payload: &'a [u8],
+    },
     /// Give a widget instance a resource its host half made; empty `data` removes it.
-    ModuleResource { instance: u16, name: &'a str, data: &'a [u8] },
+    ModuleResource {
+        instance: u16,
+        name: &'a str,
+        data: &'a [u8],
+    },
+    BackgroundData(&'a [u8]),
     /// Write a piece of a file; files arrive whether or not a stream is open.
     PutFile(&'a PutFile),
 }
@@ -58,6 +68,7 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
         (_, Message::ClockReply { .. } | Message::PutDone { .. } | Message::PutRefused { .. }) => Err(SessionError::UnexpectedReply),
         (_, Message::PutFile(put)) => Ok((state, Action::PutFile(put))),
         (_, Message::ModuleResource { instance, name, data }) => Ok((state, Action::ModuleResource { instance: *instance, name, data })),
+        (_, Message::BackgroundData { payload }) => Ok((state, Action::BackgroundData(payload))),
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
@@ -111,6 +122,7 @@ mod tests {
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
             Ok((next, Action::ModuleResource { .. })) => Expect::Moves(next, "module resource"),
+            Ok((next, Action::BackgroundData(_))) => Expect::Moves(next, "background data"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -152,11 +164,7 @@ mod tests {
             (Streaming(a), frame(1), Expect::Moves(Streaming(a), "decode")),
             (Streaming(a), frame(2), Expect::Refused(SessionError::WrongStream { current: 1, got: 2 })),
             (Streaming(a), Message::StreamEnd { stream_id: 1 }, Expect::Moves(Idle, "end")),
-            (
-                Streaming(a),
-                Message::StreamEnd { stream_id: 2 },
-                Expect::Refused(SessionError::WrongStream { current: 1, got: 2 }),
-            ),
+            (Streaming(a), Message::StreamEnd { stream_id: 2 }, Expect::Refused(SessionError::WrongStream { current: 1, got: 2 })),
         ];
         for (from, message, expected) in table {
             assert_eq!(outcome(from, &message), expected, "from {from:?} on {message:?}");

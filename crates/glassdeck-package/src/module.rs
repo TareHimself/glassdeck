@@ -8,14 +8,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
-use crate::zip::{self, Entry};
 use crate::resource::{Resource, ResourceKind, ResourceName, literal_resources};
+use crate::zip::{self, Entry};
 use crate::{MANIFEST, read_exact_at, staging_path};
 
 pub const MODULE_EXTENSION: &str = "deckmod";
 pub const MODULE_MANIFEST: &str = "module.json";
 pub const KEYBOARD_SCRIPT: &str = "keyboard.luau";
 pub const HOST_SCRIPT: &str = "host.luau";
+/// What the user can set, declared in Luau; only the host runs it, so it never reaches the keyboard.
+pub const OPTIONS_SCRIPT: &str = "options.luau";
 pub const ASSETS_FOLDER: &str = "assets";
 /// The module layout this build reads: module.json and the package folders (format 3 split assets/ into keyboard/ and host/).
 pub const MODULE_FORMAT_VERSION: u32 = 3;
@@ -75,9 +77,17 @@ struct RawManifest {
 impl ModuleManifest {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawManifest = serde_json::from_str(text).context("parsing module.json")?;
-        ensure!(raw.format == MODULE_FORMAT_VERSION, "module.json format {} is not the {MODULE_FORMAT_VERSION} this build reads", raw.format);
+        ensure!(
+            raw.format == MODULE_FORMAT_VERSION,
+            "module.json format {} is not the {MODULE_FORMAT_VERSION} this build reads",
+            raw.format
+        );
         ensure!(is_version(&raw.version), "version {:?} is not major.minor.patch, like 1.0.0", raw.version);
-        ensure!(raw.id.contains('.') && !raw.id.contains(char::is_whitespace), "id {:?} is not reverse-DNS, like dev.glassdeck.clock", raw.id);
+        ensure!(
+            raw.id.contains('.') && !raw.id.contains(char::is_whitespace),
+            "id {:?} is not reverse-DNS, like dev.glassdeck.clock",
+            raw.id
+        );
         ensure!(raw.size.w > 0 && raw.size.h > 0, "size must not be zero");
         let resize = match (raw.min, raw.max) {
             (None, None) => Resize::Fixed,
@@ -138,7 +148,8 @@ pub struct ModulePackage(Contents);
 impl ModulePackage {
     pub fn open(path: &Path) -> Result<Self> {
         let contents = Contents::open(path)?;
-        check_scripts(&contents.manifest, |name| contents.entries.contains_key(name)).with_context(|| format!("checking {}", path.display()))?;
+        check_scripts(&contents.manifest, |name| contents.entries.contains_key(name))
+            .with_context(|| format!("checking {}", path.display()))?;
         Ok(Self(contents))
     }
 
@@ -152,6 +163,11 @@ impl ModulePackage {
 
     pub fn keyboard_script(&self) -> Result<String> {
         self.0.script(KEYBOARD_SCRIPT)
+    }
+
+    /// `None` when the module has no options.
+    pub fn options_script(&self) -> Result<Option<String>> {
+        self.0.entries.contains_key(OPTIONS_SCRIPT).then(|| self.0.script(OPTIONS_SCRIPT)).transpose()
     }
 
     /// `None` when the module has no host half.
@@ -263,14 +279,15 @@ impl ModuleWriter {
     }
 }
 
-/// Packs a module folder: `module.json`, the scripts, and `assets/keyboard/` and `assets/host/`.
+/// Packs a module folder: `module.json`, the scripts (`keyboard.luau`, and `host.luau` and `options.luau`
+/// if present), and `assets/keyboard/` and `assets/host/`.
 /// Every resource a script names as a literal must be in the folder, and on a side that script can use.
 pub fn pack_folder(folder: &Path, out: &Path) -> Result<ModulePackage> {
     let manifest_path = folder.join(MODULE_MANIFEST);
     let manifest = fs::read_to_string(&manifest_path).with_context(|| format!("reading {}", manifest_path.display()))?;
     let resources = resource_files(&folder.join(ASSETS_FOLDER))?;
     let mut writer = ModuleWriter::create(out, &manifest)?;
-    for script in [KEYBOARD_SCRIPT, HOST_SCRIPT] {
+    for script in [KEYBOARD_SCRIPT, HOST_SCRIPT, OPTIONS_SCRIPT] {
         let path = folder.join(script);
         if path.exists() {
             let source = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -357,7 +374,8 @@ mod tests {
 
     #[test]
     fn a_fixed_module_allows_only_its_size() {
-        let manifest = ModuleManifest::parse(r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
+        let manifest =
+            ModuleManifest::parse(r#"{ "format": 3, "id": "a.b", "name": "A", "version": "1.0.0", "size": { "w": 8, "h": 8 } }"#).unwrap();
         assert_eq!(manifest.resize, Resize::Fixed);
         assert!(manifest.resize.allows(manifest.size, Size { w: 8, h: 8 }));
         assert!(!manifest.resize.allows(manifest.size, Size { w: 16, h: 8 }));

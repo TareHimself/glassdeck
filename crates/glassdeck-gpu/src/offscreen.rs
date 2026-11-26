@@ -1,6 +1,6 @@
-//! An OpenGL context with no visible window, for drawing scenes on the PC: a hidden window for WGL,
+//! An OpenGL context with no visible window, for drawing canvases on the PC: a hidden window for WGL,
 //! a 4.3 core context (the first desktop version that takes GLSL ES 3.00, as the keyboard does),
-//! and a framebuffer the scene draws into and the preview reads back.
+//! and a framebuffer the canvas draws into and the preview reads back.
 
 use std::ffi::{CStr, c_void};
 
@@ -42,7 +42,7 @@ impl Offscreen {
             let window = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("STATIC"),
-                w!("glassdeck scene"),
+                w!("glassdeck canvas"),
                 WS_OVERLAPPEDWINDOW,
                 0,
                 0,

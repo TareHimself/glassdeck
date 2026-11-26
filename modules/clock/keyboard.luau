@@ -1,17 +1,19 @@
-type Settings = { seconds: boolean? }
 type State = { seconds: boolean }
+-- options.luau's options, forwarded as they are (no host.luau)
+type Options = { seconds: boolean }
 
 local module = {}
 
-function module.init(settings: Settings): State
+function module.init(): State
     ui:every(1, function()
         ui:redraw()
     end)
-    return { seconds = settings.seconds == true }
+    return { seconds = false }
 end
 
-function module.settings_changed(state: State, settings: Settings)
-    state.seconds = settings.seconds == true
+function module.on_data(state: State, options: Options): boolean
+    state.seconds = options.seconds
+    return true
 end
 
 function module.draw(state: State, ui: Ui)

@@ -1,7 +1,7 @@
 -- keyboard.luau: runs on the keyboard, draws in the module's own rectangle.
 -- Colors are "#rrggbb" or "#rrggbbaa". Coordinates are local: (0, 0) is the module's top-left.
 
-type TextOptions = {
+export type TextOptions = {
     x: number?,
     y: number?,
     size: number?,
@@ -14,18 +14,18 @@ type TextOptions = {
     font: Resource?,
 }
 
-type RectOptions = { fill: string?, stroke: string?, stroke_width: number?, radius: number? }
+export type RectOptions = { fill: string?, stroke: string?, stroke_width: number?, radius: number? }
 
 -- x, y, w and h default to the whole module
-type AreaOptions = { x: number?, y: number?, w: number?, h: number? }
+export type AreaOptions = { x: number?, y: number?, w: number?, h: number? }
 
-type BarOptions = { x: number?, y: number?, w: number?, h: number?, color: string? }
+export type BarOptions = { x: number?, y: number?, w: number?, h: number?, color: string? }
 
-type GraphOptions = { x: number?, y: number?, w: number?, h: number?, color: string?, min: number?, max: number? }
+export type GraphOptions = { x: number?, y: number?, w: number?, h: number?, color: string?, min: number?, max: number? }
 
-type ArcOptions = { width: number?, color: string? }
+export type ArcOptions = { width: number?, color: string? }
 
-declare class Ui
+declare extern type Ui with
     width: number
     height: number
 
@@ -49,13 +49,12 @@ end
 declare ui: Ui
 
 -- What keyboard.luau returns. Every hook is optional except draw.
-type Module<State> = {
-    init: ((settings: Settings, saved: Data?) -> State)?,
+export type Module<State> = {
+    init: ((saved: Data?) -> State)?,
     -- the return value goes to the next init after a hot reload
     unload: ((state: State) -> Data?)?,
     resize: ((state: State, w: number, h: number) -> ())?,
-    settings_changed: ((state: State, settings: Settings) -> ())?,
-    -- return true to redraw
+    -- what the host half sent, or the options as they are with no host.luau; return true to redraw
     on_data: ((state: State, data: Data) -> boolean)?,
     draw: (state: State, ui: Ui) -> (),
 }

@@ -24,7 +24,7 @@ pub enum Origin {
     WallpaperEngine { workshop_id: String },
     /// Made by `glassdeck convert` from the file or folder of this name
     Converted { from: String },
-    /// Made by glassdeck pack from the scene folder of this name; sources is source_digest of what it read
+    /// Made by glassdeck pack from the canvas folder of this name; sources is source_digest of what it read
     Packed { from: String, sources: String },
 }
 
@@ -42,9 +42,9 @@ pub enum Content {
         /// Wallpaper Engine's user properties with their defaults, as `applyUserProperties` receives them
         properties: Map<String, Value>,
     },
-    /// Drawn on the keyboard's GPU by glassdeck-scene, from a shader written in the glassdeck Slang API
-    Scene {
-        /// The plan's entry, scene/plan.json, which names the shader and the script
+    /// Drawn on the keyboard's GPU by glassdeck-gpu, from a shader written in the glassdeck Slang API
+    Canvas {
+        /// The plan's entry, canvas/plan.json, which names the shader and the script
         plan: String,
     },
 }
@@ -61,7 +61,7 @@ impl Manifest {
                 file
             }
             Content::Web { entry, .. } => entry,
-            Content::Scene { plan } => plan,
+            Content::Canvas { plan } => plan,
         };
         for name in std::iter::once(named).chain(&self.preview) {
             check_name(name)?;

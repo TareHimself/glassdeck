@@ -1,4 +1,5 @@
-type Settings = { work_minutes: number?, break_minutes: number? }
+-- options.luau's options, forwarded as they are (no host.luau)
+type Options = { work_minutes: number, break_minutes: number }
 type Phase = "work" | "break"
 type State = { phase: Phase, ends: number, work: number, rest: number }
 
@@ -8,15 +9,20 @@ local function length(state: State): number
     return if state.phase == "work" then state.work else state.rest
 end
 
-function module.init(settings: Settings, saved: State?): State
+function module.init(saved: State?): State
     ui:every(1, function()
         ui:redraw()
     end)
     if saved then
         return saved
     end
-    local work = (settings.work_minutes or 25) * 60
-    return { phase = "work", ends = os.time() + work, work = work, rest = (settings.break_minutes or 5) * 60 }
+    return { phase = "work", ends = os.time() + 25 * 60, work = 25 * 60, rest = 5 * 60 }
+end
+
+-- New lengths apply from the next phase; the one running keeps its end.
+function module.on_data(state: State, options: Options): boolean
+    state.work, state.rest = options.work_minutes * 60, options.break_minutes * 60
+    return true
 end
 
 -- Keeps the countdown running across a hot reload.

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+glassdeck-luau.workspace = true
 glassdeck-luau-check.workspace = true
 glassdeck-package.workspace = true
 libloading = "0.8"

@@ -4,7 +4,7 @@
 mod manifest;
 mod module;
 mod resource;
-mod scene;
+mod canvas;
 mod zip;
 
 use std::collections::HashMap;
@@ -16,11 +16,14 @@ use anyhow::{Context, Result, bail, ensure};
 
 pub use manifest::{Content, FrameRate, Manifest, Origin, ProbedCodec, ProbedVideo, SpecMismatch, VideoFormat, check};
 pub use module::{
-    ASSETS_FOLDER, KEYBOARD_SCRIPT, KeyboardModule, MODULE_EXTENSION, MODULE_FORMAT_VERSION, MODULE_MANIFEST, ModuleManifest, ModulePackage, ModuleWriter, HOST_SCRIPT, Resize,
-    Size, is_module, pack_folder,
+    ASSETS_FOLDER, HOST_SCRIPT, KEYBOARD_SCRIPT, KeyboardModule, MODULE_EXTENSION, MODULE_FORMAT_VERSION, MODULE_MANIFEST, ModuleManifest,
+    ModulePackage, ModuleWriter, OPTIONS_SCRIPT, Resize, Size, is_module, pack_folder,
 };
 pub use resource::{Resource, ResourceKind, ResourceName, literal_resources};
-pub use scene::{InputField, InputKind, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT, SceneFiles, ScenePlan, scene_sources, source_digest};
+pub use canvas::{
+    InputField, InputKind, CANVAS_API, CANVAS_FRAGMENT, CANVAS_HOST, CANVAS_OPTIONS, CANVAS_PLAN, CANVAS_SCRIPT, CanvasFiles, CanvasPlan,
+    CanvasScripts, canvas_sources, source_digest,
+};
 pub use zip::{ALIGNMENT, Entry, check_name};
 
 pub const EXTENSION: &str = "deckbg";

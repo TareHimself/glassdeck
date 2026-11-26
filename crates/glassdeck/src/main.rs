@@ -35,14 +35,27 @@ enum Command {
     },
     /// Put a .deckbg, .deckmod or profile .json on the keyboard
     Deploy { file: PathBuf },
+    /// Show the selected background's (or a widget's) options, or set one: glassdeck options look.tint "#ff8000"
+    Options {
+        /// A widget's place in the profile, instead of the background
+        #[arg(long)]
+        widget: Option<usize>,
+        /// An option's path, such as motion.speed
+        path: Option<String>,
+        /// Its new value, as you'd type it: #ff8000, 0.5, on, ember
+        value: Option<String>,
+        /// Put the option back to its default
+        #[arg(long, conflicts_with = "value")]
+        reset: bool,
+    },
     /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod,
-    /// or a scene folder (scene.slang, optional keyboard.luau) into a .deckbg
+    /// or a canvas folder (canvas.slang, optional keyboard.luau) into a .deckbg
     Pack {
         folder: PathBuf,
-        /// Defaults to <folder>.deckmod, or <folder>.deckbg for a scene
+        /// Defaults to <folder>.deckmod, or <folder>.deckbg for a canvas
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Scenes: pack again whenever a file in the folder changes, refreshing its .glassdeck types
+        /// Canvases: pack again whenever a file in the folder changes, refreshing its .glassdeck types
         #[arg(long)]
         watch: bool,
     },
@@ -92,18 +105,31 @@ fn run(command: Command) -> Result<()> {
             Ok(())
         }
         Command::Bg { choice: Some(choice) } => set_bg(&choice),
+        Command::Options { widget, path: None, .. } => {
+            let url = widget.map_or_else(|| "/options".to_owned(), |index| format!("/options?widget={index}"));
+            print_options(&client::call("GET", &url, None)?);
+            Ok(())
+        }
+        Command::Options { widget, path: Some(path), value, reset } => {
+            if value.is_none() && !reset {
+                bail!("give {path} a value, or --reset it to its default");
+            }
+            let answer = client::call("PUT", "/options", Some(json!({ "widget": widget, "path": path, "value": value })))?;
+            println!("{} {path} = {}", answer["background"].as_str().unwrap_or("?"), answer["value"]);
+            Ok(())
+        }
         Command::Deploy { file } => {
             println!("The keyboard installed {}", deploy(&file)?);
             Ok(())
         }
-        Command::Pack { folder, out, watch } if glassdeck_slang::pack::is_scene_folder(&folder) => {
+        Command::Pack { folder, out, watch } if glassdeck_slang::pack::is_canvas_folder(&folder) => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::EXTENSION));
             let native = native_libraries()?;
             let slang = glassdeck_slang::Slang::load(&native)?;
             let luau = glassdeck_luau_check::LuauChecker::load(&native)?;
             let pack = || -> Result<()> {
-                let scene = glassdeck_slang::pack::pack_scene(&slang, &luau, &folder, &out)?;
-                println!("Packed the scene {} into {}", scene.manifest().title, out.display());
+                let canvas = glassdeck_slang::pack::pack_canvas(&slang, &luau, &folder, &out)?;
+                println!("Packed the canvas {} into {}", canvas.manifest().title, out.display());
                 Ok(())
             };
             if !watch {
@@ -112,7 +138,7 @@ fn run(command: Command) -> Result<()> {
             println!("Watching {}; Ctrl+C stops", folder.display());
             let mut seen = None;
             loop {
-                let now = scene_files(&folder)?;
+                let now = canvas_files(&folder)?;
                 if seen.as_ref() != Some(&now) {
                     if let Err(e) = pack() {
                         eprintln!("error: {e:#}");
@@ -122,9 +148,13 @@ fn run(command: Command) -> Result<()> {
                 std::thread::sleep(WATCH_EVERY);
             }
         }
-        Command::Pack { watch: true, .. } => bail!("--watch is for scene folders (with scene.slang)"),
+        Command::Pack { watch: true, .. } => bail!("--watch is for canvas folders (with canvas.slang)"),
         Command::Pack { folder, out, .. } => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
+            if [glassdeck_package::OPTIONS_SCRIPT, glassdeck_package::HOST_SCRIPT].iter().any(|script| folder.join(script).is_file()) {
+                let luau = glassdeck_luau_check::LuauChecker::load(&native_libraries()?)?;
+                glassdeck_slang::pack::check_module(&luau, &folder)?;
+            }
             let package = glassdeck_package::pack_folder(&folder, &out)?;
             println!("Packed {} into {}", package.manifest().id, out.display());
             Ok(())
@@ -163,11 +193,47 @@ fn set_bg(choice: &str) -> Result<()> {
     Ok(())
 }
 
+/// The panel as the app would draw it: sections indented, hidden options marked.
+fn print_options(view: &Value) {
+    fn walk(items: &[Value], depth: usize) {
+        let indent = "  ".repeat(depth);
+        for item in items {
+            if let Some(section) = item["section"].as_str() {
+                println!("{indent}{} ({section})", item["label"].as_str().unwrap_or(section));
+                walk(item["items"].as_array().map_or(&[][..], Vec::as_slice), depth + 1);
+            } else if let Some(heading) = item["heading"].as_str() {
+                println!("{indent}-- {heading} --");
+            } else if let Some(path) = item["option"].as_str() {
+                let kind = &item["kind"];
+                let limits = match kind["type"].as_str() {
+                    Some("range") => format!("range {} to {}", kind["min"], kind["max"]),
+                    Some("choice") => format!(
+                        "one of {}",
+                        kind["values"]
+                            .as_array()
+                            .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default()
+                    ),
+                    Some(other) => other.to_owned(),
+                    None => String::new(),
+                };
+                let hidden = if item["visible"].as_bool() == Some(false) { "  [hidden]" } else { "" };
+                println!("{indent}{}: {}  ({path}, {limits}){hidden}", item["label"].as_str().unwrap_or(path), item["value"]);
+            }
+        }
+    }
+    println!("Options for {}", view["background"].as_str().unwrap_or("?"));
+    walk(view["items"].as_array().map_or(&[][..], Vec::as_slice), 1);
+    for dropped in view["dropped"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        println!("  (dropped a stored value: {dropped})");
+    }
+}
+
 /// How often `pack --watch` looks for changes.
 const WATCH_EVERY: Duration = Duration::from_millis(500);
 
-/// Every file in a scene folder with when it last changed, leaving out the types packing writes there.
-fn scene_files(folder: &Path) -> Result<std::collections::BTreeMap<PathBuf, std::time::SystemTime>> {
+/// Every file in a canvas folder with when it last changed, leaving out the types packing writes there.
+fn canvas_files(folder: &Path) -> Result<std::collections::BTreeMap<PathBuf, std::time::SystemTime>> {
     let mut files = std::collections::BTreeMap::new();
     let mut pending = vec![folder.to_path_buf()];
     while let Some(dir) = pending.pop() {

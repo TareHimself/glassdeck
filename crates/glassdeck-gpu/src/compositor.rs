@@ -1,5 +1,7 @@
 //! Our end of the receiver's compositor socket (glassdeck-proto's `compositor` module).
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
@@ -11,6 +13,8 @@ use rustix::net::{RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncil
 
 pub struct Compositor {
     socket: OwnedFd,
+    /// Data that arrived while we waited for a registration answer, for `receive` to hand on first.
+    pending: RefCell<VecDeque<Vec<u8>>>,
 }
 
 pub enum Received {
@@ -26,7 +30,7 @@ impl Compositor {
     /// `fd` must be the open compositor socket the receiver handed us, owned by nothing else.
     pub unsafe fn from_fd(fd: i32) -> Self {
         // SAFETY: as the caller promised.
-        Self { socket: unsafe { OwnedFd::from_raw_fd(fd) } }
+        Self { socket: unsafe { OwnedFd::from_raw_fd(fd) }, pending: RefCell::default() }
     }
 
     pub fn register(&self, dma_buf: BorrowedFd<'_>, layout: BufferLayout) -> Result<BufferId> {
@@ -35,13 +39,15 @@ impl Compositor {
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
         let mut control = SendAncillaryBuffer::new(&mut space);
         control.push(SendAncillaryMessage::ScmRights(&fds));
-        rustix::net::sendmsg(&self.socket, &[IoSlice::new(&bytes)], &mut control, SendFlags::NOSIGNAL)
-            .context("registering a buffer")?;
-        match self.receive(true)? {
-            Received::Message(FromCompositor::Registered(id)) => Ok(id),
-            Received::Message(FromCompositor::Refused { reason }) => bail!("the receiver refused our buffer: {reason}"),
-            Received::Message(FromCompositor::Released(id)) => bail!("the receiver released buffer {id} before any was shown"),
-            Received::Nothing | Received::Closed => bail!("the receiver closed the socket while we registered"),
+        rustix::net::sendmsg(&self.socket, &[IoSlice::new(&bytes)], &mut control, SendFlags::NOSIGNAL).context("registering a buffer")?;
+        loop {
+            match self.read(true)? {
+                Received::Message(FromCompositor::Registered(id)) => return Ok(id),
+                Received::Message(FromCompositor::Data(payload)) => self.pending.borrow_mut().push_back(payload),
+                Received::Message(FromCompositor::Refused { reason }) => bail!("the receiver refused our buffer: {reason}"),
+                Received::Message(FromCompositor::Released(id)) => bail!("the receiver released buffer {id} before any was shown"),
+                Received::Nothing | Received::Closed => bail!("the receiver closed the socket while we registered"),
+            }
         }
     }
 
@@ -51,6 +57,13 @@ impl Compositor {
     }
 
     pub fn receive(&self, wait: bool) -> Result<Received> {
+        if let Some(payload) = self.pending.borrow_mut().pop_front() {
+            return Ok(Received::Message(FromCompositor::Data(payload)));
+        }
+        self.read(wait)
+    }
+
+    fn read(&self, wait: bool) -> Result<Received> {
         let mut bytes = [0u8; MAX_MESSAGE_LEN];
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
         let mut control = RecvAncillaryBuffer::new(&mut space);

@@ -1,4 +1,4 @@
-//! The receiver's compositor socket, for renderers on the keyboard itself (glassdeck-local-web).
+//! The receiver's compositor socket, for renderers on the keyboard itself (glassdeck-local-web, glassdeck-gpu).
 //!
 //! One message per SOCK_SEQPACKET datagram, little-endian: `[version u8][kind u8][0 u8; 2][body]`.
 //! `Register` carries the buffer's dma-buf fd as SCM_RIGHTS; no other message carries an fd.
@@ -7,17 +7,21 @@ use std::fmt;
 
 pub const VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 4;
-/// Room for the longest message, a `Refused` with its reason.
-pub const MAX_MESSAGE_LEN: usize = 512;
+/// Room for the longest message: `Data` at its largest.
+pub const MAX_MESSAGE_LEN: usize = HEADER_LEN + MAX_DATA_LEN;
+/// What a canvas's host half may send in one `Data`; it's latest-wins state, not a file.
+pub const MAX_DATA_LEN: usize = 60 * 1024;
 
 const KIND_REGISTER: u8 = 1;
 const KIND_PRESENT: u8 = 2;
 const KIND_REGISTERED: u8 = 3;
 const KIND_REFUSED: u8 = 4;
 const KIND_RELEASED: u8 = 5;
+const KIND_DATA: u8 = 6;
 const REGISTER_LEN: usize = 28;
 const ID_LEN: usize = 4;
-const MAX_REASON_LEN: usize = MAX_MESSAGE_LEN - HEADER_LEN;
+/// glassdeck-local-web reads replies into 512 bytes, and only data, which it never gets, is longer.
+const MAX_REASON_LEN: usize = 512 - HEADER_LEN;
 
 /// A single-plane buffer layout; its fd travels beside the message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,9 +52,13 @@ pub enum ToCompositor {
 pub enum FromCompositor {
     Registered(BufferId),
     /// The buffer can't be scanned out; the renderer should give up rather than show nothing.
-    Refused { reason: String },
+    Refused {
+        reason: String,
+    },
     /// The renderer may draw into this buffer again.
     Released(BufferId),
+    /// What the canvas's host half sent, for its script: MessagePack, at most `MAX_DATA_LEN` bytes.
+    Data(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +68,7 @@ pub enum CompositorProtoError {
     BadLength { kind: u8, len: usize },
     TooShort(usize),
     ReasonNotUtf8,
+    DataTooLong(usize),
 }
 
 impl fmt::Display for CompositorProtoError {
@@ -70,6 +79,7 @@ impl fmt::Display for CompositorProtoError {
             Self::BadLength { kind, len } => write!(f, "compositor message kind {kind} has invalid length {len}"),
             Self::TooShort(len) => write!(f, "compositor message of {len} bytes is shorter than its header"),
             Self::ReasonNotUtf8 => write!(f, "refusal reason is not UTF-8"),
+            Self::DataTooLong(len) => write!(f, "{len} bytes of canvas data is more than the {MAX_DATA_LEN} a message holds"),
         }
     }
 }
@@ -111,11 +121,20 @@ impl ToCompositor {
 }
 
 impl FromCompositor {
+    /// `Data` longer than `MAX_DATA_LEN` is refused rather than cut.
+    pub fn data(payload: Vec<u8>) -> Result<Self, CompositorProtoError> {
+        if payload.len() > MAX_DATA_LEN {
+            return Err(CompositorProtoError::DataTooLong(payload.len()));
+        }
+        Ok(Self::Data(payload))
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Registered(id) => with_header(KIND_REGISTERED, &id.to_le_bytes()),
             Self::Refused { reason } => with_header(KIND_REFUSED, truncate_utf8(reason, MAX_REASON_LEN).as_bytes()),
             Self::Released(id) => with_header(KIND_RELEASED, &id.to_le_bytes()),
+            Self::Data(payload) => with_header(KIND_DATA, payload),
         }
     }
 
@@ -129,6 +148,8 @@ impl FromCompositor {
                 let reason = std::str::from_utf8(body).map_err(|_| CompositorProtoError::ReasonNotUtf8)?;
                 Ok(Self::Refused { reason: reason.to_owned() })
             }
+            KIND_DATA if body.len() <= MAX_DATA_LEN => Ok(Self::Data(body.to_vec())),
+            KIND_DATA => Err(CompositorProtoError::DataTooLong(body.len())),
             KIND_REGISTERED | KIND_RELEASED => Err(bad_length()),
             other => Err(CompositorProtoError::UnknownKind(other)),
         }
@@ -183,6 +204,7 @@ mod tests {
             FromCompositor::Registered(7),
             FromCompositor::Released(7),
             FromCompositor::Refused { reason: "plane rejected XR24 linear".into() },
+            FromCompositor::Data(vec![0x81, 0xa1, b'a', 1]),
         ] {
             assert_eq!(FromCompositor::decode(&message.encode()), Ok(message.clone()));
         }
@@ -215,19 +237,22 @@ mod tests {
         assert_eq!(ToCompositor::decode(&[1, 2]), Err(CompositorProtoError::TooShort(2)));
         assert_eq!(ToCompositor::decode(&[2, 2, 0, 0, 1, 0, 0, 0]), Err(CompositorProtoError::UnsupportedVersion(2)));
         assert_eq!(ToCompositor::decode(&[1, 9, 0, 0]), Err(CompositorProtoError::UnknownKind(9)));
-        assert_eq!(
-            ToCompositor::decode(&[1, 2, 0, 0, 1]),
-            Err(CompositorProtoError::BadLength { kind: KIND_PRESENT, len: 1 })
-        );
+        assert_eq!(ToCompositor::decode(&[1, 2, 0, 0, 1]), Err(CompositorProtoError::BadLength { kind: KIND_PRESENT, len: 1 }));
         assert_eq!(ToCompositor::decode(&FromCompositor::Released(1).encode()), Err(CompositorProtoError::UnknownKind(5)));
         assert_eq!(FromCompositor::decode(&[1, 4, 0, 0, 0xff]), Err(CompositorProtoError::ReasonNotUtf8));
     }
 
     #[test]
+    fn data_past_the_limit_is_refused_not_cut() {
+        assert_eq!(FromCompositor::data(vec![0; MAX_DATA_LEN + 1]), Err(CompositorProtoError::DataTooLong(MAX_DATA_LEN + 1)));
+        assert!(FromCompositor::data(vec![0; MAX_DATA_LEN]).is_ok());
+    }
+
+    #[test]
     fn long_reasons_are_cut_on_a_character_boundary() {
-        let reason = "é".repeat(MAX_MESSAGE_LEN);
+        let reason = "é".repeat(1024);
         let encoded = FromCompositor::Refused { reason }.encode();
-        assert!(encoded.len() <= MAX_MESSAGE_LEN);
+        assert!(encoded.len() <= 512);
         assert!(FromCompositor::decode(&encoded).is_ok());
     }
 }

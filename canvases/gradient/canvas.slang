@@ -6,7 +6,7 @@ struct Inputs {
     float2 roseAt; float2 tealAt; float2 glowAt;
 }
 
-[Scene]
+[Canvas]
 half4 gradient(Pixel p, Inputs i) {
     float2 q = float2(p.uv.x * frame.resolution.x / frame.resolution.y, p.uv.y);
     half3 c = lerp(i.night, i.violet, half(p.uv.y));

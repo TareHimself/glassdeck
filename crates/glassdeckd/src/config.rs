@@ -20,6 +20,10 @@ pub struct Paths {
     pub log: PathBuf,
     /// Files made only to be uploaded, such as a module's keyboard copy.
     pub staging: PathBuf,
+    /// What the user chose for each background's options
+    pub options: PathBuf,
+    /// Copies of canvas backgrounds with options or a host half, which glassdeckd runs the host side of
+    pub canvases: PathBuf,
 }
 
 impl Paths {
@@ -34,6 +38,8 @@ impl Paths {
             api: local.join("api.json"),
             log: local.join("logs").join("glassdeckd.log"),
             staging: local.join("staging"),
+            options: roaming.join("options.json"),
+            canvases: local.join("canvases"),
         })
     }
 }

@@ -107,6 +107,9 @@ struct Queues {
     resources: BTreeMap<(u16, String), Vec<u8>>,
     unsent_resources: BTreeSet<(u16, String)>,
     selected: Option<String>,
+    /// The selected canvas's latest data from its host half, kept like `latest` for a reconnect.
+    background_data: Option<Vec<u8>>,
+    background_data_unsent: bool,
     uploads: VecDeque<Upload>,
     /// Fully sent files, oldest first, which is the order the keyboard answers them in.
     awaiting: VecDeque<Waiter>,
@@ -117,6 +120,7 @@ enum Outgoing {
     Stream(Message),
     ModuleData { instance: u16, payload: Vec<u8> },
     ModuleResource { instance: u16, name: String, data: Vec<u8> },
+    BackgroundData(Vec<u8>),
     Put(Upload),
 }
 
@@ -166,6 +170,10 @@ impl Uplink {
         if queues.connected {
             queues.control.push_back(Message::SelectBackground { name: name.clone() });
         }
+        if queues.selected.as_ref() != Some(&name) {
+            queues.background_data = None;
+            queues.background_data_unsent = false;
+        }
         queues.selected = Some(name);
         self.changed.notify_all();
     }
@@ -184,6 +192,14 @@ impl Uplink {
         let mut queues = self.lock();
         queues.resources.insert((instance, name.clone()), data);
         queues.unsent_resources.insert((instance, name));
+        self.changed.notify_all();
+    }
+
+    /// Latest wins: what the selected canvas's host half sent, after the choice itself.
+    pub fn put_background_data(&self, payload: Vec<u8>) {
+        let mut queues = self.lock();
+        queues.background_data = Some(payload);
+        queues.background_data_unsent = true;
         self.changed.notify_all();
     }
 
@@ -277,6 +293,11 @@ impl Uplink {
                 self.changed.notify_all();
                 return Outgoing::Stream(message);
             }
+            if std::mem::take(&mut queues.background_data_unsent)
+                && let Some(payload) = queues.background_data.clone()
+            {
+                return Outgoing::BackgroundData(payload);
+            }
             if let Some(instance) = queues.unsent.pop_first() {
                 let payload = queues.latest[&instance].clone();
                 return Outgoing::ModuleData { instance, payload };
@@ -300,6 +321,7 @@ impl Uplink {
                 queues.connected = true;
                 queues.unsent = queues.latest.keys().copied().collect();
                 queues.unsent_resources = queues.resources.keys().cloned().collect();
+                queues.background_data_unsent = queues.background_data.is_some();
                 if let Some(name) = queues.selected.clone() {
                     queues.control.push_back(Message::SelectBackground { name });
                 }
@@ -375,6 +397,7 @@ fn send(link: &mut Link, uplink: &Uplink, outgoing: Outgoing) -> Result<()> {
     let message = match outgoing {
         Outgoing::Control(message) => message,
         Outgoing::ModuleData { instance, payload } => Message::ModuleData { instance, payload },
+        Outgoing::BackgroundData(payload) => Message::BackgroundData { payload },
         Outgoing::ModuleResource { instance, name, data } => Message::ModuleResource { instance, name, data },
         Outgoing::Stream(Message::StreamStart(info @ StreamInfo { mode: Mode::Live { .. }, .. })) => {
             let sample = link.sync_clock()?;
@@ -409,7 +432,7 @@ fn put_piece(link: &mut Link, uplink: &Uplink, mut upload: Upload) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::LinkEffect::{DropQueued, Resend};
-    use super::LinkEvent::{Connected as Up, ConnectFailed, Lost, RetryDue};
+    use super::LinkEvent::{ConnectFailed, Connected as Up, Lost, RetryDue};
     use super::LinkState::{Connected, Connecting, Disconnected};
     use super::*;
 
@@ -475,7 +498,9 @@ mod tests {
         uplink.put_module_resource(2, "cover".into(), vec![2]);
         uplink.put_module_data(2, vec![9]);
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 2, .. }));
-        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleResource { instance: 2, ref name, ref data } if name == "cover" && *data == vec![2]));
+        assert!(
+            matches!(uplink.next_outgoing(), Outgoing::ModuleResource { instance: 2, ref name, ref data } if name == "cover" && *data == vec![2])
+        );
         uplink.apply(DropQueued);
         uplink.apply(Resend);
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 2, .. }));

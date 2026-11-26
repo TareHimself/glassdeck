@@ -679,6 +679,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "glassdeck-gpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "drm",
+ "glassdeck-luau",
+ "glassdeck-package",
+ "glassdeck-proto",
+ "glow",
+ "khronos-egl",
+ "libloading",
+ "mlua",
+ "rustix",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "glassdeck-layout"
 version = "0.1.0"
 
@@ -726,11 +745,11 @@ dependencies = [
  "clap",
  "drm",
  "fontdue",
+ "glassdeck-gpu",
  "glassdeck-layout",
  "glassdeck-luau",
  "glassdeck-package",
  "glassdeck-proto",
- "glassdeck-scene",
  "minifb",
  "mlua",
  "pkg-config",
@@ -742,29 +761,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "glassdeck-scene"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "drm",
- "glassdeck-luau",
- "glassdeck-package",
- "glassdeck-proto",
- "glow",
- "khronos-egl",
- "libloading",
- "mlua",
- "rustix",
- "serde_json",
- "windows",
-]
-
-[[package]]
 name = "glassdeck-slang"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glassdeck-luau",
  "glassdeck-luau-check",
  "glassdeck-package",
  "libloading",

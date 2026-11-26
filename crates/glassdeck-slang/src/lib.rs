@@ -4,7 +4,7 @@
 pub mod essl;
 mod native;
 pub mod pack;
-pub mod scene;
+pub mod canvas;
 
 use std::ffi::CString;
 use std::path::Path;

@@ -93,3 +93,33 @@ impl LuauChecker {
         }
     }
 }
+
+/// The canvas and widget script APIs, as the type checker reads them.
+pub mod definitions {
+    pub const COMMON: &str = include_str!("../../glassdeck-luau/types/common.d.luau");
+    pub const HOST: &str = include_str!("../../glassdeck-luau/types/host.d.luau");
+    pub const OPTIONS_API: &str = include_str!("../../glassdeck-luau/types/options-api.d.luau");
+    pub const CANVAS: &str = include_str!("../../glassdeck-luau/types/canvas.d.luau");
+}
+
+impl LuauChecker {
+    /// `options.luau` against the builders, with `current` typed by its own generated `options.d.luau`.
+    pub fn check_options(&self, source: &str, options: &str) -> Result<Vec<String>> {
+        let definitions = [
+            LuauFile { name: "options-api.d.luau", text: definitions::OPTIONS_API },
+            LuauFile { name: "options.d.luau", text: options },
+            LuauFile { name: "current.d.luau", text: "declare current: Options\n" },
+        ];
+        self.check(&definitions, LuauFile { name: "options.luau", text: source })
+    }
+
+    /// `host.luau` against the host API, with `on_options` typed by the generated `options.d.luau`.
+    pub fn check_host(&self, source: &str, options: &str) -> Result<Vec<String>> {
+        let definitions = [
+            LuauFile { name: "options.d.luau", text: options },
+            LuauFile { name: "common.d.luau", text: definitions::COMMON },
+            LuauFile { name: "host.d.luau", text: definitions::HOST },
+        ];
+        self.check(&definitions, LuauFile { name: "host.luau", text: source })
+    }
+}

@@ -10,8 +10,28 @@ declare system: {
     memory_percent: () -> number,
 }
 
--- assets/host/<name>: stays on the host, so only host.luau has this table
-declare host: { resource: (name: string) -> Resource }
+declare host: {
+    -- assets/host/<name>: stays on the host, so only host.luau has this table
+    resource: (name: string) -> Resource,
+    -- Called when the package starts and whenever the user changes an option. Options and Changed
+    -- come from options.luau (empty when the package has none); see options.d.luau.
+    on_options: (callback: (options: Options, changed: Changed) -> ()) -> (),
+}
+
+-- Whether anything in a section of changed is true: if any(changed.colours) then ... end
+declare function any<T>(section: T): boolean
+
+-- sRGB from 0 to 1, as r, g, b, a in a vector (Luau's checker knows only 3-wide vector.create, so build colours here)
+export type Color = vector
+
+declare color: {
+    -- "#rgb", "#rrggbb" or "#rrggbbaa"
+    hex: (text: string) -> Color,
+    -- 0 to 255 each; alpha defaults to 255
+    rgb: (r: number, g: number, b: number, a: number?) -> Color,
+    -- hue in degrees, saturation and value 0 to 1; alpha defaults to 1
+    hsv: (h: number, s: number, v: number, a: number?) -> Color,
+}
 
 -- Resources for the keyboard half, drawn there with live.resource(name). Latest wins per name.
 declare live: {
@@ -27,7 +47,7 @@ declare image: {
     fill: (bytes: string, w: number, h: number) -> string,
 }
 
-type NowPlaying = {
+export type NowPlaying = {
     title: string,
     artist: string,
     album: string,

@@ -1,4 +1,4 @@
-//! What `bg` chooses, and the streams it can choose from. The keyboard plays the built-in scene or a
+//! What `bg` chooses, and the streams it can choose from. The keyboard plays the built-in canvas or a
 //! `.deckbg` itself; a stream comes from the host while it's shown. For now the only streams are the
 //! built-in ones, one per monitor.
 
@@ -43,7 +43,7 @@ impl fmt::Display for StreamName {
 /// What the video layer shows when nothing else asks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice {
-    /// The keyboard's built-in scene
+    /// The keyboard's built-in canvas
     BuiltIn,
     /// A `.deckbg` in the keyboard's background folder, by file name
     Background(String),

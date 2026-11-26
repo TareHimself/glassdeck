@@ -1,7 +1,7 @@
 // The glassdeck Slang API, version 1.
 
 [__AttributeUsage(_AttributeTargets.Function)]
-public struct SceneAttribute {};
+public struct CanvasAttribute {};
 
 [__AttributeUsage(_AttributeTargets.Function)]
 public struct EffectAttribute {};

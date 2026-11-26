@@ -24,7 +24,7 @@ fi
 
 [ -f "$sysroot/usr/local/lib/pkgconfig/rockchip_mpp.pc" ] \
   || { echo "no MPP in $sysroot; run: sh device/keyboard-build.sh --fetch-mpp user@board" >&2; exit 1; }
-[ $# -gt 0 ] || set -- glassdeck-receiver glassdeck-scene
+[ $# -gt 0 ] || set -- glassdeck-receiver glassdeck-gpu
 
 docker build -q -t "$image" -f device/keyboard.Dockerfile device >/dev/null
 repo=$(pwd -W 2>/dev/null || pwd)

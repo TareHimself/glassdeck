@@ -2,14 +2,14 @@ mod compositor;
 mod mpp;
 mod renderer;
 mod scanout;
-mod scene;
+mod canvas;
 mod web;
 
 use anyhow::Result;
 
 pub use compositor::{Compositor, Registrar};
 pub use mpp::Decoder;
-pub use scene::{FallbackScene, SceneBackground};
+pub use canvas::{FallbackCanvas, CanvasBackground};
 pub use web::WebBackground;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";

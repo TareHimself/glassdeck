@@ -1,4 +1,4 @@
-//! Which source owns the screen: a PC stream first, then the most recent local background, then the built-in scene.
+//! Which source owns the screen: a PC stream first, then the most recent local background, then the built-in canvas.
 
 use std::fmt;
 
@@ -34,7 +34,7 @@ impl fmt::Display for BackgroundName {
     }
 }
 
-/// The background the user chose for when nothing streams: the built-in scene, which is the default
+/// The background the user chose for when nothing streams: the built-in canvas, which is the default
 /// and always on the keyboard, or a file in the background folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
@@ -57,7 +57,7 @@ impl Selection {
         }
     }
 
-    /// The file to come back to after a stream or an install; none means the built-in scene.
+    /// The file to come back to after a stream or an install; none means the built-in canvas.
     fn file(&self) -> Option<BackgroundName> {
         match self {
             Self::BuiltIn => None,
@@ -74,15 +74,15 @@ impl fmt::Display for Selection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// The built-in scene: chosen, or shown because nothing else can be. `recent` is a background that
+    /// The built-in canvas: chosen, or shown because nothing else can be. `recent` is a background that
     /// stopped on its own; it's retried when a stream or an install ends.
     Fallback { recent: Option<BackgroundName> },
-    /// A PC stream; `recent` comes back when it ends. While `installing`, the built-in scene comes
+    /// A PC stream; `recent` comes back when it ends. While `installing`, the built-in canvas comes
     /// back instead, until the install ends.
     Stream { recent: Option<BackgroundName>, installing: bool },
     /// A background playing on the keyboard itself.
     Local(BackgroundName),
-    /// A large file is arriving, shown over the built-in scene; `recent` comes back after.
+    /// A large file is arriving, shown over the built-in canvas; `recent` comes back after.
     Installing { recent: Option<BackgroundName> },
 }
 
@@ -130,7 +130,7 @@ impl fmt::Display for ScreenError {
 impl std::error::Error for ScreenError {}
 
 impl Screen {
-    /// Where the keyboard starts: the remembered background, or the built-in scene by default.
+    /// Where the keyboard starts: the remembered background, or the built-in canvas by default.
     pub fn at_boot(remembered: Option<Selection>) -> (Self, Vec<Effect>) {
         match remembered {
             Some(Selection::File(background)) => (Self::Local(background.clone()), vec![Effect::Start(background)]),
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn boots_into_the_remembered_background_or_the_built_in_scene() {
+    fn boots_into_the_remembered_background_or_the_built_in_canvas() {
         let a = background("a.deckbg");
         assert_eq!(Screen::at_boot(Some(Selection::File(a.clone()))), (Screen::Local(a.clone()), vec![Effect::Start(a)]));
         assert_eq!(Screen::at_boot(Some(Selection::BuiltIn)), (Screen::Fallback { recent: None }, vec![Effect::ShowFallback]));

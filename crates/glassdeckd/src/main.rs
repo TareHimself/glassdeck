@@ -8,6 +8,7 @@ mod host_api;
 mod link;
 mod media;
 mod module_host;
+mod options;
 mod runner;
 mod streams;
 mod system;
@@ -96,7 +97,8 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
-    module_host::start(paths.profile.clone(), paths.modules.clone(), Arc::clone(&uplink), media::start()?)?;
+    let module_host =
+        module_host::start(paths.profile.clone(), paths.modules.clone(), paths.options.clone(), Arc::clone(&uplink), media::start()?)?;
     let (modules, profile, staging) = (paths.modules.clone(), paths.profile.clone(), paths.staging.clone());
     let api = Api {
         token,
@@ -109,6 +111,9 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
         large_uploads: Mutex::new(0),
         bg_file: paths.bg.clone(),
         bg: Mutex::new(None),
+        canvases: paths.canvases.clone(),
+        options: Mutex::new(options::OptionsStore::new(paths.options.clone())),
+        module_host: Mutex::new(module_host),
     };
     if let Err(e) = api.restore() {
         eprintln!("error: restoring the background: {e:#}; the keyboard keeps its own");

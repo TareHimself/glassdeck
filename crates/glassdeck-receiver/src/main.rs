@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,15 +32,15 @@ use clap::Parser;
 use fontdue::{Font, FontSettings};
 use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, step, unix_micros};
 
-use platform::{Compositor, Decoder};
 use director::{Director, SharedDirector, lock};
-use mailbox::{Mailbox, ShownFrame, Timing};
-use playout::{PlayoutClock, wait_until};
-use screen::Event;
-use overlay::Labels;
 use glassdeck_layout::Variant;
+use mailbox::{Mailbox, ShownFrame, Timing};
+use overlay::Labels;
+use platform::{Compositor, Decoder};
+use playout::{PlayoutClock, wait_until};
 use presentation::Outcome;
 use put::{Folders, QUEUED_PIECES};
+use screen::Event;
 use stats::{FrameTimes, LatencyStats};
 use widgets::{Input, Tiles};
 
@@ -102,9 +102,7 @@ fn main() -> Result<()> {
     let mailbox = Arc::new(Mailbox::new());
     let director = Director::start(cli.backgrounds, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
-    thread::Builder::new()
-        .name("receive".into())
-        .spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders))?;
+    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders))?;
     compose_loop(&mailbox, &tiles, compositor)
 }
 
@@ -177,10 +175,7 @@ fn serve(
             Action::Begin(info) => {
                 lock(director).handle(Event::StreamStarted)?;
                 let decoder = Decoder::new(&info)?;
-                println!(
-                    "Stream {}: {:?} {}x{} {:?} via {}",
-                    info.stream_id, info.codec, info.width, info.height, info.mode, decoder.name
-                );
+                println!("Stream {}: {:?} {}x{} {:?} via {}", info.stream_id, info.codec, info.width, info.height, info.mode, decoder.name);
                 playback = Some(Playback { info, decoder, clock: None });
             }
             Action::Decode(frame) => {
@@ -193,9 +188,8 @@ fn serve(
                             decoded_us: unix_micros(),
                         },
                         Mode::Paced => {
-                            let clock = *playback
-                                .clock
-                                .get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), PACED_PLAYOUT_DELAY_US));
+                            let clock =
+                                *playback.clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), PACED_PLAYOUT_DELAY_US));
                             Timing::Paced { late_us: wait_until(clock.due_us(picture.time_us)) }
                         }
                     };
@@ -208,9 +202,10 @@ fn serve(
                 lock(director).handle(Event::StreamEnded)?;
             }
             Action::SelectBackground(name) => report(lock(director).select(name)),
-            Action::ModuleData { instance, payload } => widgets
-                .send(Input::Data { instance, payload: payload.to_vec() })
-                .context("the widget thread has stopped")?,
+            Action::BackgroundData(payload) => report(lock(director).background_data(payload.to_vec())),
+            Action::ModuleData { instance, payload } => {
+                widgets.send(Input::Data { instance, payload: payload.to_vec() }).context("the widget thread has stopped")?
+            }
             Action::ModuleResource { instance, name, data } => widgets
                 .send(Input::Resource { instance, name: name.to_owned(), data: data.to_vec() })
                 .context("the widget thread has stopped")?,
@@ -259,12 +254,9 @@ fn compose_loop(mailbox: &Mailbox, tiles: &Tiles, mut compositor: Compositor) ->
         for outcome in compositor.poll()? {
             stats = match outcome {
                 Outcome::Presented { token, at_us } => match in_flight.remove(&token).context("presented an unknown picture")? {
-                    Timing::Live { capture_us, received_us, decoded_us } => stats.record(FrameTimes {
-                        capture_us,
-                        received_us,
-                        decoded_us,
-                        displayed_us: at_us,
-                    }),
+                    Timing::Live { capture_us, received_us, decoded_us } => {
+                        stats.record(FrameTimes { capture_us, received_us, decoded_us, displayed_us: at_us })
+                    }
                     Timing::Paced { late_us } => stats.record_paced(late_us),
                 },
                 Outcome::Dropped { token } => {

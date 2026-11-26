@@ -1,5 +1,5 @@
-//! glassdeck-scene: the keyboard's own GPU renderer. It draws the built-in scene, shown whenever
-//! nothing else owns the screen, or a scene background, into buffers it hands the receiver's compositor.
+//! glassdeck-gpu: the keyboard's own GPU renderer. It draws the built-in canvas, shown whenever
+//! nothing else owns the screen, or a canvas background, into buffers it hands the receiver's compositor.
 
 #[cfg(target_os = "linux")]
 mod compositor;
@@ -9,18 +9,18 @@ mod gpu;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "The keyboard's GPU renderer: draws the built-in scene or a scene background for the receiver")]
+#[command(about = "The keyboard's GPU renderer: draws the built-in canvas or a canvas background for the receiver")]
 struct Cli {
     /// The receiver's compositor socket, which it passes when it starts us
     #[arg(long)]
     compositor_fd: Option<i32>,
-    /// Draw this scene background (.deckbg) instead of the built-in gradient
+    /// Draw this canvas background (.deckbg) instead of the built-in gradient
     #[arg(long)]
-    scene: Option<std::path::PathBuf>,
+    canvas: Option<std::path::PathBuf>,
     /// Draw this many frames with no receiver, then print what they cost
     #[arg(long)]
     bench: Option<u32>,
-    /// Draw one frame at 10 s and write it here as raw RGBA, to compare scenes
+    /// Draw one frame at 10 s and write it here as raw RGBA, to compare canvases
     #[arg(long)]
     snapshot: Option<std::path::PathBuf>,
 }
@@ -29,21 +29,21 @@ struct Cli {
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    use glassdeck_package::{Background, SceneFiles};
-    use glassdeck_scene::offscreen::Offscreen;
-    use glassdeck_scene::program::SceneProgram;
+    use glassdeck_package::{Background, CanvasFiles};
+    use glassdeck_gpu::offscreen::Offscreen;
+    use glassdeck_gpu::program::CanvasProgram;
 
     let cli = Cli::parse();
-    let path = cli.snapshot.context("on the PC, glassdeck-scene only takes --snapshot")?;
-    let files = match &cli.scene {
-        Some(scene) => SceneFiles::read(&Background::open(scene)?)?,
-        None => SceneFiles::from_bytes(glassdeck_scene::BUILT_IN)?,
+    let path = cli.snapshot.context("on the PC, glassdeck-gpu only takes --snapshot")?;
+    let files = match &cli.canvas {
+        Some(canvas) => CanvasFiles::read(&Background::open(canvas)?)?,
+        None => CanvasFiles::from_bytes(glassdeck_gpu::BUILT_IN)?,
     };
-    let size = glassdeck_scene::program::render_size(files.plan.scale);
+    let size = glassdeck_gpu::program::render_size(files.plan.scale);
     let offscreen = Offscreen::new(size)?;
-    println!("glassdeck-scene: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
-    let mut scene = SceneProgram::new(&offscreen.gl, files)?;
-    scene.draw(&offscreen.gl, offscreen.framebuffer(), size, 10.0)?;
+    println!("glassdeck-gpu: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
+    let mut canvas = CanvasProgram::new(&offscreen.gl, files)?;
+    canvas.draw(&offscreen.gl, offscreen.framebuffer(), size, 10.0)?;
     // Bottom row first, as the keyboard's snapshots come out of glReadPixels, so the two compare directly.
     let pixels = offscreen.read_rgb();
     let rgba: Vec<u8> =
@@ -63,14 +63,14 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use anyhow::{Context, Result, bail};
-    use glassdeck_package::{Background, SceneFiles};
+    use glassdeck_package::{Background, CanvasFiles};
     use glassdeck_proto::compositor::FromCompositor;
 
     use super::Cli;
     use crate::compositor::{Compositor, Received};
     use crate::gpu::{Gpu, Target};
-    use glassdeck_scene::BUILT_IN;
-    use glassdeck_scene::program::SceneProgram as Scene;
+    use glassdeck_gpu::BUILT_IN;
+    use glassdeck_gpu::program::CanvasProgram as Canvas;
 
     /// One on screen, one waiting for the flip, one being drawn.
     const BUFFERS: usize = 3;
@@ -78,25 +78,25 @@ mod linux {
 
     pub fn run(cli: Cli) -> Result<()> {
         let gpu = Gpu::open()?;
-        let files = match &cli.scene {
-            Some(path) => SceneFiles::read(&Background::open(path)?).with_context(|| format!("opening the scene {}", path.display()))?,
-            None => SceneFiles::from_bytes(BUILT_IN).context("opening the built-in gradient")?,
+        let files = match &cli.canvas {
+            Some(path) => CanvasFiles::read(&Background::open(path)?).with_context(|| format!("opening the canvas {}", path.display()))?,
+            None => CanvasFiles::from_bytes(BUILT_IN).context("opening the built-in gradient")?,
         };
-        let mut scene = Scene::new(&gpu.gl, files)?;
-        let (scale, fps) = (scene.plan.scale, scene.plan.frame_rate);
-        let size = glassdeck_scene::program::render_size(scale);
+        let mut canvas = Canvas::new(&gpu.gl, files)?;
+        let (scale, fps) = (canvas.plan.scale, canvas.plan.frame_rate);
+        let size = glassdeck_gpu::program::render_size(scale);
         let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
-        println!("glassdeck-scene: {} at {}x{}, modifier {:#x}", gpu.renderer_name(), size.0, size.1, targets[0].layout.modifier);
+        println!("glassdeck-gpu: {} at {}x{}, modifier {:#x}", gpu.renderer_name(), size.0, size.1, targets[0].layout.modifier);
         if let Some(path) = &cli.snapshot {
-            return snapshot(&gpu, &targets[0], &mut scene, path);
+            return snapshot(&gpu, &targets[0], &mut canvas, path);
         }
         match (cli.compositor_fd, cli.bench) {
             (Some(fd), None) => {
                 // SAFETY: the receiver hands us this socket at this number and nothing else owns it.
                 let compositor = unsafe { Compositor::from_fd(fd) };
-                present(&gpu, &targets, &mut scene, &compositor, fps)
+                present(&gpu, &targets, &mut canvas, &compositor, fps)
             }
-            (None, Some(frames)) => bench(&gpu, &targets, &mut scene, frames),
+            (None, Some(frames)) => bench(&gpu, &targets, &mut canvas, frames),
             _ => bail!("give either --compositor-fd (from the receiver) or --bench"),
         }
     }
@@ -105,7 +105,7 @@ mod linux {
         (target.layout.width, target.layout.height)
     }
 
-    fn present(gpu: &Gpu, targets: &[Target], scene: &mut Scene, compositor: &Compositor, fps: u32) -> Result<()> {
+    fn present(gpu: &Gpu, targets: &[Target], canvas: &mut Canvas, compositor: &Compositor, fps: u32) -> Result<()> {
         let ids = targets.iter().map(|t| compositor.register(t.dma_buf.as_fd(), t.layout)).collect::<Result<Vec<_>>>()?;
         let mut free: Vec<usize> = (0..targets.len()).collect();
         let period = Duration::from_secs_f64(1.0 / f64::from(fps));
@@ -121,6 +121,10 @@ mod linux {
                     free.push(index);
                     continue;
                 }
+                Received::Message(FromCompositor::Data(payload)) => {
+                    canvas.deliver(&payload)?;
+                    continue;
+                }
                 Received::Message(other) => bail!("the receiver sent {other:?} outside registration"),
                 Received::Nothing => {}
             }
@@ -130,7 +134,7 @@ mod linux {
             }
             due = (due + period).max(Instant::now());
             let index = free.pop().expect("a free buffer, waited for above");
-            match scene.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())? {
+            match canvas.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())? {
                 Some(took) => {
                     stats.add(took, targets[index].layout.width, targets[index].layout.height);
                     compositor.present(ids[index])?;
@@ -140,12 +144,12 @@ mod linux {
         }
     }
 
-    fn bench(gpu: &Gpu, targets: &[Target], scene: &mut Scene, frames: u32) -> Result<()> {
+    fn bench(gpu: &Gpu, targets: &[Target], canvas: &mut Canvas, frames: u32) -> Result<()> {
         let mut stats = Stats::new();
         let started = Instant::now();
         for frame in 0..frames {
             let target = &targets[frame as usize % targets.len()];
-            if let Some(took) = scene.draw(&gpu.gl, target.framebuffer, size_of(target), started.elapsed().as_secs_f32())? {
+            if let Some(took) = canvas.draw(&gpu.gl, target.framebuffer, size_of(target), started.elapsed().as_secs_f32())? {
                 stats.add(took, target.layout.width, target.layout.height);
             }
         }
@@ -153,9 +157,9 @@ mod linux {
         Ok(())
     }
 
-    fn snapshot(gpu: &Gpu, target: &Target, scene: &mut Scene, path: &std::path::Path) -> Result<()> {
+    fn snapshot(gpu: &Gpu, target: &Target, canvas: &mut Canvas, path: &std::path::Path) -> Result<()> {
         use glow::HasContext;
-        scene.draw(&gpu.gl, target.framebuffer, size_of(target), 10.0)?;
+        canvas.draw(&gpu.gl, target.framebuffer, size_of(target), 10.0)?;
         let (w, h) = (target.layout.width, target.layout.height);
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         // SAFETY: the context is current and the target was just drawn.
@@ -195,7 +199,7 @@ mod linux {
         fn print(&self) {
             let ms = |d: Duration| d.as_secs_f64() * 1000.0;
             println!(
-                "scene: {:.1} fps, draw {:.2} ms avg, {:.2} max at {}x{}",
+                "canvas: {:.1} fps, draw {:.2} ms avg, {:.2} max at {}x{}",
                 f64::from(self.frames) / self.since.elapsed().as_secs_f64(),
                 ms(self.total) / f64::from(self.frames.max(1)),
                 ms(self.worst),

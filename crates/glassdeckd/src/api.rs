@@ -1,14 +1,18 @@
 //! The local API: HTTP on 127.0.0.1, a random port and token written to `api.json`. Routes exist for
 //! what the CLI does; more come with the clients that need them.
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glassdeck_capture::monitors;
+use glassdeck_luau::options::{OptionsScript, Panel};
+use glassdeck_package::{Background, CanvasFiles};
 use glassdeck_proto::LARGE_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -16,6 +20,8 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::deploy;
 use crate::link::Uplink;
+use crate::module_host::{HostCommand, CanvasSelection};
+use crate::options::{OptionsStore, panel_json, parse_typed};
 use crate::runner::{PAUSED_FOR_UPLOAD, Runner, RunnerEvent};
 use crate::streams::{self, Choice, Effect, MonitorStream, StreamName, effects, monitor_streams};
 
@@ -45,6 +51,17 @@ struct Deploy {
     path: PathBuf,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetOption {
+    /// A widget's place in the profile; without it, the selected background
+    #[serde(default)]
+    widget: Option<usize>,
+    path: String,
+    /// As typed; `null` goes back to the default
+    value: Option<String>,
+}
+
 pub struct Api {
     pub token: String,
     pub runner: Runner,
@@ -58,6 +75,10 @@ pub struct Api {
     /// Where the `bg` choice is remembered across restarts
     pub bg_file: PathBuf,
     pub bg: Mutex<Option<Choice>>,
+    /// glassdeckd's own copies of canvas backgrounds that have options or a host half
+    pub canvases: PathBuf,
+    pub options: Mutex<OptionsStore>,
+    pub module_host: Mutex<Sender<HostCommand>>,
 }
 
 /// Held for the length of a large upload.
@@ -134,6 +155,18 @@ impl Api {
                 let SetBg { bg } = serde_json::from_slice(&body(request)?).context("reading the bg request")?;
                 self.choose(Choice::parse(&bg)?)
             }
+            (Method::Get, "/options") => self.options_view(),
+            (Method::Get, url) if url.starts_with("/options?widget=") => {
+                let index = url.trim_start_matches("/options?widget=").parse().context("a widget's place in the profile is a number")?;
+                self.widget_options_view(index)
+            }
+            (Method::Put, "/options") => {
+                let SetOption { widget, path, value } = serde_json::from_slice(&body(request)?).context("reading the options request")?;
+                match widget {
+                    Some(index) => self.set_widget_option(index, &path, value.as_deref()),
+                    None => self.set_option(&path, value.as_deref()),
+                }
+            }
             (Method::Put, "/deploy") => {
                 let Deploy { path } = serde_json::from_slice(&body(request)?).context("reading the deploy request")?;
                 self.deploy(&path)
@@ -151,8 +184,13 @@ impl Api {
         let _pause = (size >= LARGE_FILE_BYTES).then(|| self.pause_for_upload()).transpose()?;
         let answered = self.uplink.put_file(target.clone(), sending.path())?;
         answered.recv().context("the Link stopped before the keyboard answered")??;
-        deploy::keep_locally(&target, path, &self.modules, &self.profile)?;
+        deploy::keep_locally(&target, path, &self.modules, &self.profile, &self.canvases)?;
         println!("Deployed {target}");
+        if let glassdeck_proto::FileTarget::Background(name) = &target
+            && matches!(&*self.bg.lock().expect("bg poisoned"), Some(Choice::Background(chosen)) if chosen == name)
+        {
+            self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&Choice::Background(name.clone()))));
+        }
         Ok(json!({ "deployed": target.to_string() }))
     }
 
@@ -185,6 +223,7 @@ impl Api {
             }
         }
         println!("Background: {choice} (on the {})", choice.runs_on());
+        self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&choice)));
         *self.bg.lock().expect("bg poisoned") = Some(choice);
         Ok(())
     }
@@ -204,8 +243,119 @@ impl Api {
             }
         }
         streams::save(&self.bg_file, &choice)?;
+        self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&choice)));
         *self.bg.lock().expect("bg poisoned") = Some(choice.clone());
         Ok(json!({ "bg": choice.to_string(), "runs_on": choice.runs_on(), "state": state }))
+    }
+
+    /// The selected canvas for the module host, when glassdeckd has a copy (canvases with options or a host half).
+    fn canvas_selection(&self, choice: &Choice) -> Option<CanvasSelection> {
+        let Choice::Background(name) = choice else { return None };
+        let path = self.canvases.join(name);
+        path.is_file().then(|| CanvasSelection { name: name.clone(), path })
+    }
+
+    fn tell_module_host(&self, command: HostCommand) {
+        if self.module_host.lock().expect("module host sender poisoned").send(command).is_err() {
+            eprintln!("error: the module host has stopped");
+        }
+    }
+
+    /// The selected background's options: its name, its options.luau and the first pass.
+    fn selected_options(&self) -> Result<(String, OptionsScript, Panel)> {
+        let choice = self.bg.lock().expect("bg poisoned").clone();
+        let Some(Choice::Background(name)) = choice else { bail!("the background isn't a canvas, so it has no options") };
+        let path = self.canvases.join(&name);
+        if !path.is_file() {
+            bail!("{name} has no options");
+        }
+        let background = Background::open(&path)?;
+        let files = CanvasFiles::read(&background)?;
+        let entry = files.plan.options.as_deref().with_context(|| format!("{name} has no options"))?;
+        let entry = background.entry(entry).with_context(|| format!("{name} has no {entry}"))?;
+        let script = OptionsScript::new(&String::from_utf8(background.read_entry(entry)?).context("options.luau isn't UTF-8")?);
+        let first = script.first_pass()?;
+        Ok((name, script, first))
+    }
+
+    /// The panel as the user would see it now: rerun with the stored values, so visibility is current.
+    fn options_view(&self) -> Result<serde_json::Value> {
+        let (name, script, first) = self.selected_options()?;
+        let resolved = first.resolve(&self.options.lock().expect("options poisoned").chosen(&name, &first)?);
+        let panel = script.run(&first, &resolved.values)?;
+        let mut view = panel_json(&panel, &resolved.values);
+        view["background"] = json!(name);
+        view["dropped"] = json!(resolved.dropped);
+        Ok(view)
+    }
+
+    fn set_option(&self, path: &str, typed: Option<&str>) -> Result<serde_json::Value> {
+        let (name, script, first) = self.selected_options()?;
+        let option = first.options().into_iter().find(|o| o.path == path).with_context(|| format!("{name} has no option {path}"))?;
+        let value = typed.map(|text| parse_typed(&option.kind, text)).transpose().with_context(|| path.to_owned())?;
+        let store = self.options.lock().expect("options poisoned");
+        store.set(&name, &first, path, value)?;
+        let resolved = first.resolve(&store.chosen(&name, &first)?);
+        drop(store);
+        script.run(&first, &resolved.values)?;
+        self.tell_module_host(HostCommand::CanvasOptionsChanged(BTreeSet::from([path.to_owned()])));
+        Ok(json!({ "background": name, "option": path, "value": resolved.values.get(path).map(|v| v.to_json()) }))
+    }
+
+    /// A placed widget's options: its label, options.luau, first pass, and the values in its profile entry.
+    fn widget_options(&self, index: usize) -> Result<(String, OptionsScript, Panel, glassdeck_luau::options::Values)> {
+        let packages = crate::module_host::installed(&self.modules)?;
+        let profile = glassdeck_luau::profile::Profile::read(&self.profile, glassdeck_luau::profile::WidgetArea::of_panel().size, |id| {
+            packages.get(id).map(|p| p.manifest().clone())
+        })?;
+        let widget = profile
+            .widgets
+            .get(index)
+            .with_context(|| format!("the profile has {} widgets, so there's no widget {index}", profile.widgets.len()))?;
+        let label = format!("widget {index} ({})", widget.module);
+        let source = packages[&widget.module].options_script()?.with_context(|| format!("{label} has no options"))?;
+        let script = OptionsScript::new(&source);
+        let first = script.first_pass()?;
+        let chosen = crate::options::read_values(&label, &first, widget.options.iter());
+        Ok((label, script, first, chosen))
+    }
+
+    fn widget_options_view(&self, index: usize) -> Result<serde_json::Value> {
+        let (label, script, first, chosen) = self.widget_options(index)?;
+        let resolved = first.resolve(&chosen);
+        let panel = script.run(&first, &resolved.values)?;
+        let mut view = panel_json(&panel, &resolved.values);
+        view["background"] = json!(label);
+        view["dropped"] = json!(resolved.dropped);
+        Ok(view)
+    }
+
+    /// Writes the value into glassdeckd's profile; the module host sees the change and restarts that widget's host side.
+    fn set_widget_option(&self, index: usize, path: &str, typed: Option<&str>) -> Result<serde_json::Value> {
+        let (label, script, first, _) = self.widget_options(index)?;
+        let option = first.options().into_iter().find(|o| o.path == path).with_context(|| format!("{label} has no option {path}"))?;
+        let value = typed.map(|text| parse_typed(&option.kind, text)).transpose().with_context(|| path.to_owned())?;
+        if let Some(value) = &value
+            && let Some(why) = option.kind.refuses(value)
+        {
+            bail!("{path}: {why}");
+        }
+        let text = std::fs::read_to_string(&self.profile).with_context(|| format!("reading {}", self.profile.display()))?;
+        let mut profile: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing {}", self.profile.display()))?;
+        let entry = profile["widgets"].get_mut(index).with_context(|| format!("the profile has no widget {index}"))?;
+        let options = entry.as_object_mut().context("a widget entry is an object")?.entry("options").or_insert_with(|| json!({}));
+        let options = options.as_object_mut().context("a widget's options are an object")?;
+        match &value {
+            Some(value) => options.insert(path.to_owned(), value.to_json()),
+            None => options.remove(path),
+        };
+        let staging = self.profile.with_extension("json.tmp");
+        std::fs::write(&staging, serde_json::to_vec_pretty(&profile)?).with_context(|| format!("writing {}", staging.display()))?;
+        std::fs::rename(&staging, &self.profile).with_context(|| format!("moving {} into place", self.profile.display()))?;
+        let (_, _, _, chosen) = self.widget_options(index)?;
+        script.run(&first, &first.resolve(&chosen).values)?;
+        let shown = value.map_or_else(|| option.kind.default_value().to_json(), |v| v.to_json());
+        Ok(json!({ "background": label, "option": path, "value": shown }))
     }
 
     fn find_stream(&self, name: &StreamName) -> Result<MonitorStream> {

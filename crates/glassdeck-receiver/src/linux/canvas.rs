@@ -1,4 +1,4 @@
-//! glassdeck-scene: the built-in scene, drawn whenever nothing else owns the screen, and scene backgrounds.
+//! glassdeck-gpu: the built-in canvas, drawn whenever nothing else owns the screen, and canvas backgrounds.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,11 +9,11 @@ use super::compositor::Registrar;
 use super::renderer::RendererProcess;
 use crate::mailbox::Mailbox;
 
-const RENDERER: &str = "glassdeck-scene";
+const RENDERER: &str = "glassdeck-gpu";
 
-pub struct FallbackScene(RendererProcess);
+pub struct FallbackCanvas(RendererProcess);
 
-impl FallbackScene {
+impl FallbackCanvas {
     pub fn start(registrar: Registrar, mailbox: Arc<Mailbox>, stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
         RendererProcess::start(RENDERER, &program.to_string_lossy(), &[], registrar, mailbox, stopped).map(Self)
@@ -24,20 +24,25 @@ impl FallbackScene {
     }
 }
 
-/// A scene background (a `.deckbg` with scene content), drawn by glassdeck-scene from its plan, shader and script.
-pub struct SceneBackground(RendererProcess);
+/// A canvas background (a `.deckbg` with canvas content), drawn by glassdeck-gpu from its plan, shader and script.
+pub struct CanvasBackground(RendererProcess);
 
-impl SceneBackground {
+impl CanvasBackground {
     pub fn start(
         background: &Path,
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        println!("Local background {}: scene", background.display());
+        println!("Local background {}: canvas", background.display());
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
-        let args = [format!("--scene={}", background.display())];
+        let args = [format!("--canvas={}", background.display())];
         RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, stopped).map(Self)
+    }
+
+    /// What the canvas's host half sent, for its script.
+    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+        self.0.deliver(payload)
     }
 
     pub fn stop(self) {

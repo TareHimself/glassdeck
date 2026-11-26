@@ -1,4 +1,4 @@
-//! Reads a scene's shape from Slang's reflection and writes the glue module around it: the real
+//! Reads a canvas's shape from Slang's reflection and writes the glue module around it: the real
 //! entry point, the `[Inputs]` uniforms (as 32-bit floats) and the conversion to the user's types.
 
 use std::fmt::Write;
@@ -8,16 +8,16 @@ use glassdeck_package::{InputField, InputKind};
 
 use crate::{Attribute, Declaration, Field};
 
-/// What a render scale and frame rate are when the scene doesn't say.
+/// What a render scale and frame rate are when the canvas doesn't say.
 const DEFAULT_SCALE: f32 = 0.5;
 const DEFAULT_FRAME_RATE: u32 = 30;
 /// The glue's uniform holding the inputs; the keyboard sets `gd_inputs.<field>`.
 pub const INPUTS_UNIFORM: &str = "gd_inputs";
 pub const FRAGMENT_ENTRY: &str = "gd_fragment";
 
-/// The one `[Scene]` function and the `[Inputs]` it reads.
+/// The one `[Canvas]` function and the `[Inputs]` it reads.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SceneShape {
+pub struct CanvasShape {
     pub function: String,
     pub scale: f32,
     pub frame_rate: u32,
@@ -38,12 +38,12 @@ pub struct InputSlot {
     pub has_initializer: bool,
 }
 
-impl SceneShape {
+impl CanvasShape {
     pub fn read(declarations: &[Declaration]) -> Result<Self> {
         let marked: Vec<_> = declarations
             .iter()
             .filter_map(|d| match d {
-                Declaration::Function { name, returns, params, attributes } if has(attributes, "Scene") => {
+                Declaration::Function { name, returns, params, attributes } if has(attributes, "Canvas") => {
                     Some((name, returns, params, attributes))
                 }
                 _ => None,
@@ -58,19 +58,19 @@ impl SceneShape {
         }
         let (name, returns, params, attributes) = match marked.as_slice() {
             [one] => *one,
-            [] => bail!("no function is marked [Scene]"),
-            many => bail!("several functions are marked [Scene]: {}", many.iter().map(|m| m.0.as_str()).collect::<Vec<_>>().join(", ")),
+            [] => bail!("no function is marked [Canvas]"),
+            many => bail!("several functions are marked [Canvas]: {}", many.iter().map(|m| m.0.as_str()).collect::<Vec<_>>().join(", ")),
         };
         ensure!(
             matches!(returns.as_str(), "half4" | "float4"),
-            "[Scene] function {name} returns {returns}; it must return half4 or float4"
+            "[Canvas] function {name} returns {returns}; it must return half4 or float4"
         );
         let inputs = read_inputs(declarations)?;
         match (params.as_slice(), &inputs) {
             ([p], _) if p.r#type == "Pixel" => ensure!(inputs.is_none(), "the shader declares [Inputs] but {name} doesn't take them"),
             ([p, i], Some(inputs)) if p.r#type == "Pixel" && i.r#type == inputs.name => {}
             _ => bail!(
-                "[Scene] function {name} must take (Pixel) or (Pixel, {}), not ({})",
+                "[Canvas] function {name} must take (Pixel) or (Pixel, {}), not ({})",
                 inputs.as_ref().map_or("Inputs", |i| &i.name),
                 types(params)
             ),
@@ -78,10 +78,10 @@ impl SceneShape {
         let (mut scale, mut frame_rate) = (DEFAULT_SCALE, DEFAULT_FRAME_RATE);
         for attribute in attributes {
             match attribute.name.as_str() {
-                "Scene" => {}
+                "Canvas" => {}
                 "Scale" => scale = number(attribute, name)? as f32,
                 "FrameRate" => frame_rate = number(attribute, name)? as u32,
-                other => bail!("[{other}] doesn't go on a [Scene] function ({name})"),
+                other => bail!("[{other}] doesn't go on a [Canvas] function ({name})"),
             }
         }
         ensure!(scale > 0.0 && scale <= 1.0, "[Scale({scale})] on {name} must be above 0 and at most 1");
@@ -259,8 +259,8 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_function_its_options_and_inputs_are_read() {
-        let shape = SceneShape::read(&gradient(vec![attribute("Scene", vec![]), attribute("FrameRate", vec![json!(60)])])).unwrap();
+    fn the_canvas_function_its_options_and_inputs_are_read() {
+        let shape = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![]), attribute("FrameRate", vec![json!(60)])])).unwrap();
         assert_eq!((shape.function.as_str(), shape.scale, shape.frame_rate), ("gradient", 0.5, 60));
         assert_eq!(
             shape.input_fields(),
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn the_glue_stores_floats_and_converts_to_the_users_types() {
-        let glue = SceneShape::read(&gradient(vec![attribute("Scene", vec![])])).unwrap().glue("scene", true);
+        let glue = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap().glue("canvas", true);
         assert!(glue.contains("    float3 night;\n    float2 roseAt;\n    float bands[8];\n"), "{glue}");
         assert!(glue.contains("uniform GdInputs gd_inputs;"));
         assert!(glue.contains("i.night = half3(gd_inputs.night);"));
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn inputs_become_a_typed_luau_declaration() {
-        let definitions = SceneShape::read(&gradient(vec![attribute("Scene", vec![])])).unwrap().inputs_definitions();
+        let definitions = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap().inputs_definitions();
         assert!(
             definitions.contains(
                 "declare inputs: {\n    night: vector, -- half3\n    roseAt: vector, -- float2\n    bands: { number }, -- half[8]\n}\n"
@@ -295,8 +295,8 @@ mod tests {
 
     #[test]
     fn without_a_script_the_initializers_are_used_and_required() {
-        let shape = SceneShape::read(&gradient(vec![attribute("Scene", vec![])])).unwrap();
-        let glue = shape.glue("scene", false);
+        let shape = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap();
+        let glue = shape.glue("canvas", false);
         assert!(glue.contains("Inputs i = {};") && !glue.contains("uniform"), "{glue}");
         let error = shape.check_without_script().unwrap_err().to_string();
         assert!(error.contains("night, roseAt") && !error.contains("bands"), "{error}");
@@ -304,17 +304,17 @@ mod tests {
 
     #[test]
     fn mistakes_are_named() {
-        let error = |d: &[Declaration]| SceneShape::read(d).unwrap_err().to_string();
-        assert!(error(&gradient(vec![])).contains("no function is marked [Scene]"));
+        let error = |d: &[Declaration]| CanvasShape::read(d).unwrap_err().to_string();
+        assert!(error(&gradient(vec![])).contains("no function is marked [Canvas]"));
         assert!(
-            error(&gradient(vec![attribute("Scene", vec![]), attribute("Reach", vec![json!(2)])]))
-                .contains("[Reach] doesn't go on a [Scene]")
+            error(&gradient(vec![attribute("Canvas", vec![]), attribute("Reach", vec![json!(2)])]))
+                .contains("[Reach] doesn't go on a [Canvas]")
         );
-        assert!(error(&gradient(vec![attribute("Scene", vec![]), attribute("Scale", vec![json!(2)])])).contains("at most 1"));
-        let mut bad = gradient(vec![attribute("Scene", vec![])]);
+        assert!(error(&gradient(vec![attribute("Canvas", vec![]), attribute("Scale", vec![json!(2)])])).contains("at most 1"));
+        let mut bad = gradient(vec![attribute("Canvas", vec![])]);
         if let Declaration::Struct { fields, .. } = &mut bad[0] {
             fields.push(field("m", "float4x4", false));
         }
-        assert!(format!("{:#}", SceneShape::read(&bad).unwrap_err()).contains("float4x4 can't be an input"));
+        assert!(format!("{:#}", CanvasShape::read(&bad).unwrap_err()).contains("float4x4 can't be an input"));
     }
 }

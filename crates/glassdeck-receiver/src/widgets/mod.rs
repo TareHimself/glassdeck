@@ -18,13 +18,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_package::{KeyboardModule, is_module};
 use glassdeck_luau::profile::{Placement, Profile, WidgetArea};
+use glassdeck_package::{KeyboardModule, is_module};
 
 use glassdeck_luau::LiveName;
 use installing::Installing;
-use live::LiveCache;
 use instance::Instance;
+use live::LiveCache;
 
 /// How often the profile and module folder are checked for changes.
 const RESCAN: Duration = Duration::from_secs(1);
@@ -74,11 +74,21 @@ impl Installed {
 }
 
 pub enum Input {
-    Data { instance: u16, payload: Vec<u8> },
+    Data {
+        instance: u16,
+        payload: Vec<u8>,
+    },
     /// A resource the instance's host half made; empty `data` removes it.
-    Resource { instance: u16, name: String, data: Vec<u8> },
+    Resource {
+        instance: u16,
+        name: String,
+        data: Vec<u8>,
+    },
     /// A large file is arriving: the widget area shows its progress instead of the widgets.
-    InstallProgress { what: String, fraction: f32 },
+    InstallProgress {
+        what: String,
+        fraction: f32,
+    },
     InstallEnded,
 }
 
@@ -116,7 +126,16 @@ struct Snapshot {
 
 impl Host {
     fn new(config: Config, tiles: Arc<Tiles>) -> Self {
-        Self { config, area: WidgetArea::of_panel(), tiles, instances: Vec::new(), seen: None, last_frame: None, installing: None, live: HashMap::new() }
+        Self {
+            config,
+            area: WidgetArea::of_panel(),
+            tiles,
+            instances: Vec::new(),
+            seen: None,
+            last_frame: None,
+            installing: None,
+            live: HashMap::new(),
+        }
     }
 
     fn run(mut self, inputs: Receiver<Input>) {
@@ -264,9 +283,10 @@ impl Host {
             if !is_module(&path) {
                 continue;
             }
-            let opened = fs::metadata(&path).and_then(|m| m.modified()).map_err(anyhow::Error::from).and_then(|modified| {
-                KeyboardModule::open(&path).map(|package| Installed { package: Rc::new(package), modified })
-            });
+            let opened = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map_err(anyhow::Error::from)
+                .and_then(|modified| KeyboardModule::open(&path).map(|package| Installed { package: Rc::new(package), modified }));
             match opened {
                 Ok(installed) => {
                     let id = installed.package.manifest().id.clone();
@@ -282,8 +302,8 @@ impl Host {
         Ok((profile, packages))
     }
 
-    /// Keeps instances whose module didn't change, telling them about moves, resizes and settings.
-    /// Others restart, carrying over what `unload` saved when it is the same module.
+    /// Keeps instances whose module didn't change, telling them about moves and resizes; their options
+    /// reach them from the host half as data. Others restart, carrying over what `unload` saved when it is the same module.
     fn apply(&mut self, profile: Profile, packages: HashMap<String, Installed>) {
         let mut old: Vec<Option<Instance>> = std::mem::take(&mut self.instances).into_iter().map(Some).collect();
         for (index, widget) in profile.widgets.iter().enumerate() {
@@ -297,9 +317,6 @@ impl Host {
                             true => kept.move_to(widget.placement),
                             false => kept.resize(widget.placement),
                         }
-                    }
-                    if kept.settings != widget.settings {
-                        kept.settings_changed(widget.settings.clone());
                     }
                     kept
                 }

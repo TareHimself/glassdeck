@@ -25,7 +25,10 @@ pub struct LiveName(String);
 
 impl LiveName {
     pub fn parse(name: &str) -> Result<Self> {
-        ensure!(!name.contains('/') && name.len() <= MAX_LIVE_NAME_BYTES, "{name:?} isn't a live resource name: one word of up to {MAX_LIVE_NAME_BYTES} characters");
+        ensure!(
+            !name.contains('/') && name.len() <= MAX_LIVE_NAME_BYTES,
+            "{name:?} isn't a live resource name: one word of up to {MAX_LIVE_NAME_BYTES} characters"
+        );
         ResourceName::parse(name)?;
         Ok(Self(name.to_owned()))
     }
@@ -82,7 +85,8 @@ impl Vm {
         for &kind in kinds {
             let resource = lua
                 .create_function(move |_, name: String| {
-                    let name = ResourceName::parse(&name).map_err(|e| mlua::Error::runtime(format!("{}.resource: {e:#}", kind.folder())))?;
+                    let name =
+                        ResourceName::parse(&name).map_err(|e| mlua::Error::runtime(format!("{}.resource: {e:#}", kind.folder())))?;
                     Ok(Handle(ResourceRef::Packaged(Resource { kind, name })))
                 })
                 .lua_context("creating resource")?;
@@ -159,6 +163,6 @@ mod tests {
     fn handles_are_not_plain_data() {
         let vm = vm(&[ResourceKind::Keyboard]);
         let sent: Value = vm.load(r#"return { icon = keyboard.resource("a.png") }"#, "t").unwrap();
-        assert!(encode(vm.lua(), sent).is_err());
+        assert!(encode(sent).is_err());
     }
 }

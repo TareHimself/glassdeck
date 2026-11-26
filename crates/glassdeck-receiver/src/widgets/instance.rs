@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use fontdue::Font;
-use glassdeck_package::{KeyboardModule, ResourceKind};
 use glassdeck_luau::profile::{Placement, Widget};
-use glassdeck_luau::{LiveName, LuaResultExt, ResourceRef, Vm, decode, encode, from_json};
+use glassdeck_luau::{LiveName, LuaResultExt, ResourceRef, Vm, decode, encode};
+use glassdeck_package::{KeyboardModule, ResourceKind};
 use mlua::{Function, Table, Value};
 
 use super::Installed;
@@ -25,7 +25,6 @@ pub struct Instance {
     pub label: String,
     pub module: String,
     pub placement: Placement,
-    pub settings: serde_json::Value,
     pub installed: Installed,
     run: Run,
     images: ResourceCache,
@@ -64,7 +63,6 @@ impl Instance {
             label,
             module: widget.module.clone(),
             placement: widget.placement,
-            settings: widget.settings.clone(),
             installed,
             run,
             images: ResourceCache::new(),
@@ -125,24 +123,13 @@ impl Instance {
         self.error_unshown = true;
     }
 
-    pub fn settings_changed(&mut self, settings: serde_json::Value) {
-        self.with_live(|live| {
-            live.ui.request_redraw();
-            match live.hook("settings_changed")? {
-                Some(hook) => live.vm.call::<()>(&hook, (live.state.clone(), from_json(live.vm.lua(), &settings)?)),
-                None => Ok(()),
-            }
-        });
-        self.settings = settings;
-    }
-
     /// What `unload` handed back, encoded for the next VM's `init`.
     pub fn unload(self) -> Option<Vec<u8>> {
         let Run::Running(live) = self.run else { return None };
         let result = (|| -> Result<Option<Vec<u8>>> {
             let Some(hook) = live.hook("unload")? else { return Ok(None) };
             let saved: Value = live.vm.call(&hook, live.state.clone())?;
-            if saved.is_nil() { Ok(None) } else { encode(live.vm.lua(), saved).map(Some) }
+            if saved.is_nil() { Ok(None) } else { encode(saved).map(Some) }
         })();
         result.unwrap_or_else(|e| {
             eprintln!("error: {}: unload: {e:#}", self.label);
@@ -197,7 +184,12 @@ impl Instance {
                         self.measured = true;
                         let total = started.elapsed();
                         let memory_kb = live.vm.used_memory() / 1024;
-                        println!("{}: first draw {:.2} ms in Luau + {:.2} ms rasterising, VM {memory_kb} KB", self.label, ms(listed), ms(total - listed));
+                        println!(
+                            "{}: first draw {:.2} ms in Luau + {:.2} ms rasterising, VM {memory_kb} KB",
+                            self.label,
+                            ms(listed),
+                            ms(total - listed)
+                        );
                     }
                     return Some(DrawnTile { pixels: draw::to_argb(&tile) });
                 }
@@ -236,10 +228,9 @@ impl Live {
         vm.seal()?;
         let hooks: Table = vm.load(&source, "keyboard.luau")?;
         hooks.get::<Function>("draw").lua_context("keyboard.luau must return a table with a draw function")?;
-        let settings = from_json(lua, &widget.settings)?;
         let saved = saved.map(|bytes| decode(lua, &bytes)).transpose()?.unwrap_or(Value::Nil);
         let state = match hooks.get::<Option<Function>>("init").lua_context("reading init")? {
-            Some(init) => vm.call(&init, (settings, saved)).context("init")?,
+            Some(init) => vm.call(&init, saved).context("init")?,
             None => Value::Nil,
         };
         Ok(Self { hooks, state, ui, vm })
@@ -268,8 +259,22 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
     let color = |hex: &str| Color::parse(hex).expect("error tile colors are valid");
     let (w, h) = (w as f32, h as f32);
     let mut commands = vec![
-        Command::Rect { area: Area { x: 1.0, y: 1.0, w: w - 2.0, h: h - 2.0 }, fill: Some(color(ERROR_FILL)), stroke: Some((color(ERROR_STROKE), 2.0)), radius: 8.0 },
-        Command::Text { text: module.to_owned(), x: 8.0, y: 6.0, size: 14.0, color: Color::WHITE, align: Align::Left, width: Some(w - 16.0), font: None },
+        Command::Rect {
+            area: Area { x: 1.0, y: 1.0, w: w - 2.0, h: h - 2.0 },
+            fill: Some(color(ERROR_FILL)),
+            stroke: Some((color(ERROR_STROKE), 2.0)),
+            radius: 8.0,
+        },
+        Command::Text {
+            text: module.to_owned(),
+            x: 8.0,
+            y: 6.0,
+            size: 14.0,
+            color: Color::WHITE,
+            align: Align::Left,
+            width: Some(w - 16.0),
+            font: None,
+        },
     ];
     let per_line = ((w - 16.0) / ERROR_CHAR_WIDTH).max(1.0) as usize;
     let chars: Vec<char> = message.chars().collect();
@@ -279,7 +284,16 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
             break;
         }
         let text = line.iter().collect();
-        commands.push(Command::Text { text, x: 8.0, y, size: ERROR_TEXT_SIZE, color: color(ERROR_STROKE), align: Align::Left, width: Some(w - 16.0), font: None });
+        commands.push(Command::Text {
+            text,
+            x: 8.0,
+            y,
+            size: ERROR_TEXT_SIZE,
+            color: color(ERROR_STROKE),
+            align: Align::Left,
+            width: Some(w - 16.0),
+            font: None,
+        });
     }
     let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { anyhow::bail!("the error tile has no {resource}") };
     let tile = draw::render(&commands, (w as u32, h as u32), font, &mut ResourceCache::new(), &no_assets).expect("the error tile draws");
@@ -321,7 +335,11 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, contents).unwrap();
         }
-        fs::write(dir.join("src/module.json"), r#"{ "format": 3, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#).unwrap();
+        fs::write(
+            dir.join("src/module.json"),
+            r#"{ "format": 3, "id": "dev.test.widget", "name": "Test", "version": "1.0.0", "size": { "w": 64, "h": 32 } }"#,
+        )
+        .unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
         let package = pack_folder(&dir.join("src"), &dir.join("widget.deckmod")).unwrap();
         let package = package.write_keyboard_copy(&dir.join("widget-keyboard.deckmod")).unwrap();
@@ -330,7 +348,7 @@ mod tests {
     }
 
     fn widget() -> Widget {
-        Widget { module: "dev.test.widget".into(), placement: Placement { x: 0, y: 0, w: 64, h: 32 }, settings: serde_json::json!({ "n": 3 }) }
+        Widget { module: "dev.test.widget".into(), placement: Placement { x: 0, y: 0, w: 64, h: 32 }, options: serde_json::Map::new() }
     }
 
     fn font() -> Font {
@@ -345,7 +363,7 @@ mod tests {
     fn draws_once_then_only_when_asked() {
         let script = r##"
             local module = {}
-            function module.init(settings) return { n = settings.n } end
+            function module.init() return { n = 3 } end
             function module.on_data(state, data) state.n = data.n; return true end
             function module.draw(state, ui) ui:rect(0, 0, ui.width / 2, ui.height, { fill = "#ff0000" }) end
             return module
@@ -397,7 +415,14 @@ mod tests {
         let (_scratch, installed) = module_with("bad-font", script, &[("keyboard/fonts/bad.ttf", b"not a font")]);
         let mut instance = Instance::start(0, &widget(), installed, None);
         instance.draw(&font(), &LiveCache::default()).expect("an error tile");
-        assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("as a font")), "{:?}", match &instance.run { Run::Failed(m) => m.as_str(), Run::Running(_) => "running" });
+        assert!(
+            matches!(instance.run, Run::Failed(ref m) if m.contains("as a font")),
+            "{:?}",
+            match &instance.run {
+                Run::Failed(m) => m.as_str(),
+                Run::Running(_) => "running",
+            }
+        );
     }
 
     #[test]
@@ -457,7 +482,7 @@ mod tests {
     fn unload_hands_its_state_to_the_next_init() {
         let script = r#"
             local m = {}
-            function m.init(settings, saved) return { count = if saved then saved.count + 1 else 0 } end
+            function m.init(saved) return { count = if saved then saved.count + 1 else 0 } end
             function m.unload(state) return state end
             function m.draw(state, ui) ui:text(tostring(state.count)) end
             return m

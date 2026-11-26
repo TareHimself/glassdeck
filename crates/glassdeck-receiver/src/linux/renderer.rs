@@ -1,4 +1,4 @@
-//! Renderers on the keyboard itself (glassdeck-local-web, glassdeck-scene): separate processes that
+//! Renderers on the keyboard itself (glassdeck-local-web, glassdeck-gpu): separate processes that
 //! draw into their own scanout buffers and present them over the compositor socket.
 
 use std::collections::HashMap;
@@ -14,9 +14,7 @@ use std::thread::{self, JoinHandle};
 use anyhow::{Context, Result, anyhow, bail};
 use glassdeck_proto::compositor::{BufferId, FromCompositor, MAX_MESSAGE_LEN, ToCompositor};
 use rustix::io::Errno;
-use rustix::net::{
-    AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType,
-};
+use rustix::net::{AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType};
 use rustix::process::{Pid, Signal, kill_process};
 
 use super::Picture;
@@ -78,16 +76,12 @@ impl RendererProcess {
         mailbox: Arc<Mailbox>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
-        let (ours, theirs) =
-            rustix::net::socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)
-                .context("creating the compositor socket")?;
+        let (ours, theirs) = rustix::net::socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)
+            .context("creating the compositor socket")?;
         let theirs = rustix::io::fcntl_dupfd_cloexec(&theirs, FIRST_SPARE_FD)?;
         let theirs_raw = theirs.as_raw_fd();
         let mut command = Command::new("runuser");
-        command
-            .args(["-u", RENDERER_USER, "--", program])
-            .arg(format!("--compositor-fd={RENDERER_SOCKET_FD}"))
-            .args(args);
+        command.args(["-u", RENDERER_USER, "--", program]).arg(format!("--compositor-fd={RENDERER_SOCKET_FD}")).args(args);
         // SAFETY: dup2 is async-signal-safe, and nothing else runs between fork and exec.
         unsafe {
             command.pre_exec(move || match dup2(theirs_raw, RENDERER_SOCKET_FD) {
@@ -121,6 +115,12 @@ impl RendererProcess {
         Ok(Self { label, stop, socket, renderer, thread })
     }
 
+    /// Data for the renderer's script (glassdeck-gpu); refused if it's larger than one message holds.
+    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+        let message = FromCompositor::data(payload.to_vec()).map_err(|e| anyhow!("{e}"))?;
+        send(&self.socket, &message).map_err(|RendererGone| anyhow!("{} hung up", self.label))
+    }
+
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Err(e) = kill_process(self.renderer, Signal::TERM) {
@@ -147,9 +147,8 @@ fn serve(label: &str, socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Ma
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
     loop {
         let mut control = RecvAncillaryBuffer::new(&mut space);
-        let received =
-            rustix::net::recvmsg(&**socket, &mut [IoSliceMut::new(&mut bytes)], &mut control, RecvFlags::CMSG_CLOEXEC)
-                .with_context(|| format!("reading from {label}"))?;
+        let received = rustix::net::recvmsg(&**socket, &mut [IoSliceMut::new(&mut bytes)], &mut control, RecvFlags::CMSG_CLOEXEC)
+            .with_context(|| format!("reading from {label}"))?;
         if received.bytes == 0 {
             return Ok(());
         }

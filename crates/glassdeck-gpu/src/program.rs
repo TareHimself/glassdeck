@@ -1,4 +1,4 @@
-//! A scene, built in or a background: the GLSL ES shader `glassdeck pack` compiled from Slang, and the script that
+//! A canvas, built in or a background: the GLSL ES shader `glassdeck pack` compiled from Slang, and the script that
 //! writes its inputs. Only inputs written since the last draw are uploaded, and a frame where nothing
 //! changed and the shader ignores the clock isn't drawn at all.
 
@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail, ensure};
-use glassdeck_package::{SceneFiles, ScenePlan};
+use glassdeck_package::{CanvasFiles, CanvasPlan};
 use glow::HasContext;
 
-use crate::script::{InputValue, SceneScript};
+use crate::script::{InputValue, CanvasScript};
 
 const VERTEX: &str = r"#version 300 es
 void main() {
@@ -18,44 +18,48 @@ void main() {
 }
 ";
 
-/// The glue's uniform holding the inputs, as `glassdeck_slang::scene::INPUTS_UNIFORM` names it.
+/// The glue's uniform holding the inputs, as `glassdeck_slang::canvas::INPUTS_UNIFORM` names it.
 const INPUTS_UNIFORM: &str = "gd_inputs";
 const PANEL: (f32, f32) = (1920.0, 1080.0);
 
-/// The render target's size for a scene's scale: even sides, which every scaler handles.
+/// The render target's size for a canvas's scale: even sides, which every scaler handles.
 pub fn render_size(scale: f32) -> (u32, u32) {
     let side = |panel: f32| (((panel * scale) / 2.0).round() as u32 * 2).max(2);
     (side(PANEL.0), side(PANEL.1))
 }
 
-pub struct SceneProgram {
-    pub plan: ScenePlan,
+pub struct CanvasProgram {
+    pub plan: CanvasPlan,
     program: glow::Program,
     /// Active uniforms by their Slang names (`frame.time`), without the `_0` Slang adds to each part.
     uniforms: HashMap<String, glow::UniformLocation>,
     /// The shader reads `frame`, so every frame looks different.
     animated: bool,
-    script: Option<SceneScript>,
+    script: Option<CanvasScript>,
     last: Option<f32>,
     index: u32,
     drawn: bool,
 }
 
-impl SceneProgram {
-    pub fn new(gl: &glow::Context, files: SceneFiles) -> Result<Self> {
-        let SceneFiles { plan, fragment, script, .. } = files;
+impl CanvasProgram {
+    pub fn new(gl: &glow::Context, files: CanvasFiles) -> Result<Self> {
+        let CanvasFiles { plan, fragment, script, .. } = files;
         let program = compile(gl, &fragment)?;
         let uniforms = active_uniforms(gl, program);
         let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
         let script = match script {
-            Some(source) => {
-                let script = SceneScript::load(&source, &plan.inputs)?;
-                script.apply_settings()?;
-                Some(script)
-            }
+            Some(source) => Some(CanvasScript::load(&source, &plan.inputs)?),
             None => None,
         };
         Ok(Self { plan, program, uniforms, animated, script, last: None, index: 0, drawn: false })
+    }
+
+    /// What the host half sent, for the script's `on_data`; a canvas without a script has nothing to give it to.
+    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+        match &self.script {
+            Some(script) => script.deliver(payload),
+            None => Ok(()),
+        }
     }
 
     /// Draws a frame if anything changed, and waits for the GPU, so the time returned is the frame's real cost.
@@ -122,14 +126,14 @@ fn compile(gl: &glow::Context, fragment: &str) -> Result<glow::Program> {
             gl.shader_source(shader, source);
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
-                bail!("compiling the scene: {}", gl.get_shader_info_log(shader));
+                bail!("compiling the canvas: {}", gl.get_shader_info_log(shader));
             }
             gl.attach_shader(program, shader);
             shaders.push(shader);
         }
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
-            bail!("linking the scene: {}", gl.get_program_info_log(program));
+            bail!("linking the canvas: {}", gl.get_program_info_log(program));
         }
         for shader in shaders {
             gl.detach_shader(program, shader);
