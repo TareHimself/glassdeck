@@ -9,7 +9,6 @@ use anyhow::{Result, anyhow, bail, ensure};
 use glassdeck_package::{SceneFiles, ScenePlan};
 use glow::HasContext;
 
-use crate::gpu::Target;
 use crate::script::{InputValue, SceneScript};
 
 const VERTEX: &str = r"#version 300 es
@@ -22,6 +21,12 @@ void main() {
 /// The glue's uniform holding the inputs, as `glassdeck_slang::scene::INPUTS_UNIFORM` names it.
 const INPUTS_UNIFORM: &str = "gd_inputs";
 const PANEL: (f32, f32) = (1920.0, 1080.0);
+
+/// The render target's size for a scene's scale: even sides, which every scaler handles.
+pub fn render_size(scale: f32) -> (u32, u32) {
+    let side = |panel: f32| (((panel * scale) / 2.0).round() as u32 * 2).max(2);
+    (side(PANEL.0), side(PANEL.1))
+}
 
 pub struct SceneProgram {
     pub plan: ScenePlan,
@@ -54,7 +59,7 @@ impl SceneProgram {
     }
 
     /// Draws a frame if anything changed, and waits for the GPU, so the time returned is the frame's real cost.
-    pub fn draw(&mut self, gl: &glow::Context, target: &Target, seconds: f32) -> Result<Option<Duration>> {
+    pub fn draw(&mut self, gl: &glow::Context, framebuffer: glow::Framebuffer, size: (u32, u32), seconds: f32) -> Result<Option<Duration>> {
         let started = Instant::now();
         let delta = self.last.map_or(0.0, |last| seconds - last);
         self.last = Some(seconds);
@@ -72,10 +77,10 @@ impl SceneProgram {
         if self.drawn && changes.is_empty() && !self.animated {
             return Ok(None);
         }
-        let (w, h) = (target.layout.width as f32, target.layout.height as f32);
+        let (w, h) = (size.0 as f32, size.1 as f32);
         // SAFETY: the context is current and every object here is live.
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
             gl.viewport(0, 0, w as i32, h as i32);
             gl.use_program(Some(self.program));
             let uniform = |name: &str| self.uniforms.get(name);

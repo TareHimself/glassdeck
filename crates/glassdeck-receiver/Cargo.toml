@@ -18,6 +18,7 @@ serde_json.workspace = true
 fontdue.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+glassdeck-scene.workspace = true
 minifb.workspace = true
 windows.workspace = true
 

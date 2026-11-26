@@ -730,6 +730,7 @@ dependencies = [
  "glassdeck-luau",
  "glassdeck-package",
  "glassdeck-proto",
+ "glassdeck-scene",
  "minifb",
  "mlua",
  "pkg-config",
@@ -756,6 +757,7 @@ dependencies = [
  "mlua",
  "rustix",
  "serde_json",
+ "windows",
 ]
 
 [[package]]

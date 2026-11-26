@@ -9,13 +9,16 @@ anyhow.workspace = true
 clap.workspace = true
 glassdeck-luau.workspace = true
 glassdeck-package.workspace = true
+glow = "0.16"
 serde_json.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "luau-vector4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 drm = "0.15.0"
 glassdeck-proto.workspace = true
-glow = "0.16"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libloading = "0.8"
 rustix = { version = "1.1.6", features = ["net", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true

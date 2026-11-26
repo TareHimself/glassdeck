@@ -5,10 +5,6 @@
 mod compositor;
 #[cfg(target_os = "linux")]
 mod gpu;
-#[cfg(target_os = "linux")]
-mod program;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod script;
 
 use clap::Parser;
 
@@ -29,10 +25,30 @@ struct Cli {
     snapshot: Option<std::path::PathBuf>,
 }
 
-#[cfg(not(target_os = "linux"))]
+/// On the PC only --snapshot works, through the same shader and script the keyboard runs.
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    let _ = Cli::parse();
-    anyhow::bail!("glassdeck-scene runs on the keyboard only")
+    use anyhow::Context;
+    use glassdeck_package::{Background, SceneFiles};
+    use glassdeck_scene::offscreen::Offscreen;
+    use glassdeck_scene::program::SceneProgram;
+
+    let cli = Cli::parse();
+    let path = cli.snapshot.context("on the PC, glassdeck-scene only takes --snapshot")?;
+    let files = match &cli.scene {
+        Some(scene) => SceneFiles::read(&Background::open(scene)?)?,
+        None => SceneFiles::from_bytes(glassdeck_scene::BUILT_IN)?,
+    };
+    let size = glassdeck_scene::program::render_size(files.plan.scale);
+    let offscreen = Offscreen::new(size)?;
+    println!("glassdeck-scene: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
+    let mut scene = SceneProgram::new(&offscreen.gl, files)?;
+    scene.draw(&offscreen.gl, offscreen.framebuffer(), size, 10.0)?;
+    // Bottom row first, as the keyboard's snapshots come out of glReadPixels, so the two compare directly.
+    let pixels = offscreen.read_rgb();
+    let rgba: Vec<u8> =
+        pixels.chunks_exact(size.0 as usize).rev().flatten().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+    std::fs::write(&path, rgba).with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(target_os = "linux")]
@@ -53,12 +69,9 @@ mod linux {
     use super::Cli;
     use crate::compositor::{Compositor, Received};
     use crate::gpu::{Gpu, Target};
-    use crate::program::SceneProgram as Scene;
+    use glassdeck_scene::BUILT_IN;
+    use glassdeck_scene::program::SceneProgram as Scene;
 
-    /// `scenes/gradient`, packed; `the_built_in_gradient_matches_its_sources` checks it's current.
-    const BUILT_IN: &[u8] = include_bytes!("../builtin/gradient.deckbg");
-
-    const PANEL: (u32, u32) = (1920, 1080);
     /// One on screen, one waiting for the flip, one being drawn.
     const BUFFERS: usize = 3;
     const STATS_EVERY: Duration = Duration::from_secs(5);
@@ -71,7 +84,7 @@ mod linux {
         };
         let mut scene = Scene::new(&gpu.gl, files)?;
         let (scale, fps) = (scene.plan.scale, scene.plan.frame_rate);
-        let size = scaled(scale);
+        let size = glassdeck_scene::program::render_size(scale);
         let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
         println!("glassdeck-scene: {} at {}x{}, modifier {:#x}", gpu.renderer_name(), size.0, size.1, targets[0].layout.modifier);
         if let Some(path) = &cli.snapshot {
@@ -88,10 +101,8 @@ mod linux {
         }
     }
 
-    /// Even sizes, which every scaler handles.
-    fn scaled(scale: f32) -> (u32, u32) {
-        let side = |panel: u32| (((panel as f32 * scale) / 2.0).round() as u32 * 2).max(2);
-        (side(PANEL.0), side(PANEL.1))
+    fn size_of(target: &Target) -> (u32, u32) {
+        (target.layout.width, target.layout.height)
     }
 
     fn present(gpu: &Gpu, targets: &[Target], scene: &mut Scene, compositor: &Compositor, fps: u32) -> Result<()> {
@@ -119,7 +130,7 @@ mod linux {
             }
             due = (due + period).max(Instant::now());
             let index = free.pop().expect("a free buffer, waited for above");
-            match scene.draw(&gpu.gl, &targets[index], started.elapsed().as_secs_f32())? {
+            match scene.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())? {
                 Some(took) => {
                     stats.add(took, targets[index].layout.width, targets[index].layout.height);
                     compositor.present(ids[index])?;
@@ -134,7 +145,7 @@ mod linux {
         let started = Instant::now();
         for frame in 0..frames {
             let target = &targets[frame as usize % targets.len()];
-            if let Some(took) = scene.draw(&gpu.gl, target, started.elapsed().as_secs_f32())? {
+            if let Some(took) = scene.draw(&gpu.gl, target.framebuffer, size_of(target), started.elapsed().as_secs_f32())? {
                 stats.add(took, target.layout.width, target.layout.height);
             }
         }
@@ -144,7 +155,7 @@ mod linux {
 
     fn snapshot(gpu: &Gpu, target: &Target, scene: &mut Scene, path: &std::path::Path) -> Result<()> {
         use glow::HasContext;
-        scene.draw(&gpu.gl, target, 10.0)?;
+        scene.draw(&gpu.gl, target.framebuffer, size_of(target), 10.0)?;
         let (w, h) = (target.layout.width, target.layout.height);
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         // SAFETY: the context is current and the target was just drawn.
@@ -192,26 +203,5 @@ mod linux {
                 self.size.1
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use glassdeck_package::{Origin, SceneFiles, scene_sources};
-
-    #[test]
-    fn the_built_in_gradient_matches_its_sources() {
-        let read = |path: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
-        let built_in = SceneFiles::from_bytes(include_bytes!("../builtin/gradient.deckbg")).unwrap();
-        let Origin::Packed { sources, .. } = built_in.origin else { panic!("the built-in gradient wasn't made by glassdeck pack") };
-        let current = scene_sources(
-            &read("../glassdeck-slang/slang/glassdeck.slang"),
-            &read("../../scenes/gradient/scene.slang"),
-            Some(&read("../../scenes/gradient/keyboard.luau")),
-        );
-        assert_eq!(
-            sources, current,
-            "scenes/gradient or the glassdeck API changed; repack: glassdeck pack scenes/gradient --out crates/glassdeck-scene/builtin/gradient.deckbg"
-        );
     }
 }
