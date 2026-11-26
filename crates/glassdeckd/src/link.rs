@@ -204,13 +204,13 @@ impl Uplink {
         self.changed.notify_all();
     }
 
-    /// For a new widget list, whose instance numbers mean different widgets.
-    pub fn forget_module_data(&self) {
+    /// For a widget that stopped or restarted, so what its old host side sent isn't sent again.
+    pub fn forget_module_instance(&self, instance: u16) {
         let mut queues = self.lock();
-        queues.latest.clear();
-        queues.unsent.clear();
-        queues.resources.clear();
-        queues.unsent_resources.clear();
+        queues.latest.remove(&instance);
+        queues.unsent.remove(&instance);
+        queues.resources.retain(|(owner, _), _| *owner != instance);
+        queues.unsent_resources.retain(|(owner, _)| *owner != instance);
     }
 
     /// Queues one message of the running stream, waiting while the queue is full.

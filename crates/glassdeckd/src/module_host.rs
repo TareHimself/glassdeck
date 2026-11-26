@@ -2,7 +2,7 @@
 //! background, and hands what each sends to the Link. A host side is a package's options (from
 //! `options.luau`) and its `host.luau`, which turns them into data for the keyboard; a package with
 //! options but no `host.luau` gets an implicit one that forwards them as they are. Picks up profile
-//! and module changes while running, like the keyboard.
+//! and module changes while running, like the keyboard, and restarts only what changed.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -68,9 +68,17 @@ struct Host {
     uplink: Arc<Uplink>,
     system: Rc<RefCell<System>>,
     now_playing: SharedNowPlaying,
-    widgets: Vec<Widget>,
-    canvas: Option<HostSide>,
+    widgets: BTreeMap<u16, Widget>,
+    canvas: Option<RunningCanvas>,
     seen: Option<Snapshot>,
+}
+
+/// The selected canvas's host side, and which copy of the canvas it was started from.
+struct RunningCanvas {
+    /// Its name on the keyboard, which is also its key in the options store
+    name: String,
+    modified: Option<SystemTime>,
+    side: HostSide,
 }
 
 #[derive(PartialEq)]
@@ -91,8 +99,50 @@ struct HostVm {
 }
 
 struct Widget {
-    number: u16,
+    entry: WidgetEntry,
     side: HostSide,
+}
+
+/// What a widget's host side runs from: its module's package as installed, and its stored options.
+#[derive(Clone, Debug, PartialEq)]
+struct WidgetEntry {
+    module: String,
+    package: PathBuf,
+    modified: SystemTime,
+    options: serde_json::Map<String, serde_json::Value>,
+}
+
+/// How one place in the profile changes between scans.
+#[derive(Debug, PartialEq)]
+enum WidgetChange {
+    /// A new widget, or one whose module or package changed
+    Start(u16),
+    /// Only stored options changed: tell the running host side which
+    Reapply { number: u16, changed: BTreeSet<String> },
+    /// Gone from the profile
+    Stop(u16),
+}
+
+/// Compares the running widgets with what the profile now asks for. Unchanged widgets keep running.
+fn widget_changes(running: &BTreeMap<u16, WidgetEntry>, wanted: &BTreeMap<u16, WidgetEntry>) -> Vec<WidgetChange> {
+    let stopped = running.keys().filter(|number| !wanted.contains_key(number)).map(|&number| WidgetChange::Stop(number));
+    let started_or_changed = wanted.iter().filter_map(|(&number, entry)| match running.get(&number) {
+        None => Some(WidgetChange::Start(number)),
+        Some(now) if (&now.module, &now.package, now.modified) != (&entry.module, &entry.package, entry.modified) => {
+            Some(WidgetChange::Start(number))
+        }
+        Some(now) => {
+            let changed: BTreeSet<String> = now
+                .options
+                .keys()
+                .chain(entry.options.keys())
+                .filter(|path| now.options.get(*path) != entry.options.get(*path))
+                .cloned()
+                .collect();
+            (!changed.is_empty()).then_some(WidgetChange::Reapply { number, changed })
+        }
+    });
+    stopped.chain(started_or_changed).collect()
 }
 
 /// A package's host side: what it declares the user can set, and who turns that into data.
@@ -130,7 +180,7 @@ impl Host {
         let refresh =
             RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_usage()).with_memory(MemoryRefreshKind::nothing().with_ram());
         let system = Rc::new(RefCell::new(System::new_with_specifics(refresh).expect("system stats are readable")));
-        Self { profile, modules, options, uplink, system, now_playing, widgets: Vec::new(), canvas: None, seen: None }
+        Self { profile, modules, options, uplink, system, now_playing, widgets: BTreeMap::new(), canvas: None, seen: None }
     }
 
     fn run(mut self, commands: &Receiver<HostCommand>) {
@@ -141,12 +191,12 @@ impl Host {
                 self.rescan();
                 next_scan = now + RESCAN;
             }
-            self.widgets.retain(|widget| widget.side.run_timers(now));
-            if self.canvas.as_ref().is_some_and(|canvas| !canvas.run_timers(now)) {
+            self.widgets.retain(|_, widget| widget.side.run_timers(now));
+            if self.canvas.as_ref().is_some_and(|canvas| !canvas.side.run_timers(now)) {
                 self.canvas = None;
             }
             self.flush();
-            let sides = self.widgets.iter().map(|w| &w.side).chain(&self.canvas);
+            let sides = self.widgets.values().map(|w| &w.side).chain(self.canvas.as_ref().map(|c| &c.side));
             let wake = sides.filter_map(HostSide::next_timer).min().map_or(next_scan, |at| at.min(next_scan));
             match commands.recv_timeout(wake.saturating_duration_since(Instant::now())) {
                 Ok(command) => self.obey(command),
@@ -157,19 +207,19 @@ impl Host {
     }
 
     fn flush(&self) {
-        for widget in &self.widgets {
+        for (&number, widget) in &self.widgets {
             if let Some(payload) = widget.side.slot().borrow_mut().take() {
-                self.uplink.put_module_data(widget.number, payload);
+                self.uplink.put_module_data(number, payload);
             }
             for (name, data) in widget.side.take_live() {
-                self.uplink.put_module_resource(widget.number, name, data);
+                self.uplink.put_module_resource(number, name, data);
             }
         }
-        if let Some(canvas) = &self.canvas {
-            if !canvas.take_live().is_empty() {
-                eprintln!("error: {}: canvases can't use live resources", canvas.label);
+        if let Some(RunningCanvas { side, .. }) = &self.canvas {
+            if !side.take_live().is_empty() {
+                eprintln!("error: {}: canvases can't use live resources", side.label);
             }
-            if let Some(payload) = canvas.slot().borrow_mut().take() {
+            if let Some(payload) = side.slot().borrow_mut().take() {
                 self.uplink.put_background_data(payload);
             }
         }
@@ -179,29 +229,29 @@ impl Host {
         match command {
             HostCommand::Canvas(None) => self.canvas = None,
             HostCommand::Canvas(Some(selection)) => {
+                let modified = fs::metadata(&selection.path).and_then(|m| m.modified()).ok();
+                if self.canvas.as_ref().is_some_and(|c| c.name == selection.name && c.modified == modified) {
+                    return;
+                }
                 self.canvas = None;
                 match canvas_sources(&selection).and_then(|sources| HostSide::start(sources, &self.system, &self.now_playing)) {
                     Ok(Some(side)) => {
                         println!("Module host: running {}'s host side", selection.name);
-                        self.canvas = Some(side);
-                        self.apply_canvas_options(&selection.name, None);
+                        self.canvas = Some(RunningCanvas { name: selection.name, modified, side });
+                        self.apply_canvas_options(None);
                     }
                     Ok(None) => {}
                     Err(e) => eprintln!("error: the canvas {}: {e:#}", selection.name),
                 }
             }
-            HostCommand::CanvasOptionsChanged(changed) => {
-                if let Some(name) = self.canvas.as_ref().map(|s| s.label.clone()) {
-                    self.apply_canvas_options(&name, Some(&changed));
-                }
-            }
+            HostCommand::CanvasOptionsChanged(changed) => self.apply_canvas_options(Some(&changed)),
         }
     }
 
     /// The canvas's stored options to its host side: every option changed on the first call.
-    fn apply_canvas_options(&self, name: &str, changed: Option<&BTreeSet<String>>) {
-        let Some(canvas) = &self.canvas else { return };
-        let result = self.options.chosen(name, canvas.first()).and_then(|chosen| canvas.apply_options(&chosen, changed));
+    fn apply_canvas_options(&self, changed: Option<&BTreeSet<String>>) {
+        let Some(RunningCanvas { name, side, .. }) = &self.canvas else { return };
+        let result = self.options.chosen(name, side.first()).and_then(|chosen| side.apply_options(&chosen, changed));
         if let Err(e) = result {
             eprintln!("error: {name}'s options: {e:#}");
         }
@@ -213,50 +263,83 @@ impl Host {
             return;
         }
         self.seen = Some(snapshot);
-        self.widgets.clear();
-        self.uplink.forget_module_data();
-        match self.load() {
-            Ok(widgets) => {
-                println!("Module host: {} widget host sides running", widgets.len());
-                self.widgets = widgets;
+        let wanted = match self.wanted() {
+            Ok(wanted) => wanted,
+            Err(e) => return eprintln!("error: module host: {e:#}"),
+        };
+        let running = self.widgets.iter().map(|(&number, widget)| (number, widget.entry.clone())).collect();
+        let changes = widget_changes(&running, &wanted.iter().map(|(&n, (entry, _))| (n, entry.clone())).collect());
+        for change in changes {
+            match change {
+                WidgetChange::Stop(number) => {
+                    self.widgets.remove(&number);
+                    self.uplink.forget_module_instance(number);
+                }
+                WidgetChange::Start(number) => {
+                    self.widgets.remove(&number);
+                    self.uplink.forget_module_instance(number);
+                    let (entry, package) = &wanted[&number];
+                    if let Some(widget) = self.start_widget(number, entry, package) {
+                        self.widgets.insert(number, widget);
+                    }
+                }
+                WidgetChange::Reapply { number, changed } => {
+                    let widget = self.widgets.get_mut(&number).expect("only running widgets are reapplied");
+                    widget.entry = wanted[&number].0.clone();
+                    let label = &widget.side.label;
+                    let chosen = read_values(label, widget.side.first(), widget.entry.options.iter());
+                    if let Err(e) = widget.side.apply_options(&chosen, Some(&changed)) {
+                        eprintln!("error: {label}'s options: {e:#}");
+                    }
+                }
             }
-            Err(e) => eprintln!("error: module host: {e:#}"),
         }
     }
 
-    fn load(&self) -> Result<Vec<Widget>> {
+    /// The widgets the profile asks for, by number, with the package each runs from.
+    fn wanted(&self) -> Result<BTreeMap<u16, (WidgetEntry, Rc<ModulePackage>)>> {
         if !self.profile.exists() {
             println!("Module host: no profile at {}, so no widgets", self.profile.display());
-            return Ok(Vec::new());
+            return Ok(BTreeMap::new());
         }
         let packages: HashMap<String, Rc<ModulePackage>> = installed(&self.modules)?.into_iter().map(|(id, p)| (id, Rc::new(p))).collect();
         let profile = Profile::read(&self.profile, WidgetArea::of_panel().size, |id| packages.get(id).map(|p| p.manifest().clone()))?;
-        let mut widgets = Vec::new();
-        for (index, widget) in profile.widgets.iter().enumerate() {
-            let package = &packages[&widget.module];
-            let label = format!("widget {index} ({})", widget.module);
+        let mut wanted = BTreeMap::new();
+        for (index, widget) in profile.widgets.into_iter().enumerate() {
             let number = u16::try_from(index).expect("profiles hold at most u16::MAX widgets");
-            let readable = Rc::clone(package);
-            let started = (|| -> Result<Option<HostSide>> {
-                let sources = Sources {
-                    label: label.clone(),
-                    options: package.options_script()?,
-                    host: package.host_script()?,
-                    reader: Some(Rc::new(move |resource| readable.resource(resource))),
-                    send_limit: None,
-                };
-                let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
-                let chosen = read_values(&label, side.first(), widget.options.iter());
-                side.apply_options(&chosen, None)?;
-                Ok(Some(side))
-            })();
-            match started {
-                Ok(Some(side)) => widgets.push(Widget { number, side }),
-                Ok(None) => {}
-                Err(e) => eprintln!("error: {label}: {e:#}"),
+            let package = Rc::clone(&packages[&widget.module]);
+            let modified = fs::metadata(package.path()).and_then(|m| m.modified()).with_context(|| format!("reading {}", package.path().display()))?;
+            let entry = WidgetEntry { module: widget.module, package: package.path().to_owned(), modified, options: widget.options };
+            wanted.insert(number, (entry, package));
+        }
+        Ok(wanted)
+    }
+
+    fn start_widget(&self, number: u16, entry: &WidgetEntry, package: &Rc<ModulePackage>) -> Option<Widget> {
+        let label = format!("widget {number} ({})", entry.module);
+        let readable = Rc::clone(package);
+        let started = (|| -> Result<Option<HostSide>> {
+            let sources = Sources {
+                label: label.clone(),
+                options: package.options_script()?,
+                host: package.host_script()?,
+                reader: Some(Rc::new(move |resource| readable.resource(resource))),
+                send_limit: None,
+            };
+            let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
+            side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
+            Ok(Some(side))
+        })();
+        match started {
+            Ok(side) => {
+                println!("Module host: started {label}");
+                side.map(|side| Widget { entry: entry.clone(), side })
+            }
+            Err(e) => {
+                eprintln!("error: {label}: {e:#}");
+                None
             }
         }
-        Ok(widgets)
     }
 }
 
@@ -494,4 +577,38 @@ pub fn installed(folder: &Path) -> Result<HashMap<String, ModulePackage>> {
         }
     }
     Ok(packages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(module: &str, at: u64, options: serde_json::Value) -> WidgetEntry {
+        WidgetEntry {
+            module: module.into(),
+            package: PathBuf::from(format!("{module}.deckmod")),
+            modified: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
+            options: options.as_object().cloned().unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn only_what_changed_restarts_or_hears_about_it() {
+        let clock = entry("clock", 1, serde_json::json!({ "seconds": true }));
+        let running = BTreeMap::from([(0, clock.clone()), (1, entry("cpu", 1, serde_json::json!({}))), (2, entry("pomodoro", 1, serde_json::json!({})))]);
+        let wanted = BTreeMap::from([
+            (0, entry("clock", 1, serde_json::json!({ "seconds": false, "hours24": true }))),
+            (1, entry("cpu", 2, serde_json::json!({}))),
+            (3, entry("now-playing", 1, serde_json::json!({}))),
+        ]);
+        assert_eq!(widget_changes(&running, &wanted), vec![
+            WidgetChange::Stop(2),
+            WidgetChange::Reapply { number: 0, changed: BTreeSet::from(["hours24".to_owned(), "seconds".to_owned()]) },
+            WidgetChange::Start(1),
+            WidgetChange::Start(3),
+        ]);
+        assert!(widget_changes(&running, &running).is_empty());
+        let swapped = BTreeMap::from([(0, entry("cpu", 1, serde_json::json!({ "seconds": true })))]);
+        assert_eq!(widget_changes(&BTreeMap::from([(0, clock)]), &swapped), vec![WidgetChange::Start(0)]);
+    }
 }

@@ -313,7 +313,7 @@ impl Api {
         Ok(OptionsView { owner, items: panel_view(&panel, &resolved.values), dropped: resolved.dropped })
     }
 
-    /// Writes the value into glassdeckd's profile; the module host sees the change and restarts that widget's host side.
+    /// Writes the value into glassdeckd's profile; the module host sees the change and tells that widget's host side.
     fn set_widget_option(&self, index: u32, set: &SetOption) -> Result<OptionSet> {
         let (owner, script, first, chosen) = self.widget_options_of(index)?;
         let (value, shown) = checked_value(&owner, &first, set)?;
