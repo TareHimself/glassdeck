@@ -250,62 +250,107 @@ impl Mode {
 }
 
 impl Message {
+    /// The message with its header, written straight into one buffer so a frame's payload is copied once.
     pub fn encode(&self) -> Vec<u8> {
-        let (kind, body) = match self {
+        let mut out = Vec::with_capacity(HEADER_LEN + self.body_len_hint());
+        out.extend_from_slice(&[VERSION, 0, 0, 0, 0, 0, 0, 0]);
+        out[1] = self.write_body(&mut out);
+        let len = u32::try_from(out.len() - HEADER_LEN).expect("a message body fits in 4 GiB");
+        out[4..HEADER_LEN].copy_from_slice(&len.to_le_bytes());
+        out
+    }
+
+    fn body_len_hint(&self) -> usize {
+        match self {
+            Self::Frame(frame) => FRAME_FIXED_LEN + frame.payload.len(),
+            Self::PutFile(put) => put.data.len() + 64,
+            Self::ModuleData { payload, .. } | Self::BackgroundData { payload } => payload.len() + 4,
+            Self::ModuleResource { name, data, .. } => name.len() + data.len() + 4,
+            _ => 64,
+        }
+    }
+
+    /// Appends the body to `out` and returns the message's kind.
+    fn write_body(&self, out: &mut Vec<u8>) -> u8 {
+        match self {
             Self::StreamStart(info) => {
                 let (mode, clock_offset_us) = info.mode.to_wire();
-                let mut body = Vec::with_capacity(STREAM_START_LEN);
-                body.extend_from_slice(&info.stream_id.to_le_bytes());
-                body.push(info.codec.to_wire());
-                body.push(mode);
-                body.extend_from_slice(&[0, 0]);
-                body.extend_from_slice(&info.width.to_le_bytes());
-                body.extend_from_slice(&info.height.to_le_bytes());
-                body.extend_from_slice(&clock_offset_us.to_le_bytes());
-                (KIND_STREAM_START, body)
+                out.extend_from_slice(&info.stream_id.to_le_bytes());
+                out.push(info.codec.to_wire());
+                out.push(mode);
+                out.extend_from_slice(&[0, 0]);
+                out.extend_from_slice(&info.width.to_le_bytes());
+                out.extend_from_slice(&info.height.to_le_bytes());
+                out.extend_from_slice(&clock_offset_us.to_le_bytes());
+                KIND_STREAM_START
             }
             Self::Frame(frame) => {
-                let mut body = Vec::with_capacity(FRAME_FIXED_LEN + frame.payload.len());
-                body.extend_from_slice(&frame.stream_id.to_le_bytes());
-                body.extend_from_slice(&frame.seq.to_le_bytes());
-                body.extend_from_slice(&frame.time_us.to_le_bytes());
-                body.push(if frame.keyframe { FLAG_KEYFRAME } else { 0 });
-                body.extend_from_slice(&[0, 0, 0]);
-                body.extend_from_slice(&frame.payload);
-                (KIND_FRAME, body)
+                out.extend_from_slice(&frame.stream_id.to_le_bytes());
+                out.extend_from_slice(&frame.seq.to_le_bytes());
+                out.extend_from_slice(&frame.time_us.to_le_bytes());
+                out.push(if frame.keyframe { FLAG_KEYFRAME } else { 0 });
+                out.extend_from_slice(&[0, 0, 0]);
+                out.extend_from_slice(&frame.payload);
+                KIND_FRAME
             }
-            Self::StreamEnd { stream_id } => (KIND_STREAM_END, stream_id.to_le_bytes().to_vec()),
-            Self::ClockProbe { sent_us } => (KIND_CLOCK_PROBE, sent_us.to_le_bytes().to_vec()),
+            Self::StreamEnd { stream_id } => {
+                out.extend_from_slice(&stream_id.to_le_bytes());
+                KIND_STREAM_END
+            }
+            Self::ClockProbe { sent_us } => {
+                out.extend_from_slice(&sent_us.to_le_bytes());
+                KIND_CLOCK_PROBE
+            }
             Self::ClockReply { probe_sent_us, received_us } => {
-                (KIND_CLOCK_REPLY, [probe_sent_us.to_le_bytes(), received_us.to_le_bytes()].concat())
+                out.extend_from_slice(&probe_sent_us.to_le_bytes());
+                out.extend_from_slice(&received_us.to_le_bytes());
+                KIND_CLOCK_REPLY
             }
-            Self::SelectBackground { name } => (KIND_SELECT_BACKGROUND, name.as_bytes().to_vec()),
-            Self::ModuleData { instance, payload } => (KIND_MODULE_DATA, [&instance.to_le_bytes()[..], &[0, 0], payload].concat()),
-            Self::BackgroundData { payload } => (KIND_BACKGROUND_DATA, payload.clone()),
+            Self::SelectBackground { name } => {
+                out.extend_from_slice(name.as_bytes());
+                KIND_SELECT_BACKGROUND
+            }
+            Self::ModuleData { instance, payload } => {
+                out.extend_from_slice(&instance.to_le_bytes());
+                out.extend_from_slice(&[0, 0]);
+                out.extend_from_slice(payload);
+                KIND_MODULE_DATA
+            }
+            Self::BackgroundData { payload } => {
+                out.extend_from_slice(payload);
+                KIND_BACKGROUND_DATA
+            }
             Self::PutFile(put) => {
                 let (head, name) = encode_target(&put.target);
-                (KIND_PUT_FILE, [&head[..], &put.offset.to_le_bytes(), &put.total.to_le_bytes(), name, &put.data].concat())
+                out.extend_from_slice(&head);
+                out.extend_from_slice(&put.offset.to_le_bytes());
+                out.extend_from_slice(&put.total.to_le_bytes());
+                out.extend_from_slice(name);
+                out.extend_from_slice(&put.data);
+                KIND_PUT_FILE
             }
             Self::PutDone { target } => {
                 let (head, name) = encode_target(target);
-                (KIND_PUT_DONE, [&head[..], name].concat())
+                out.extend_from_slice(&head);
+                out.extend_from_slice(name);
+                KIND_PUT_DONE
             }
             Self::PutRefused { target, reason } => {
                 let (head, name) = encode_target(target);
-                (KIND_PUT_REFUSED, [&head[..], name, reason.as_bytes()].concat())
+                out.extend_from_slice(&head);
+                out.extend_from_slice(name);
+                out.extend_from_slice(reason.as_bytes());
+                KIND_PUT_REFUSED
             }
             Self::ModuleResource { instance, name, data } => {
                 let len = u8::try_from(name.len()).expect("live resource names are at most 255 bytes");
-                (KIND_MODULE_RESOURCE, [&instance.to_le_bytes()[..], &[len, 0], name.as_bytes(), data].concat())
+                out.extend_from_slice(&instance.to_le_bytes());
+                out.extend_from_slice(&[len, 0]);
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(data);
+                KIND_MODULE_RESOURCE
             }
-        };
-        let mut out = Vec::with_capacity(HEADER_LEN + body.len());
-        out.push(VERSION);
-        out.push(kind);
-        out.extend_from_slice(&[0, 0]);
-        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-        out.extend_from_slice(&body);
-        out
+        }
     }
 
     /// Reads one message. Returns `Ok(None)` on a clean end of stream between messages.

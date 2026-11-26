@@ -42,6 +42,8 @@ struct GdSource
 
 struct GdText;
 
+// Calls share one Slang global session and take turns, so any thread may call.
+
 // Describes the last module's structs and functions that carry user attributes, as JSON.
 GD_SLANG_API GdStatus gd_slang_reflect(const GdSource* sources, int32_t count, GdText** outJson, GdText** outDiagnostics);
 

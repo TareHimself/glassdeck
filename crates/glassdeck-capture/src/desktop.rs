@@ -71,13 +71,14 @@ pub fn capture_live<T: TryInto<GraphicsCaptureItemType> + Send + 'static>(
     duration: Option<Duration>,
     out: SyncSender<EncodedFrame>,
 ) -> Result<()> {
+    let interval = capture_interval(settings.fps);
     let flags = Flags { tx: out, kind: encoder, settings };
     let settings = Settings::new(
         target,
         CursorCaptureSettings::WithoutCursor,
         DrawBorderSettings::WithoutBorder,
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
+        MinimumUpdateIntervalSettings::Custom(interval),
         DirtyRegionSettings::Default,
         ColorFormat::Bgra8,
         flags,
@@ -92,6 +93,12 @@ pub fn capture_live<T: TryInto<GraphicsCaptureItemType> + Send + 'static>(
         thread::sleep(POLL);
     }
     control.wait().map_err(|e| anyhow!("capture failed: {e}"))
+}
+
+/// A little under one frame at `fps`, so a fast monitor's refresh ticks that land just short of a
+/// frame's length still count, and capture keeps up with the stream instead of the monitor.
+fn capture_interval(fps: u32) -> Duration {
+    Duration::from_secs(1) * 9 / (fps.max(1) * 10)
 }
 
 struct Flags {

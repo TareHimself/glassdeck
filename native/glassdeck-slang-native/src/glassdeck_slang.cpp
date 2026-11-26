@@ -4,6 +4,7 @@
 #include <slang.h>
 
 #include <cstdio>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -26,10 +27,27 @@ void require(bool condition, GdStatus status)
     if (!condition) throw Failure{status};
 }
 
+// Loading Slang's core module is most of a compile's cost, so one global session serves every call.
+// Slang's sessions aren't thread-safe, so calls take turns.
+std::mutex& slangTurn()
+{
+    static std::mutex turn;
+    return turn;
+}
+
+// Never released: it lives as long as the library, and tearing it down at exit gains nothing.
+slang::IGlobalSession* globalSession()
+{
+    static slang::IGlobalSession* global = nullptr;
+    if (!global) require(SLANG_SUCCEEDED(slang::createGlobalSession(&global)), GD_SLANG_ERROR);
+    return global;
+}
+
 template <typename F> GdStatus guarded(F&& body) noexcept
 {
     try
     {
+        std::lock_guard<std::mutex> turn(slangTurn());
         body();
         return GD_OK;
     }
@@ -59,7 +77,6 @@ void appendDiagnostics(std::string& to, slang::IBlob* blob)
 
 struct Compilation
 {
-    Slang::ComPtr<slang::IGlobalSession> global;
     Slang::ComPtr<slang::ISession> session;
     std::vector<slang::IModule*> modules;
     std::string diagnostics;
@@ -67,11 +84,10 @@ struct Compilation
     Compilation(const GdSource* sources, int32_t count, const slang::TargetDesc* target)
     {
         require(sources != nullptr && count > 0, GD_INVALID_ARGUMENT);
-        require(SLANG_SUCCEEDED(slang::createGlobalSession(global.writeRef())), GD_SLANG_ERROR);
         slang::SessionDesc desc{};
         desc.targets = target;
         desc.targetCount = target ? 1 : 0;
-        require(SLANG_SUCCEEDED(global->createSession(desc, session.writeRef())), GD_SLANG_ERROR);
+        require(SLANG_SUCCEEDED(globalSession()->createSession(desc, session.writeRef())), GD_SLANG_ERROR);
         for (int32_t i = 0; i < count; ++i)
         {
             require(sources[i].name && sources[i].path && sources[i].text, GD_INVALID_ARGUMENT);
@@ -283,11 +299,9 @@ GdStatus gd_slang_compile(
         *outCode = nullptr;
         *outDiagnostics = nullptr;
 
-        Slang::ComPtr<slang::IGlobalSession> probe;
-        require(SLANG_SUCCEEDED(slang::createGlobalSession(probe.writeRef())), GD_SLANG_ERROR);
         slang::TargetDesc desc{};
         desc.format = target == GD_TARGET_SPIRV ? SLANG_SPIRV : SLANG_GLSL;
-        desc.profile = probe->findProfile(profile);
+        desc.profile = globalSession()->findProfile(profile);
         require(desc.profile != SLANG_PROFILE_UNKNOWN, GD_INVALID_ARGUMENT);
 
         Compilation compilation(sources, count, &desc);
@@ -323,9 +337,12 @@ GdStatus gd_slang_compile(
 
 int32_t gd_slang_has_profile(const char* name)
 {
-    Slang::ComPtr<slang::IGlobalSession> global;
-    if (!name || SLANG_FAILED(slang::createGlobalSession(global.writeRef()))) return 0;
-    return global->findProfile(name) != SLANG_PROFILE_UNKNOWN;
+    bool found = false;
+    const GdStatus status = guarded([&] {
+        require(name != nullptr, GD_INVALID_ARGUMENT);
+        found = globalSession()->findProfile(name) != SLANG_PROFILE_UNKNOWN;
+    });
+    return status == GD_OK && found;
 }
 
 const char* gd_text_data(const GdText* value)

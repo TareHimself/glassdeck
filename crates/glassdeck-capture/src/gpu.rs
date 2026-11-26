@@ -667,6 +667,22 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "a benchmark that needs a GPU; run with cargo test --release -- --ignored --nocapture"]
+    fn bench_convert() {
+        let (device, context) = device();
+        let settings = EncoderSettings { width: 1920, height: 1080, codec: Codec::Hevc, fps: 60, bitrate: 15_000_000, keyframe_every: 120, vbv_frames: None };
+        let converter = Nv12Converter::new(&device, &context, settings).unwrap();
+        let frame = solid_bgra_sized(&device, [40, 80, 120, 255], 2560, 1440);
+        const FRAMES: u32 = 1000;
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            converter.convert(&frame).unwrap();
+        }
+        unsafe { context.Flush() };
+        println!("convert: {:.1} us per frame on the CPU", started.elapsed().as_secs_f64() * 1e6 / f64::from(FRAMES));
+    }
+
+    #[test]
     fn packs_size_as_high_and_low_words() {
         assert_eq!(pack(1920, 1080), 0x0000_0780_0000_0438);
     }
