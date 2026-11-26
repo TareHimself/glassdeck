@@ -45,7 +45,7 @@ flowchart LR
 | [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of the theme's background and widgets, and serves the local HTTP API. |
 | [glassdeck](crates/glassdeck) | host | The CLI. |
 | [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types. They derive `specta::Type` for the app's TypeScript bindings. |
-| [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, Linaria). A client of glassdeckd. |
+| [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, CSS Modules). A client of glassdeckd. |
 | [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds, Wallpaper Engine scenes. |
 | [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a background `.deck`. |
 | [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder. |

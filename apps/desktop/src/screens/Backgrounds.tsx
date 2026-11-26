@@ -1,5 +1,5 @@
-import { Title } from "../ui";
+import { PageHeader } from "../components/PageHeader";
 
 export function Backgrounds() {
-  return <Title>Backgrounds</Title>;
+  return <PageHeader title="Backgrounds" />;
 }

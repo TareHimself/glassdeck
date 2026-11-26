@@ -1,0 +1,25 @@
+.segments {
+  display: flex;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+}
+
+.segment {
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.segment[aria-pressed="true"] {
+  background: var(--selected);
+  color: var(--ink);
+}

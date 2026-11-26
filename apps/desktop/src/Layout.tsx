@@ -1,96 +1,6 @@
-import { css } from "@linaria/core";
-import { styled } from "@linaria/react";
 import { NavLink, Outlet } from "react-router";
 import { describeError, useGlassdeckd, type Connection } from "./glassdeckd";
-
-const Shell = styled.div`
-  display: flex;
-  height: 100%;
-`;
-
-const Sidebar = styled.nav`
-  flex: none;
-  width: 240px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 20px 12px;
-  background: var(--sidebar);
-  border-right: 1px solid var(--line);
-`;
-
-const Brand = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 10px 20px;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-`;
-
-const item = css`
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 0 12px;
-  border-radius: var(--radius-small);
-  color: var(--ink-soft);
-  text-decoration: none;
-
-  &.active {
-    background: var(--raised);
-    color: var(--ink);
-    font-weight: 600;
-  }
-`;
-
-const Spacer = styled.div`
-  flex: 1;
-`;
-
-const LinkCard = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-`;
-
-const LinkState = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-`;
-
-const Dot = styled.span`
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-
-  &[data-on] {
-    background: var(--ok);
-  }
-`;
-
-const Detail = styled.div`
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-`;
-
-const Main = styled.main`
-  flex: 1;
-  min-width: 0;
-  overflow: auto;
-  padding: 24px 28px;
-`;
+import styles from "./Layout.module.css";
 
 function linkSummary(connection: Connection): { on: boolean; label: string; detail: string } {
   switch (connection.state) {
@@ -120,33 +30,33 @@ export function Layout() {
   const connection = useGlassdeckd((s) => s.connection);
   const link = linkSummary(connection);
   return (
-    <Shell>
-      <Sidebar aria-label="Main">
-        <Brand>
+    <div className={styles.shell}>
+      <nav aria-label="Main" className={styles.sidebar}>
+        <div className={styles.brand}>
           <Logo />
           Glassdeck
-        </Brand>
-        <NavLink className={item} to="/" end>
+        </div>
+        <NavLink className={styles.item} to="/" end>
           Overview
         </NavLink>
-        <NavLink className={item} to="/widgets">
+        <NavLink className={styles.item} to="/widgets">
           Widgets
         </NavLink>
-        <NavLink className={item} to="/backgrounds">
+        <NavLink className={styles.item} to="/backgrounds">
           Backgrounds
         </NavLink>
-        <Spacer />
-        <LinkCard>
-          <LinkState>
-            <Dot data-on={link.on || undefined} />
+        <div className={styles.spacer} />
+        <div className={styles.link}>
+          <div className={styles.linkState}>
+            <span className={styles.dot} data-on={link.on || undefined} />
             {link.label}
-          </LinkState>
-          <Detail>{link.detail}</Detail>
-        </LinkCard>
-      </Sidebar>
-      <Main>
+          </div>
+          <div className={styles.detail}>{link.detail}</div>
+        </div>
+      </nav>
+      <main className={styles.main}>
         <Outlet />
-      </Main>
-    </Shell>
+      </main>
+    </div>
   );
 }
