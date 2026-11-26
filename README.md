@@ -56,6 +56,7 @@ flowchart LR
 | [glassdeck-layout](crates/glassdeck-layout) | both | Key and widget area geometry on the 1920x1080 panel. |
 | [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas renderer process, and its core shared with the host preview. |
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
+| [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's (RP2040) serial-link framing and messages, byte for byte as the stock firmware sends them. Tested against vectors printed by Keyglass's C firmware ([firmware/vectors](firmware/vectors)). |
 
 ## Build
 
