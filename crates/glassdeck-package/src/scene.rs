@@ -1,10 +1,13 @@
 //! A scene background's plan: what `glassdeck pack` worked out from the Slang, for the keyboard's
 //! renderer to run it without Slang.
 
-use anyhow::{Result, bail, ensure};
+use std::io::Cursor;
+
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::check_name;
+use crate::zip::read_directory;
+use crate::{Background, Content, MANIFEST, Manifest, Origin, check_name};
 
 pub const SCENE_PLAN: &str = "scene/plan.json";
 pub const SCENE_FRAGMENT: &str = "scene/fragment.essl";
@@ -45,6 +48,64 @@ pub enum InputKind {
     FloatArray {
         len: u32,
     },
+}
+
+/// What the keyboard needs to run a scene, read from a scene `.deckbg` on disk or in memory.
+pub struct SceneFiles {
+    pub origin: Origin,
+    pub plan: ScenePlan,
+    pub fragment: String,
+    pub script: Option<String>,
+}
+
+impl SceneFiles {
+    pub fn read(background: &Background) -> Result<Self> {
+        Self::parse(background.manifest(), |name| {
+            let entry = background.entry(name).with_context(|| format!("the scene has no {name}"))?;
+            background.read_entry(entry)
+        })
+    }
+
+    /// A scene `.deckbg` built into a program, such as the built-in gradient.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let entries = read_directory(&mut Cursor::new(bytes))?;
+        let read = |name: &str| -> Result<Vec<u8>> {
+            let entry = entries.get(name).with_context(|| format!("the scene has no {name}"))?;
+            Ok(bytes[entry.offset as usize..(entry.offset + entry.len) as usize].to_vec())
+        };
+        let manifest: Manifest = serde_json::from_slice(&read(MANIFEST)?).context("parsing the scene's manifest")?;
+        manifest.validate(|name| entries.contains_key(name))?;
+        Self::parse(&manifest, read)
+    }
+
+    fn parse(manifest: &Manifest, read: impl Fn(&str) -> Result<Vec<u8>>) -> Result<Self> {
+        let Content::Scene { plan } = &manifest.content else { bail!("{} isn't a scene", manifest.title) };
+        let text = |name: &str| -> Result<String> { String::from_utf8(read(name)?).with_context(|| format!("{name} isn't UTF-8")) };
+        let plan: ScenePlan = serde_json::from_str(&text(plan)?).context("reading the scene's plan")?;
+        plan.validate()?;
+        let fragment = text(&plan.fragment)?;
+        let script = plan.script.as_deref().map(text).transpose()?;
+        Ok(Self { origin: manifest.origin.clone(), plan, fragment, script })
+    }
+}
+
+/// A digest of the files a scene was packed from, so a packed copy can be checked against its
+/// sources without Slang. Line endings are ignored, since checkouts differ.
+pub fn source_digest<'a>(files: impl IntoIterator<Item = &'a str>) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for file in files {
+        for byte in file.replace("\r\n", "\n").bytes().chain([0]) {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+/// What a packed scene depends on: the glassdeck API module, its shader and its script.
+pub fn scene_sources(api: &str, shader: &str, script: Option<&str>) -> String {
+    source_digest([api, shader, script.unwrap_or("")])
 }
 
 impl ScenePlan {
@@ -91,6 +152,13 @@ mod tests {
         assert!(json.contains(r#""kind":{"type":"float","components":3}"#), "{json}");
         assert_eq!(serde_json::from_str::<ScenePlan>(&json).unwrap(), plan());
         plan().validate().unwrap();
+    }
+
+    #[test]
+    fn the_digest_ignores_line_endings_but_not_content_or_order() {
+        assert_eq!(source_digest(["a\r\nb", "c"]), source_digest(["a\nb", "c"]));
+        assert_ne!(source_digest(["a", "b"]), source_digest(["b", "a"]));
+        assert_ne!(source_digest(["ab"]), source_digest(["a", "b"]));
     }
 
     #[test]

@@ -1,13 +1,12 @@
-//! A scene background: the GLSL ES shader `glassdeck pack` compiled from Slang, and the script that
+//! A scene, built in or a background: the GLSL ES shader `glassdeck pack` compiled from Slang, and the script that
 //! writes its inputs. Only inputs written since the last draw are uploaded, and a frame where nothing
 //! changed and the shader ignores the clock isn't drawn at all.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use glassdeck_package::{Background, Content, ScenePlan};
+use anyhow::{Result, anyhow, bail, ensure};
+use glassdeck_package::{SceneFiles, ScenePlan};
 use glow::HasContext;
 
 use crate::gpu::Target;
@@ -38,21 +37,14 @@ pub struct SceneProgram {
 }
 
 impl SceneProgram {
-    pub fn open(gl: &glow::Context, path: &Path) -> Result<Self> {
-        let background = Background::open(path)?;
-        let Content::Scene { plan } = &background.manifest().content else { bail!("{} isn't a scene", path.display()) };
-        let read = |name: &str| -> Result<String> {
-            let entry = background.entry(name).with_context(|| format!("the scene has no {name}"))?;
-            String::from_utf8(background.read_entry(entry)?).with_context(|| format!("{name} isn't UTF-8"))
-        };
-        let plan: ScenePlan = serde_json::from_str(&read(plan)?).context("reading the scene's plan")?;
-        plan.validate()?;
-        let program = compile(gl, &read(&plan.fragment)?)?;
+    pub fn new(gl: &glow::Context, files: SceneFiles) -> Result<Self> {
+        let SceneFiles { plan, fragment, script, .. } = files;
+        let program = compile(gl, &fragment)?;
         let uniforms = active_uniforms(gl, program);
         let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
-        let script = match &plan.script {
-            Some(name) => {
-                let script = SceneScript::load(&read(name)?, &plan.inputs)?;
+        let script = match script {
+            Some(source) => {
+                let script = SceneScript::load(&source, &plan.inputs)?;
                 script.apply_settings()?;
                 Some(script)
             }

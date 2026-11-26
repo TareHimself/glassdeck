@@ -33,7 +33,7 @@ pub struct Entry {
 }
 
 /// Reads the central directory once and finds where each entry's data starts.
-pub fn read_directory(file: &mut File) -> Result<HashMap<String, Entry>> {
+pub fn read_directory(file: &mut (impl Read + Seek)) -> Result<HashMap<String, Entry>> {
     let file_len = file.seek(SeekFrom::End(0))?;
     let tail_len = file_len.min((END_RECORD_LEN + MAX_COMMENT_LEN) as u64);
     let mut tail = vec![0; tail_len as usize];
@@ -86,7 +86,7 @@ pub fn read_directory(file: &mut File) -> Result<HashMap<String, Entry>> {
     Ok(entries)
 }
 
-fn data_offset(file: &mut File, local_offset: u64, name: &str) -> Result<u64> {
+fn data_offset(file: &mut (impl Read + Seek), local_offset: u64, name: &str) -> Result<u64> {
     let mut header = [0; LOCAL_HEADER_LEN as usize];
     file.seek(SeekFrom::Start(local_offset))?;
     file.read_exact(&mut header).with_context(|| format!("reading the local header of {name:?}"))?;

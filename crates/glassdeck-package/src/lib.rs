@@ -20,7 +20,7 @@ pub use module::{
     Size, is_module, pack_folder,
 };
 pub use resource::{Resource, ResourceKind, ResourceName, literal_resources};
-pub use scene::{InputField, InputKind, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT, ScenePlan};
+pub use scene::{InputField, InputKind, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT, SceneFiles, ScenePlan, scene_sources, source_digest};
 pub use zip::{ALIGNMENT, Entry, check_name};
 
 pub const EXTENSION: &str = "deckbg";

@@ -24,7 +24,7 @@ impl FallbackScene {
     }
 }
 
-/// A scene background (.deckbg with scene content), drawn by glassdeck-scene from its plan, shader and script.
+/// A scene background (a `.deckbg` with scene content), drawn by glassdeck-scene from its plan, shader and script.
 pub struct SceneBackground(RendererProcess);
 
 impl SceneBackground {

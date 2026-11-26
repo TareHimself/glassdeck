@@ -6,8 +6,6 @@ mod compositor;
 #[cfg(target_os = "linux")]
 mod gpu;
 #[cfg(target_os = "linux")]
-mod gradient;
-#[cfg(target_os = "linux")]
 mod program;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod script;
@@ -20,15 +18,9 @@ struct Cli {
     /// The receiver's compositor socket, which it passes when it starts us
     #[arg(long)]
     compositor_fd: Option<i32>,
-    /// Draw this scene background (.deckbg) instead of the built-in scene; it sets its own scale and frame rate
+    /// Draw this scene background (.deckbg) instead of the built-in gradient
     #[arg(long)]
     scene: Option<std::path::PathBuf>,
-    /// The built-in scene's render size as a fraction of the panel; the display scales it up for free
-    #[arg(long, default_value_t = 0.5)]
-    scale: f32,
-    /// The built-in scene drifts slowly enough that 30 looks the same as 60, at half the GPU time
-    #[arg(long, default_value_t = 30)]
-    fps: u32,
     /// Draw this many frames with no receiver, then print what they cost
     #[arg(long)]
     bench: Option<u32>,
@@ -54,29 +46,17 @@ mod linux {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use anyhow::{Context, Result, bail, ensure};
+    use anyhow::{Context, Result, bail};
+    use glassdeck_package::{Background, SceneFiles};
     use glassdeck_proto::compositor::FromCompositor;
 
     use super::Cli;
     use crate::compositor::{Compositor, Received};
     use crate::gpu::{Gpu, Target};
-    use crate::gradient::Gradient;
-    use crate::program::SceneProgram;
+    use crate::program::SceneProgram as Scene;
 
-    enum Scene {
-        BuiltIn(Gradient),
-        Background(Box<SceneProgram>),
-    }
-
-    impl Scene {
-        /// None: nothing changed, so the last frame still stands.
-        fn draw(&mut self, gl: &glow::Context, target: &Target, seconds: f32) -> Result<Option<Duration>> {
-            match self {
-                Self::BuiltIn(gradient) => Ok(Some(gradient.draw(gl, target, seconds))),
-                Self::Background(scene) => scene.draw(gl, target, seconds),
-            }
-        }
-    }
+    /// `scenes/gradient`, packed; `the_built_in_gradient_matches_its_sources` checks it's current.
+    const BUILT_IN: &[u8] = include_bytes!("../builtin/gradient.deckbg");
 
     const PANEL: (u32, u32) = (1920, 1080);
     /// One on screen, one waiting for the flip, one being drawn.
@@ -84,26 +64,16 @@ mod linux {
     const STATS_EVERY: Duration = Duration::from_secs(5);
 
     pub fn run(cli: Cli) -> Result<()> {
-        ensure!(cli.scale > 0.0 && cli.scale <= 1.0, "--scale must be in (0, 1]");
-        ensure!(cli.fps > 0, "--fps must be above 0");
         let gpu = Gpu::open()?;
-        let (mut scene, scale, fps) = match &cli.scene {
-            Some(path) => {
-                let scene = SceneProgram::open(&gpu.gl, path).with_context(|| format!("opening the scene {}", path.display()))?;
-                let (scale, fps) = (scene.plan.scale, scene.plan.frame_rate);
-                (Scene::Background(Box::new(scene)), scale, fps)
-            }
-            None => (Scene::BuiltIn(Gradient::new(&gpu.gl)?), cli.scale, cli.fps),
+        let files = match &cli.scene {
+            Some(path) => SceneFiles::read(&Background::open(path)?).with_context(|| format!("opening the scene {}", path.display()))?,
+            None => SceneFiles::from_bytes(BUILT_IN).context("opening the built-in gradient")?,
         };
+        let mut scene = Scene::new(&gpu.gl, files)?;
+        let (scale, fps) = (scene.plan.scale, scene.plan.frame_rate);
         let size = scaled(scale);
         let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
-        println!(
-            "glassdeck-scene: {} at {}x{}, modifier {:#x}",
-            gpu.renderer_name(),
-            size.0,
-            size.1,
-            targets[0].layout.modifier
-        );
+        println!("glassdeck-scene: {} at {}x{}, modifier {:#x}", gpu.renderer_name(), size.0, size.1, targets[0].layout.modifier);
         if let Some(path) = &cli.snapshot {
             return snapshot(&gpu, &targets[0], &mut scene, path);
         }
@@ -125,10 +95,7 @@ mod linux {
     }
 
     fn present(gpu: &Gpu, targets: &[Target], scene: &mut Scene, compositor: &Compositor, fps: u32) -> Result<()> {
-        let ids = targets
-            .iter()
-            .map(|t| compositor.register(t.dma_buf.as_fd(), t.layout))
-            .collect::<Result<Vec<_>>>()?;
+        let ids = targets.iter().map(|t| compositor.register(t.dma_buf.as_fd(), t.layout)).collect::<Result<Vec<_>>>()?;
         let mut free: Vec<usize> = (0..targets.len()).collect();
         let period = Duration::from_secs_f64(1.0 / f64::from(fps));
         let started = Instant::now();
@@ -225,5 +192,26 @@ mod linux {
                 self.size.1
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glassdeck_package::{Origin, SceneFiles, scene_sources};
+
+    #[test]
+    fn the_built_in_gradient_matches_its_sources() {
+        let read = |path: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
+        let built_in = SceneFiles::from_bytes(include_bytes!("../builtin/gradient.deckbg")).unwrap();
+        let Origin::Packed { sources, .. } = built_in.origin else { panic!("the built-in gradient wasn't made by glassdeck pack") };
+        let current = scene_sources(
+            &read("../glassdeck-slang/slang/glassdeck.slang"),
+            &read("../../scenes/gradient/scene.slang"),
+            Some(&read("../../scenes/gradient/keyboard.luau")),
+        );
+        assert_eq!(
+            sources, current,
+            "scenes/gradient or the glassdeck API changed; repack: glassdeck pack scenes/gradient --out crates/glassdeck-scene/builtin/gradient.deckbg"
+        );
     }
 }

@@ -5,7 +5,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use glassdeck_package::{
-    Background, BackgroundWriter, Content, FORMAT_VERSION, Manifest, Origin, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT, ScenePlan,
+    Background, BackgroundWriter, Content, FORMAT_VERSION, Manifest, Origin, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT,
+    ScenePlan, scene_sources,
 };
 
 use crate::scene::{FRAGMENT_ENTRY, SceneShape};
@@ -56,7 +57,7 @@ pub fn pack_scene(slang: &Slang, folder: &Path, out: &Path) -> Result<Background
     let manifest = Manifest {
         format: FORMAT_VERSION,
         title: title.clone(),
-        origin: Origin::Packed { from: title },
+        origin: Origin::Packed { from: title, sources: scene_sources(API_MODULE, &source, script.as_deref()) },
         content: Content::Scene { plan: SCENE_PLAN.into() },
         preview: None,
     };

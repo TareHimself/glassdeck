@@ -251,8 +251,10 @@ fn install_library(lua: &Lua) -> Result<()> {
     globals
         .set(
             "drift",
-            lua.create_function(|_, (t, centre, amount, speed): (f32, Vector, Vector, Vector)| Ok(drift(t, centre, amount, speed)))
-                .lua_context("drift")?,
+            lua.create_function(|_, (t, centre, amount, speed, phase): (f32, Vector, Vector, Vector, Option<Vector>)| {
+                Ok(drift(t, centre, amount, speed, phase.unwrap_or_default()))
+            })
+            .lua_context("drift")?,
         )
         .lua_context("installing drift")?;
     Ok(())
@@ -262,9 +264,11 @@ fn runtime(e: anyhow::Error) -> mlua::Error {
     mlua::Error::runtime(format!("{e:#}"))
 }
 
-/// Wanders around `centre` by up to `amount`, at `speed` radians per unit of `t` on each axis.
-fn drift(t: f32, centre: Vector, amount: Vector, speed: Vector) -> Vector {
-    Vector::new(centre.x() + amount.x() * (t * speed.x()).sin(), centre.y() + amount.y() * (t * speed.y()).cos(), 0.0, 0.0)
+/// Wanders around `centre` by up to `amount`: x follows `sin(t * speed.x + phase.x)`, y `cos(t * speed.y + phase.y)`.
+fn drift(t: f32, centre: Vector, amount: Vector, speed: Vector, phase: Vector) -> Vector {
+    let x = centre.x() + amount.x() * (t * speed.x() + phase.x()).sin();
+    let y = centre.y() + amount.y() * (t * speed.y() + phase.y()).cos();
+    Vector::new(x, y, 0.0, 0.0)
 }
 
 fn color_of(value: &Value) -> Result<Vector> {

@@ -24,8 +24,8 @@ pub enum Origin {
     WallpaperEngine { workshop_id: String },
     /// Made by `glassdeck convert` from the file or folder of this name
     Converted { from: String },
-    /// Made by glassdeck pack from the scene folder of this name
-    Packed { from: String },
+    /// Made by glassdeck pack from the scene folder of this name; sources is source_digest of what it read
+    Packed { from: String, sources: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
