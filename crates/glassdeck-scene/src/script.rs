@@ -22,9 +22,15 @@ pub struct SceneScript {
     vm: Vm,
     settings: Table,
     frame: Table,
+    callbacks: Rc<RefCell<Callbacks>>,
+    inputs: Rc<RefCell<Inputs>>,
+}
+
+/// What the script registered with `scene.on_settings(...)` and `scene.on_frame(...)`.
+#[derive(Default)]
+struct Callbacks {
     on_settings: Option<Function>,
     on_frame: Option<Function>,
-    inputs: Rc<RefCell<Inputs>>,
 }
 
 struct Inputs {
@@ -55,38 +61,48 @@ impl SceneScript {
             written: BTreeSet::new(),
             changed: BTreeMap::new(),
         }));
+        let callbacks = Rc::new(RefCell::new(Callbacks::default()));
+        for name in ["on_settings", "on_frame"] {
+            let registered = Rc::clone(&callbacks);
+            let register = lua
+                .create_function(move |_, callback: Function| {
+                    let mut callbacks = registered.borrow_mut();
+                    let slot = if name == "on_settings" { &mut callbacks.on_settings } else { &mut callbacks.on_frame };
+                    if slot.is_some() {
+                        return Err(mlua::Error::runtime(format!("scene.{name} was already called; register one function")));
+                    }
+                    *slot = Some(callback);
+                    Ok(())
+                })
+                .lua_context("creating scene")?;
+            scene.raw_set(name, register).lua_context("creating scene")?;
+        }
         let globals = lua.globals();
         globals.set("scene", &scene).lua_context("injecting scene")?;
         globals.set("inputs", inputs_table(lua, Rc::clone(&state))?).lua_context("injecting inputs")?;
         vm.load::<()>(source, "keyboard.luau")?;
 
         let settings = read_settings(lua, &scene)?;
-        let callback = |name: &str| -> Result<Option<Function>> {
-            match scene.get::<Value>(name).lua_context("reading scene")? {
-                Value::Nil => Ok(None),
-                Value::Function(f) => Ok(Some(f)),
-                other => bail!("scene.{name} is a {}, not a function", other.type_name()),
-            }
-        };
-        let (on_settings, on_frame) = (callback("on_settings")?, callback("on_frame")?);
         let frame = lua.create_table().lua_context("creating frame")?;
-        Ok(Self { vm, settings, frame, on_settings, on_frame, inputs: state })
+        Ok(Self { vm, settings, frame, callbacks, inputs: state })
     }
 
     /// Hands the script its settings, as it gets them before the first draw and after each change.
     pub fn apply_settings(&self) -> Result<()> {
-        match &self.on_settings {
-            Some(f) => self.vm.call::<()>(f, &self.settings).context("in scene.on_settings"),
+        let on_settings = self.callbacks.borrow().on_settings.clone();
+        match on_settings {
+            Some(f) => self.vm.call::<()>(&f, &self.settings).context("in scene.on_settings"),
             None => Ok(()),
         }
     }
 
     pub fn frame(&self, time: f32, delta: f32, index: u32) -> Result<()> {
-        let Some(on_frame) = &self.on_frame else { return Ok(()) };
+        let on_frame = self.callbacks.borrow().on_frame.clone();
+        let Some(on_frame) = on_frame else { return Ok(()) };
         for (key, value) in [("time", f64::from(time)), ("delta", f64::from(delta)), ("index", f64::from(index))] {
             self.frame.raw_set(key, value).lua_context("filling frame")?;
         }
-        self.vm.call::<()>(on_frame, (&self.frame, &self.settings)).context("in scene.on_frame")
+        self.vm.call::<()>(&on_frame, (&self.frame, &self.settings)).context("in scene.on_frame")
     }
 
     /// The inputs written since the last call, each with its latest value.
@@ -181,7 +197,7 @@ fn declared_setting(value: &AnyUserData) -> Result<Declared> {
     Ok(value.borrow::<Declared>().lua_context("a setting must be made by setting.*")?.clone())
 }
 
-/// `setting`, `color`, `vector` and `drift`, installed before the VM is sealed.
+/// `setting`, `color` and `drift`, installed before the VM is sealed. Vectors come from Luau's own `vector.create`.
 fn install_library(lua: &Lua) -> Result<()> {
     let globals = lua.globals();
     let setting = lua.create_table().lua_context("creating setting")?;
@@ -239,15 +255,6 @@ fn install_library(lua: &Lua) -> Result<()> {
         .lua_context("color.hsv")?;
     globals.set("color", color).lua_context("installing color")?;
 
-    globals
-        .set(
-            "vector",
-            lua.create_function(|_, (x, y, z, w): (f32, f32, Option<f32>, Option<f32>)| {
-                Ok(Vector::new(x, y, z.unwrap_or(0.0), w.unwrap_or(0.0)))
-            })
-            .lua_context("vector")?,
-        )
-        .lua_context("installing vector")?;
     globals
         .set(
             "drift",
@@ -327,10 +334,10 @@ mod tests {
 
     const GRADIENT: &str = r##"
         scene.settings = { night = setting.color("#ff8000"), speed = setting.range(0.5, 0, 1), title = "hi" }
-        function scene.on_settings(settings) inputs.night = settings.night end
-        function scene.on_frame(frame, settings)
-            inputs.roseAt = drift(frame.time * settings.speed, vector(0.5, 0.3), vector(0.1, 0.1), vector(1, 1))
-        end
+        scene.on_settings(function(settings) inputs.night = settings.night end)
+        scene.on_frame(function(frame, settings)
+            inputs.roseAt = drift(frame.time * settings.speed, vector.create(0.5, 0.3), vector.create(0.1, 0.1), vector.create(1, 1))
+        end)
     "##;
 
     #[test]
@@ -353,11 +360,11 @@ mod tests {
 
     #[test]
     fn wrong_names_and_types_are_errors_naming_the_input() {
-        let script = SceneScript::load("function scene.on_frame() inputs.nite = vector(1, 2, 3) end", &fields()).unwrap();
+        let script = SceneScript::load("scene.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields()).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("the shader has no input nite"));
-        let script = SceneScript::load("function scene.on_frame() inputs.night = 3 end", &fields()).unwrap();
+        let script = SceneScript::load("scene.on_frame(function() inputs.night = 3 end)", &fields()).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("input night takes a vector"));
-        let script = SceneScript::load("function scene.on_frame() inputs.bands = { 1 } end", &fields()).unwrap();
+        let script = SceneScript::load("scene.on_frame(function() inputs.bands = { 1 } end)", &fields()).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("takes 2 numbers, not 1"));
     }
 
@@ -373,7 +380,13 @@ mod tests {
         assert!(SceneScript::load("scene.settings = { a = setting.color('red') }", &fields()).is_err());
         assert!(SceneScript::load("scene.settings = { a = setting.range(2, 0, 1) }", &fields()).is_err());
         assert!(SceneScript::load("scene.settings = { a = {} }", &fields()).is_err());
-        assert!(SceneScript::load("scene.on_frame = 3", &fields()).is_err());
+    }
+
+    #[test]
+    fn callbacks_are_registered_once_with_a_function() {
+        assert!(SceneScript::load("scene.on_frame(3)", &fields()).is_err());
+        let twice = SceneScript::load("scene.on_frame(function() end) scene.on_frame(function() end)", &fields());
+        assert!(format!("{:#}", twice.err().unwrap()).contains("scene.on_frame was already called"));
     }
 
     #[test]

@@ -42,6 +42,9 @@ enum Command {
         /// Defaults to <folder>.deckmod, or <folder>.deckbg for a scene
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Scenes: pack again whenever a file in the folder changes, refreshing its .glassdeck types
+        #[arg(long)]
+        watch: bool,
     },
     /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a .deckbg
     Convert {
@@ -93,14 +96,34 @@ fn run(command: Command) -> Result<()> {
             println!("The keyboard installed {}", deploy(&file)?);
             Ok(())
         }
-        Command::Pack { folder, out } if glassdeck_slang::pack::is_scene_folder(&folder) => {
+        Command::Pack { folder, out, watch } if glassdeck_slang::pack::is_scene_folder(&folder) => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::EXTENSION));
-            let slang = glassdeck_slang::Slang::load(&slang_native()?)?;
-            let scene = glassdeck_slang::pack::pack_scene(&slang, &folder, &out)?;
-            println!("Packed the scene {} into {}", scene.manifest().title, out.display());
-            Ok(())
+            let native = native_libraries()?;
+            let slang = glassdeck_slang::Slang::load(&native)?;
+            let luau = glassdeck_luau_check::LuauChecker::load(&native)?;
+            let pack = || -> Result<()> {
+                let scene = glassdeck_slang::pack::pack_scene(&slang, &luau, &folder, &out)?;
+                println!("Packed the scene {} into {}", scene.manifest().title, out.display());
+                Ok(())
+            };
+            if !watch {
+                return pack();
+            }
+            println!("Watching {}; Ctrl+C stops", folder.display());
+            let mut seen = None;
+            loop {
+                let now = scene_files(&folder)?;
+                if seen.as_ref() != Some(&now) {
+                    if let Err(e) = pack() {
+                        eprintln!("error: {e:#}");
+                    }
+                    seen = Some(now);
+                }
+                std::thread::sleep(WATCH_EVERY);
+            }
         }
-        Command::Pack { folder, out } => {
+        Command::Pack { watch: true, .. } => bail!("--watch is for scene folders (with scene.slang)"),
+        Command::Pack { folder, out, .. } => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
             let package = glassdeck_package::pack_folder(&folder, &out)?;
             println!("Packed {} into {}", package.manifest().id, out.display());
@@ -140,9 +163,34 @@ fn set_bg(choice: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where glassdeck_slang and Slang's libraries are: GLASSDECK_SLANG_NATIVE, else beside this program.
-fn slang_native() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("GLASSDECK_SLANG_NATIVE") {
+/// How often `pack --watch` looks for changes.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
+
+/// Every file in a scene folder with when it last changed, leaving out the types packing writes there.
+fn scene_files(folder: &Path) -> Result<std::collections::BTreeMap<PathBuf, std::time::SystemTime>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![folder.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_name() == glassdeck_slang::pack::TYPES_FOLDER {
+                continue;
+            }
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path, meta.modified()?);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Where the native libraries are (Slang, Luau's checker; native/build.py collects them): GLASSDECK_NATIVE, else beside this program.
+fn native_libraries() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("GLASSDECK_NATIVE") {
         return Ok(PathBuf::from(dir));
     }
     let exe = std::env::current_exe().context("finding this program")?;

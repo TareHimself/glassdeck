@@ -639,6 +639,7 @@ dependencies = [
  "clap",
  "glassdeck-capture",
  "glassdeck-convert",
+ "glassdeck-luau-check",
  "glassdeck-package",
  "glassdeck-slang",
  "serde",
@@ -692,6 +693,14 @@ dependencies = [
  "rmpv",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "glassdeck-luau-check"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libloading",
 ]
 
 [[package]]
@@ -754,6 +763,7 @@ name = "glassdeck-slang"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glassdeck-luau-check",
  "glassdeck-package",
  "libloading",
  "serde",
