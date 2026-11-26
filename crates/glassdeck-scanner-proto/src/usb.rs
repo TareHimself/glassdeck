@@ -319,6 +319,129 @@ impl<const P: usize, const MAX: usize> Receiver<P, MAX> {
     }
 }
 
+/// A response that sends nothing for this long while the endpoint has no room is dropped, so a
+/// host that stops reading can't wedge later commands.
+pub const TRANSMIT_STALL_MS: u32 = 2000;
+
+/// The IN endpoint a [`Transmitter`] feeds.
+pub trait PacketSink<const P: usize> {
+    /// Bytes the endpoint can take now.
+    fn space(&mut self) -> usize;
+    /// Whether the whole packet was taken.
+    fn write(&mut self, packet: &[u8; P]) -> bool;
+    fn flush(&mut self);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sending {
+    Idle,
+    Header { last_progress_ms: Option<u32> },
+    Payload { sent: usize, last_progress_ms: u32 },
+}
+
+/// Sends one response at a time without waiting on the endpoint: the header packet, then the
+/// payload zero-padded to whole packets. The payload is written in place with [`Self::payload_mut`].
+pub struct Transmitter<const P: usize, const MAX: usize> {
+    sending: Sending,
+    header: [u8; P],
+    payload: [u8; MAX],
+    len: usize,
+}
+
+impl<const P: usize, const MAX: usize> Default for Transmitter<P, MAX> {
+    fn default() -> Self {
+        Self {
+            sending: Sending::Idle,
+            header: [0; P],
+            payload: [0; MAX],
+            len: 0,
+        }
+    }
+}
+
+impl<const P: usize, const MAX: usize> Transmitter<P, MAX> {
+    /// Where the next response's payload goes, before [`Self::start`].
+    pub fn payload_mut(&mut self) -> &mut [u8; MAX] {
+        &mut self.payload
+    }
+
+    /// Starts sending `reply` with the first `len` bytes of the payload buffer.
+    pub fn start(&mut self, reply: Reply, len: usize) {
+        assert!(len <= MAX, "a {len}-byte response doesn't fit");
+        self.header = Header::for_payload::<P>(reply as u8, len).encode::<P>();
+        self.len = len;
+        self.sending = Sending::Header {
+            last_progress_ms: None,
+        };
+    }
+
+    /// Drops the response being sent.
+    pub fn reset(&mut self) {
+        self.sending = Sending::Idle;
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.sending != Sending::Idle
+    }
+
+    /// Writes up to `max_packets` (at least one) while the endpoint has room, then flushes if
+    /// anything was written. Returns the packets written.
+    pub fn step(&mut self, now_ms: u32, max_packets: u32, sink: &mut impl PacketSink<P>) -> u32 {
+        if let Sending::Header {
+            last_progress_ms: None,
+        } = self.sending
+        {
+            self.sending = Sending::Header {
+                last_progress_ms: Some(now_ms),
+            };
+        }
+        let mut written = 0;
+        while written < max_packets.max(1) {
+            let (packet, last_progress_ms) = match self.sending {
+                Sending::Idle => break,
+                Sending::Header { last_progress_ms } => {
+                    (self.header, last_progress_ms.unwrap_or(now_ms))
+                }
+                Sending::Payload {
+                    sent,
+                    last_progress_ms,
+                } => {
+                    let chunk = &self.payload[sent..self.len.min(sent + P)];
+                    let mut packet = [0; P];
+                    packet[..chunk.len()].copy_from_slice(chunk);
+                    (packet, last_progress_ms)
+                }
+            };
+            if sink.space() < P {
+                if written == 0 && now_ms.wrapping_sub(last_progress_ms) >= TRANSMIT_STALL_MS {
+                    self.reset();
+                }
+                break;
+            }
+            if !sink.write(&packet) {
+                break;
+            }
+            written += 1;
+            let sent = match self.sending {
+                Sending::Payload { sent, .. } => (sent + P).min(self.len),
+                _ => 0,
+            };
+            self.sending = if sent >= self.len {
+                Sending::Idle
+            } else {
+                Sending::Payload {
+                    sent,
+                    last_progress_ms: now_ms,
+                }
+            };
+        }
+        if written > 0 {
+            sink.flush();
+        }
+        written
+    }
+}
+
 /// The argument of `SET_LANGUAGE`, `SET_PLATFORM` and `SET_ACTIVE_PROFILE`. Like the stock
 /// firmware, bytes after the first four are ignored.
 pub fn u32_argument(payload: &[u8]) -> Option<u32> {
@@ -649,6 +772,69 @@ mod tests {
                 payload: &payload
             }
         );
+    }
+
+    struct Endpoint {
+        room: usize,
+        packets: Vec<Vec<u8>>,
+        flushes: usize,
+    }
+
+    impl PacketSink<FIRMWARE_PACKET> for Endpoint {
+        fn space(&mut self) -> usize {
+            self.room
+        }
+        fn write(&mut self, packet: &[u8; FIRMWARE_PACKET]) -> bool {
+            if self.room < FIRMWARE_PACKET {
+                return false;
+            }
+            self.room -= FIRMWARE_PACKET;
+            self.packets.push(packet.to_vec());
+            true
+        }
+        fn flush(&mut self) {
+            self.flushes += 1;
+        }
+    }
+
+    #[test]
+    fn a_response_goes_out_in_whole_packets_as_room_allows() {
+        let mut tx = Transmitter::<FIRMWARE_PACKET, FIRMWARE_MAX_REQUEST>::default();
+        let payload: Vec<u8> = (0..200).map(|i| i as u8).collect();
+        tx.payload_mut()[..200].copy_from_slice(&payload);
+        tx.start(Reply::Ack, 200);
+        let mut ep = Endpoint {
+            room: 2 * FIRMWARE_PACKET,
+            packets: vec![],
+            flushes: 0,
+        };
+        assert_eq!(tx.step(0, 4, &mut ep), 2);
+        assert!(tx.is_busy());
+        ep.room = 256;
+        assert_eq!(tx.step(1, 4, &mut ep), 3);
+        assert!(!tx.is_busy());
+        assert_eq!(ep.flushes, 2);
+        let expected: Vec<Vec<u8>> = response_packets::<FIRMWARE_PACKET>(Reply::Ack, &payload)
+            .map(|p| p.to_vec())
+            .collect();
+        assert_eq!(ep.packets, expected);
+    }
+
+    #[test]
+    fn a_stalled_response_is_dropped_after_two_seconds() {
+        let mut tx = Transmitter::<FIRMWARE_PACKET, FIRMWARE_MAX_REQUEST>::default();
+        tx.start(Reply::Nak, 0);
+        let mut ep = Endpoint {
+            room: 0,
+            packets: vec![],
+            flushes: 0,
+        };
+        assert_eq!(tx.step(100, 4, &mut ep), 0);
+        assert_eq!(tx.step(100 + TRANSMIT_STALL_MS - 1, 4, &mut ep), 0);
+        assert!(tx.is_busy());
+        assert_eq!(tx.step(100 + TRANSMIT_STALL_MS, 4, &mut ep), 0);
+        assert!(!tx.is_busy());
+        assert_eq!(ep.flushes, 0);
     }
 
     #[test]

@@ -18,6 +18,7 @@
 
 pub mod calibration;
 pub mod classic;
+pub mod commands;
 pub mod depth;
 pub mod guard;
 pub mod keyframe;
