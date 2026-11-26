@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type Status } from "./bindings";
+import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type Status, type Theme } from "./bindings";
 
 export type Connection =
   | { state: "connecting" }
@@ -49,14 +49,25 @@ export function describeError(error: GlassdeckdError): string {
   }
 }
 
-type Store = { connection: Connection };
+type Store = { connection: Connection; theme: Theme | null };
 
-export const useGlassdeckd = create<Store>(() => ({ connection: { state: "connecting" } }));
+export const useGlassdeckd = create<Store>(() => ({ connection: { state: "connecting" }, theme: null }));
+
+async function refreshTheme() {
+  const theme = await commands.theme();
+  useGlassdeckd.setState({ theme: theme.status === "ok" ? theme.data : null });
+}
 
 export async function followGlassdeckd(): Promise<() => void> {
   const unlisten = await events.glassdeckdUpdate.listen(({ payload }) => {
     useGlassdeckd.setState(({ connection }) => ({ connection: nextConnection(connection, payload) }));
+    if (payload.state === "message" && payload.event.type === "theme") {
+      useGlassdeckd.setState({ theme: payload.event.theme });
+    } else if (payload.state === "message" && payload.event.type === "status") {
+      void refreshTheme();
+    }
   });
+  void refreshTheme();
   const first = await commands.status();
   if (first.status === "ok") {
     useGlassdeckd.setState(({ connection }) =>

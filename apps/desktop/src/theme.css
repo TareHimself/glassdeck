@@ -11,14 +11,16 @@
   --ink-soft: #b4bdca;
   --muted: #a1abb9;
   --accent: #6aa8ff;
+  --accent-soft: #8dbcff;
+  --selected: #232a37;
   --accent-ink: #0d0f13;
   --ok: #3ecf8e;
   --warn: #f0c46c;
   --danger: #ff8a7a;
   --radius: 12px;
   --radius-small: 8px;
-  --font: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --font: "Inter Variable", "Segoe UI Variable", system-ui, sans-serif;
+  --mono: "JetBrains Mono Variable", "Cascadia Mono", monospace;
 }
 
 * {
@@ -42,6 +44,14 @@ button,
 input,
 select {
   font: inherit;
+}
+
+a {
+  color: var(--accent-soft);
+}
+
+a:hover {
+  color: #b9d6ff;
 }
 
 :focus-visible {

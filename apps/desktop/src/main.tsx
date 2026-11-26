@@ -4,8 +4,12 @@ import { createBrowserRouter, RouterProvider } from "react-router";
 import { Layout } from "./Layout";
 import { followGlassdeckd } from "./glassdeckd";
 import { Backgrounds } from "./screens/Backgrounds";
+import { NewWidget } from "./screens/NewWidget";
 import { Overview } from "./screens/Overview";
+import { WidgetEditor } from "./screens/WidgetEditor";
 import { Widgets } from "./screens/Widgets";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "./theme.css";
 
 const router = createBrowserRouter([
@@ -14,6 +18,8 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Overview /> },
       { path: "widgets", element: <Widgets /> },
+      { path: "widgets/new", element: <NewWidget /> },
+      { path: "widgets/:id", element: <WidgetEditor /> },
       { path: "backgrounds", element: <Backgrounds /> },
     ],
   },

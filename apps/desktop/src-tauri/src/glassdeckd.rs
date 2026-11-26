@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use glassdeck_api::{ApiError, ApiFile, Event, Status};
+use glassdeck_api::{ApiError, ApiFile, Event, Status, Theme};
 use serde::Serialize;
 use specta::Type;
 use tauri::AppHandle;
@@ -59,12 +59,20 @@ impl Glassdeckd {
         Ok(self.http.get(format!("{}{route}", at.base)).bearer_auth(at.token))
     }
 
-    pub async fn status(&self) -> Result<Status, GlassdeckdError> {
-        let reply = self.get("/status")?.send().await.map_err(unreachable)?;
+    async fn fetch<T: serde::de::DeserializeOwned>(&self, route: &str) -> Result<T, GlassdeckdError> {
+        let reply = self.get(route)?.send().await.map_err(unreachable)?;
         if !reply.status().is_success() {
             return Err(refusal(reply).await);
         }
         reply.json().await.map_err(|e| GlassdeckdError::BadAnswer { reason: e.to_string() })
+    }
+
+    pub async fn status(&self) -> Result<Status, GlassdeckdError> {
+        self.fetch("/status").await
+    }
+
+    pub async fn theme(&self) -> Result<Theme, GlassdeckdError> {
+        self.fetch("/theme").await
     }
 
     /// Relays `/events` to the frontend for as long as the app runs, reconnecting after each loss.

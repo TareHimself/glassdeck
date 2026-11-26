@@ -7,6 +7,17 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	status: (options?: InvokeOptions) => typedError<Status, GlassdeckdError>(__TAURI_INVOKE("status", undefined, options)),
+	theme: (options?: InvokeOptions) => typedError<Theme, GlassdeckdError>(__TAURI_INVOKE("theme", undefined, options)),
+	listWidgets: (options?: InvokeOptions) => typedError<WidgetSummary[], LibraryError>(__TAURI_INVOKE("list_widgets", undefined, options)),
+	createWidget: (widget: NewWidget, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("create_widget", { widget }, options)),
+	duplicateWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("duplicate_widget", { id }, options)),
+	renameWidget: (id: string, title: string, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("rename_widget", { id, title }, options)),
+	deleteWidget: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("delete_widget", { id }, options)),
+	revealWidget: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("reveal_widget", { id }, options)),
+	/**  Asks where to save, then packs the widget there. `None` when the dialog is cancelled. */
+	exportWidget: (id: string, options?: InvokeOptions) => typedError<string | null, LibraryError>(__TAURI_INVOKE("export_widget", { id }, options)),
+	/**  Asks for a `.deck`, then unpacks it into the library. `None` when the dialog is cancelled. */
+	importWidget: (options?: InvokeOptions) => typedError<WidgetSummary | null, LibraryError>(__TAURI_INVOKE("import_widget", undefined, options)),
 };
 
 /** Events */
@@ -14,11 +25,21 @@ export const events = {
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
 };
 
+/* Constants */
+export const GRID = 8 as const;
+
+export const WIDGET_AREA = {"h":248,"w":1896} as const;
+
 /* Types */
 export type ApiError = {
 	code: ErrorCode,
 	/**  Says what went wrong, for showing to the user as is */
 	error: string,
+};
+
+export type Dims = {
+	w: number,
+	h: number,
 };
 
 export type Ended = {
@@ -64,11 +85,30 @@ export type GlassdeckdError =
 /**  What the frontend hears about the connection to glassdeckd and what it sends. */
 export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; event: Event } | { state: "lost"; error: GlassdeckdError };
 
+export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
+/**  A `.deck` to import that isn't a widget package this build reads */
+{ kind: "not_a_widget"; reason: string } | 
+/**  A widget folder in the library that can't be read as one */
+{ kind: "unreadable"; folder: string; reason: string } | { kind: "io"; reason: string };
+
 export type LinkStatus = {
 	/**  The keyboard's address, such as `10.0.0.186:7878` */
 	keyboard: string,
 	connected: boolean,
 };
+
+export type NewWidget = {
+	title: string,
+	id: string,
+	options: boolean,
+	runs_on_host: boolean,
+	sizing: Sizing,
+};
+
+/**  How a widget may be sized when placed. */
+export type Sizing = { kind: "fixed"; size: Dims } | { kind: "range"; size: Dims; min: Dims; max: Dims } | 
+/**  Any size in the widget area; stored as the grid's smallest step up to the whole area */
+{ kind: "any"; size: Dims };
 
 export type Status = {
 	link: LinkStatus,
@@ -121,6 +161,15 @@ export type ThemeWidget = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WidgetSummary = {
+	id: string,
+	title: string,
+	version: string,
+	sizing: Sizing,
+	has_options: boolean,
+	runs_on_host: boolean,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

@@ -1,6 +1,6 @@
 import { styled } from "@linaria/react";
 import { describeError, useGlassdeckd } from "../glassdeckd";
-import { Card, CardTitle, Title } from "./Page";
+import { Card, CardTitle, Header, Title } from "../ui";
 
 const Grid = styled.div`
   display: grid;
@@ -18,7 +18,9 @@ export function Overview() {
   const connection = useGlassdeckd((s) => s.connection);
   return (
     <>
-      <Title>Overview</Title>
+      <Header>
+        <Title>Overview</Title>
+      </Header>
       <Grid>
         <Card>
           <CardTitle>glassdeckd</CardTitle>

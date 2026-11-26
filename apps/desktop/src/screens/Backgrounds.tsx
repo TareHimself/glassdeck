@@ -1,4 +1,4 @@
-import { Title } from "./Page";
+import { Title } from "../ui";
 
 export function Backgrounds() {
   return <Title>Backgrounds</Title>;

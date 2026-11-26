@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: core events and the app's own commands, nothing else",
   "windows": ["main"],
-  "permissions": ["core:event:default", "allow-status"]
+  "permissions": ["core:event:default", "allow-status", "allow-theme", "allow-list-widgets", "allow-create-widget", "allow-duplicate-widget", "allow-rename-widget", "allow-delete-widget", "allow-reveal-widget", "allow-export-widget", "allow-import-widget"]
 }
