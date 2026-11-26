@@ -33,7 +33,11 @@ const CRC_TABLE: [u32; 256] = {
         let mut crc = (i as u32) << 24;
         let mut bit = 0;
         while bit < 8 {
-            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
             bit += 1;
         }
         table[i] = crc;
@@ -60,7 +64,10 @@ pub enum EncodeError {
 /// Writes `payload` as one frame into `out` and returns the frame's length.
 pub fn encode<const MAX: usize>(payload: &[u8], out: &mut [u8]) -> Result<usize, EncodeError> {
     if payload.len() > MAX {
-        return Err(EncodeError::TooLong { len: payload.len(), max: MAX });
+        return Err(EncodeError::TooLong {
+            len: payload.len(),
+            max: MAX,
+        });
     }
     let len = (payload.len() as u16).to_be_bytes();
     let crc = crc32(payload).to_be_bytes();
@@ -85,7 +92,10 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn put(&mut self, byte: u8) -> Result<(), EncodeError> {
-        let slot = self.out.get_mut(self.pos).ok_or(EncodeError::OutputTooSmall)?;
+        let slot = self
+            .out
+            .get_mut(self.pos)
+            .ok_or(EncodeError::OutputTooSmall)?;
         *slot = byte;
         self.pos += 1;
         Ok(())
@@ -118,18 +128,45 @@ fn step<const MAX: usize>(phase: Phase, byte: u8) -> Step {
         Phase::LengthLow { high } => {
             let len = u16::from_be_bytes([high, byte]);
             match len {
-                0 => Step::Continue(Phase::Crc { len, crc: 0, have: 0 }),
+                0 => Step::Continue(Phase::Crc {
+                    len,
+                    crc: 0,
+                    have: 0,
+                }),
                 _ if len as usize > MAX => Step::TooLong { len },
                 _ => Step::Continue(Phase::Payload { len, have: 0 }),
             }
         }
         Phase::Payload { len, have } => {
-            let next = if have + 1 == len { Phase::Crc { len, crc: 0, have: 0 } } else { Phase::Payload { len, have: have + 1 } };
-            Step::Store { at: have, byte, next }
+            let next = if have + 1 == len {
+                Phase::Crc {
+                    len,
+                    crc: 0,
+                    have: 0,
+                }
+            } else {
+                Phase::Payload {
+                    len,
+                    have: have + 1,
+                }
+            };
+            Step::Store {
+                at: have,
+                byte,
+                next,
+            }
         }
         Phase::Crc { len, crc, have } => {
             let crc = (crc << 8) | byte as u32;
-            if have as usize + 1 == CRC_LEN { Step::Complete { len, crc } } else { Step::Continue(Phase::Crc { len, crc, have: have + 1 }) }
+            if have as usize + 1 == CRC_LEN {
+                Step::Complete { len, crc }
+            } else {
+                Step::Continue(Phase::Crc {
+                    len,
+                    crc,
+                    have: have + 1,
+                })
+            }
         }
     }
 }
@@ -152,7 +189,11 @@ pub struct Decoder<const MAX: usize> {
 
 impl<const MAX: usize> Default for Decoder<MAX> {
     fn default() -> Self {
-        Self { phase: Phase::WaitFlag, escaped: false, payload: [0; MAX] }
+        Self {
+            phase: Phase::WaitFlag,
+            escaped: false,
+            payload: [0; MAX],
+        }
     }
 }
 
@@ -189,7 +230,11 @@ impl<const MAX: usize> Decoder<MAX> {
             Step::Complete { len, crc } => {
                 self.phase = Phase::WaitFlag;
                 let payload = &self.payload[..len as usize];
-                Some(if crc32(payload) == crc { Ok(payload) } else { Err(FrameError::BadCrc) })
+                Some(if crc32(payload) == crc {
+                    Ok(payload)
+                } else {
+                    Err(FrameError::BadCrc)
+                })
             }
             Step::TooLong { len } => {
                 self.phase = Phase::WaitFlag;
@@ -200,9 +245,15 @@ impl<const MAX: usize> Decoder<MAX> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::serial::tests::vector;
+    use crate::testing::{Vectors, hex, unhex};
+
+    const VECTORS: Vectors = Vectors(include_str!("../../../firmware/vectors/serial_link.txt"));
+
+    fn vector(name: &str) -> &'static str {
+        VECTORS.get(name)
+    }
 
     fn frame(payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0; max_encoded_len(payload.len())];
@@ -217,34 +268,49 @@ pub(crate) mod tests {
 
     #[test]
     fn crc_matches_the_firmware_check_value() {
-        assert_eq!(format!("{:08x}", crc32(b"123456789")), vector("crc32.check"));
+        assert_eq!(
+            format!("{:08x}", crc32(b"123456789")),
+            vector("crc32.check")
+        );
     }
 
     #[test]
     fn frames_match_the_firmware() {
         assert_eq!(hex(&frame(&[])), vector("frame.empty"));
-        assert_eq!(hex(&frame(&[0x7E, 0x7D, 0x00, 0xFF, 0x5E, 0x5D])), vector("frame.escapes"));
-        assert_eq!(hex(&frame(&pattern(SERIAL_MAX_PAYLOAD))), vector("frame.max"));
+        assert_eq!(
+            hex(&frame(&[0x7E, 0x7D, 0x00, 0xFF, 0x5E, 0x5D])),
+            vector("frame.escapes")
+        );
+        assert_eq!(
+            hex(&frame(&pattern(SERIAL_MAX_PAYLOAD))),
+            vector("frame.max")
+        );
         assert_eq!(vector("frame.too_long"), "refused");
         let mut out = [0; max_encoded_len(SERIAL_MAX_PAYLOAD + 1)];
         assert_eq!(
             encode::<SERIAL_MAX_PAYLOAD>(&pattern(SERIAL_MAX_PAYLOAD + 1), &mut out),
-            Err(EncodeError::TooLong { len: SERIAL_MAX_PAYLOAD + 1, max: SERIAL_MAX_PAYLOAD })
+            Err(EncodeError::TooLong {
+                len: SERIAL_MAX_PAYLOAD + 1,
+                max: SERIAL_MAX_PAYLOAD
+            })
         );
     }
 
     #[test]
     fn a_short_buffer_is_refused() {
-        assert_eq!(encode::<SERIAL_MAX_PAYLOAD>(&[1, 2, 3], &mut [0; 8]), Err(EncodeError::OutputTooSmall));
+        assert_eq!(
+            encode::<SERIAL_MAX_PAYLOAD>(&[1, 2, 3], &mut [0; 8]),
+            Err(EncodeError::OutputTooSmall)
+        );
     }
 
     #[test]
     fn decoding_the_firmware_stream_gives_what_the_firmware_decoded() {
-        let expected: Vec<String> = crate::serial::tests::vectors("decoded").collect();
+        let expected: Vec<String> = VECTORS.all("decoded").map(str::to_string).collect();
         let mut decoder = Decoder::<SERIAL_MAX_PAYLOAD>::default();
         let mut decoded = Vec::new();
         let mut errors = Vec::new();
-        for byte in unhex(&vector("stream")) {
+        for byte in unhex(vector("stream")) {
             match decoder.push(byte) {
                 Some(Ok(payload)) => decoded.push(hex(payload)),
                 Some(Err(e)) => errors.push(e),
@@ -252,7 +318,10 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(decoded, expected);
-        assert_eq!(errors, [FrameError::BadCrc, FrameError::TooLong { len: 0x0201 }]);
+        assert_eq!(
+            errors,
+            [FrameError::BadCrc, FrameError::TooLong { len: 0x0201 }]
+        );
         assert_eq!(vector("crc_errors"), "1");
     }
 
@@ -261,16 +330,11 @@ pub(crate) mod tests {
         for len in [0, 1, 2, 63, 64, 139, 401, SERIAL_MAX_PAYLOAD] {
             let payload: Vec<u8> = (0..len).map(|i| [FLAG, ESCAPE, i as u8][i % 3]).collect();
             let mut decoder = Decoder::<SERIAL_MAX_PAYLOAD>::default();
-            let results: Vec<_> = frame(&payload).into_iter().filter_map(|b| decoder.push(b).map(|r| r.map(<[u8]>::to_vec))).collect();
+            let results: Vec<_> = frame(&payload)
+                .into_iter()
+                .filter_map(|b| decoder.push(b).map(|r| r.map(<[u8]>::to_vec)))
+                .collect();
             assert_eq!(results, [Ok(payload)]);
         }
-    }
-
-    pub(crate) fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    pub(crate) fn unhex(text: &str) -> Vec<u8> {
-        (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
     }
 }

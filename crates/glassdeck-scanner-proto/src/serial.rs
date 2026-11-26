@@ -122,7 +122,11 @@ impl KeyState {
         let st = &p[STATE..];
         let function_events = match st[0x2F] {
             0 => None,
-            EVENT_RING_FORMAT => Some(FunctionEvents { seq: u16_at(st, 0x30), codes: array(st, 0x32), profiles: array(st, 0x42) }),
+            EVENT_RING_FORMAT => Some(FunctionEvents {
+                seq: u16_at(st, 0x30),
+                codes: array(st, 0x32),
+                profiles: array(st, 0x42),
+            }),
             other => return Err(bad("event ring format", other)),
         };
         Ok(Self {
@@ -159,7 +163,9 @@ impl KeyState {
     }
 
     pub fn is_pressed(&self, key: usize) -> bool {
-        self.pressed.get(key / 8).is_some_and(|byte| byte & (1 << (key % 8)) != 0)
+        self.pressed
+            .get(key / 8)
+            .is_some_and(|byte| byte & (1 << (key % 8)) != 0)
     }
 }
 
@@ -176,7 +182,12 @@ impl SensorReadings {
         let mut out = [0; SENSOR_READINGS_LEN];
         out[0] = MessageType::SensorReadings as u8;
         out[1..5].copy_from_slice(&self.seq.to_le_bytes());
-        for (slot, reading) in out[5..5 + 2 * SENSOR_COUNT].as_chunks_mut::<2>().0.iter_mut().zip(self.raw) {
+        for (slot, reading) in out[5..5 + 2 * SENSOR_COUNT]
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(self.raw)
+        {
             slot.copy_from_slice(&reading.to_le_bytes());
         }
         out
@@ -184,13 +195,19 @@ impl SensorReadings {
 
     pub fn parse(payload: &[u8]) -> Result<Self, ParseError> {
         let p = exact::<SENSOR_READINGS_LEN>(payload, MessageType::SensorReadings)?;
-        Ok(Self { seq: u32_at(p, 1), raw: core::array::from_fn(|i| u16_at(p, 5 + 2 * i)) })
+        Ok(Self {
+            seq: u32_at(p, 1),
+            raw: core::array::from_fn(|i| u16_at(p, 5 + 2 * i)),
+        })
     }
 }
 
 /// A message from the key scanner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(clippy::large_enum_variant, reason = "no_std without an allocator, and it lives on the stack only briefly")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "no_std without an allocator, and it lives on the stack only briefly"
+)]
 pub enum ScannerMessage {
     KeyState(KeyState),
     SensorReadings(SensorReadings),
@@ -219,12 +236,19 @@ pub struct Response {
 
 impl Response {
     pub fn encode(&self) -> [u8; RESPONSE_LEN] {
-        [self.answering as u8, self.rejected as u8, self.sensor_mode as u8, self.stress_test as u8]
+        [
+            self.answering as u8,
+            self.rejected as u8,
+            self.sensor_mode as u8,
+            self.stress_test as u8,
+        ]
     }
 
     pub fn parse(payload: &[u8]) -> Result<Self, ParseError> {
-        let p: &[u8; RESPONSE_LEN] =
-            payload.try_into().map_err(|_| ParseError::WrongLength { expected: RESPONSE_LEN, got: payload.len() })?;
+        let p: &[u8; RESPONSE_LEN] = payload.try_into().map_err(|_| ParseError::WrongLength {
+            expected: RESPONSE_LEN,
+            got: payload.len(),
+        })?;
         Ok(Self {
             answering: MessageType::parse(p[0])?,
             rejected: flag(p[1], "rejected")?,
@@ -239,11 +263,17 @@ fn exact<const N: usize>(payload: &[u8], kind: MessageType) -> Result<&[u8; N], 
     if got != kind {
         return Err(ParseError::UnknownType(got as u8));
     }
-    payload.try_into().map_err(|_| ParseError::WrongLength { expected: N, got: payload.len() })
+    payload.try_into().map_err(|_| ParseError::WrongLength {
+        expected: N,
+        got: payload.len(),
+    })
 }
 
 fn bad(field: &'static str, value: u8) -> ParseError {
-    ParseError::BadValue { field, value: value as u32 }
+    ParseError::BadValue {
+        field,
+        value: value as u32,
+    }
 }
 
 fn flag(byte: u8, field: &'static str) -> Result<bool, ParseError> {
@@ -267,22 +297,15 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::hdlc::tests::{hex, unhex};
     use crate::hdlc::{SERIAL_MAX_PAYLOAD, encode, max_encoded_len};
+    use crate::testing::{Vectors, hex, unhex};
 
-    const VECTORS: &str = include_str!("../../../firmware/vectors/serial_link.txt");
+    const VECTORS: Vectors = Vectors(include_str!("../../../firmware/vectors/serial_link.txt"));
 
-    pub(crate) fn vectors(name: &str) -> impl Iterator<Item = String> + '_ {
-        VECTORS.lines().filter_map(move |line| {
-            let (key, value) = line.split_once(' ').unwrap_or((line, ""));
-            (key == name).then(|| value.to_string())
-        })
-    }
-
-    pub(crate) fn vector(name: &str) -> String {
-        vectors(name).next().unwrap_or_else(|| panic!("no vector {name}"))
+    fn vector(name: &str) -> &'static str {
+        VECTORS.get(name)
     }
 
     /// The values `firmware/vectors/serial_link.c` gives the firmware's runtime.
@@ -315,7 +338,7 @@ pub(crate) mod tests {
     fn key_state_matches_the_firmware() {
         let state = key_state();
         assert_eq!(hex(&state.encode()), vector("key_state"));
-        assert_eq!(KeyState::parse(&unhex(&vector("key_state"))), Ok(state));
+        assert_eq!(KeyState::parse(&unhex(vector("key_state"))), Ok(state));
         let mut wire = [0; max_encoded_len(KEY_STATE_LEN)];
         let n = encode::<SERIAL_MAX_PAYLOAD>(&state.encode(), &mut wire).unwrap();
         assert_eq!(hex(&wire[..n]), vector("key_state.frame"));
@@ -323,35 +346,79 @@ pub(crate) mod tests {
 
     #[test]
     fn sensor_readings_match_the_firmware() {
-        let readings = SensorReadings { seq: 0x1234_7D7F, raw: core::array::from_fn(|i| ((i * 97 + 5) & 0x0FFF) as u16) };
+        let readings = SensorReadings {
+            seq: 0x1234_7D7F,
+            raw: core::array::from_fn(|i| ((i * 97 + 5) & 0x0FFF) as u16),
+        };
         assert_eq!(hex(&readings.encode()), vector("sensor_readings"));
-        assert_eq!(ScannerMessage::parse(&unhex(&vector("sensor_readings"))), Ok(ScannerMessage::SensorReadings(readings)));
+        assert_eq!(
+            ScannerMessage::parse(&unhex(vector("sensor_readings"))),
+            Ok(ScannerMessage::SensorReadings(readings))
+        );
     }
 
     #[test]
     fn module_fields_round_trip() {
-        let state = KeyState { module_types: 0x21, module_buttons: 0xBEEF, function_events: None, keyframe_layout: None, ..key_state() };
+        let state = KeyState {
+            module_types: 0x21,
+            module_buttons: 0xBEEF,
+            function_events: None,
+            keyframe_layout: None,
+            ..key_state()
+        };
         assert_eq!(KeyState::parse(&state.encode()), Ok(state));
         assert!(state.is_pressed(0) && !state.is_pressed(2) && !state.is_pressed(256));
     }
 
     #[test]
     fn responses_take_only_what_the_firmware_takes() {
-        let r = Response { answering: MessageType::KeyState, rejected: false, sensor_mode: true, stress_test: false };
+        let r = Response {
+            answering: MessageType::KeyState,
+            rejected: false,
+            sensor_mode: true,
+            stress_test: false,
+        };
         assert_eq!(r.encode(), [2, 0, 1, 0]);
         assert_eq!(Response::parse(&[2, 0, 1, 0]), Ok(r));
-        assert_eq!(Response::parse(&[3, 0, 2, 0]), Err(ParseError::BadValue { field: "sensor mode", value: 2 }));
-        assert_eq!(Response::parse(&[1, 0, 0, 0]), Err(ParseError::UnknownType(1)));
-        assert_eq!(Response::parse(&[2, 0, 0]), Err(ParseError::WrongLength { expected: 4, got: 3 }));
+        assert_eq!(
+            Response::parse(&[3, 0, 2, 0]),
+            Err(ParseError::BadValue {
+                field: "sensor mode",
+                value: 2
+            })
+        );
+        assert_eq!(
+            Response::parse(&[1, 0, 0, 0]),
+            Err(ParseError::UnknownType(1))
+        );
+        assert_eq!(
+            Response::parse(&[2, 0, 0]),
+            Err(ParseError::WrongLength {
+                expected: 4,
+                got: 3
+            })
+        );
     }
 
     #[test]
     fn malformed_messages_are_refused() {
         assert_eq!(ScannerMessage::parse(&[]), Err(ParseError::Empty));
         assert_eq!(ScannerMessage::parse(&[9]), Err(ParseError::UnknownType(9)));
-        assert_eq!(ScannerMessage::parse(&[2; 10]), Err(ParseError::WrongLength { expected: KEY_STATE_LEN, got: 10 }));
+        assert_eq!(
+            ScannerMessage::parse(&[2; 10]),
+            Err(ParseError::WrongLength {
+                expected: KEY_STATE_LEN,
+                got: 10
+            })
+        );
         let mut bytes = key_state().encode();
         bytes[STATE + 0x6A] = 7;
-        assert_eq!(KeyState::parse(&bytes), Err(ParseError::BadValue { field: "keyframe phase", value: 7 }));
+        assert_eq!(
+            KeyState::parse(&bytes),
+            Err(ParseError::BadValue {
+                field: "keyframe phase",
+                value: 7
+            })
+        );
     }
 }
