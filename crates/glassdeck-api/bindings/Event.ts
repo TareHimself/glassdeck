@@ -6,4 +6,4 @@ import type { Theme } from "./Theme";
 /**
  * What `GET /events` sends, each as one server-sent event's JSON data.
  */
-export type Event = { "type": "status", status: Status, } | { "type": "link", connected: boolean, } | { "type": "stream", status: StreamStatus, } | { "type": "theme", theme: Theme, } | { "type": "deployed", deployed: string, };
+export type Event = { "type": "status", status: Status, } | { "type": "link", connected: boolean, } | { "type": "stream", status: StreamStatus, } | { "type": "theme", theme: Theme, };

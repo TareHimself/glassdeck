@@ -6,12 +6,13 @@
 //! | `GET /status` | | [`Status`] |
 //! | `GET /streams` | | [`Streams`] |
 //! | `GET /theme` | | [`Theme`] |
-//! | `PUT /theme` | [`Theme`] | [`ThemeApplied`] |
-//! | `PUT /deploy` | [`Deploy`] | [`Deployed`] |
+//! | `PUT /theme` | [`ThemePush`] | [`ThemeApplied`] |
 //! | `GET /events` | | server-sent [`Event`]s, starting with [`Event::Status`] |
 //!
 //! `PUT /theme` makes a whole theme the active one; glassdeckd acts only on what differs from the
-//! running one. The options panel types are for the app, which runs `options.luau` itself.
+//! running one. glassdeckd is a bridge: the app keeps the library, and glassdeckd keeps copies of
+//! only the active theme's packages, as does the keyboard. The options panel types are for the app,
+//! which runs `options.luau` itself.
 //!
 //! Every request carries `Authorization: Bearer <token>`, with the token from [`ApiFile`]. A
 //! refusal answers with an [`ApiError`] and the status code its [`ErrorCode`] names.
@@ -23,13 +24,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use ts_rs::TS;
 
-pub const API_FORMAT_VERSION: u32 = 3;
+pub const API_FORMAT_VERSION: u32 = 4;
 pub const THEME_FORMAT_VERSION: u32 = 1;
+
+fn local_folder() -> Result<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA isn't set")?;
+    Ok(PathBuf::from(local).join("Glassdeck"))
+}
 
 /// Where glassdeckd writes [`ApiFile`] when it starts.
 pub fn api_file() -> Result<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA isn't set")?;
-    Ok(PathBuf::from(local).join("Glassdeck").join("api.json"))
+    Ok(local_folder()?.join("api.json"))
+}
+
+/// Where glassdeckd keeps its copies of the active theme's packages, as `<id>.deck`. Clients may
+/// read them, such as to run a package's `options.luau`; only glassdeckd writes here.
+pub fn active_packages() -> Result<PathBuf> {
+    Ok(local_folder()?.join("active"))
 }
 
 /// How to reach the running glassdeckd: `http://127.0.0.1:<port>` with the bearer token.
@@ -150,6 +161,18 @@ impl Theme {
             widgets: Vec::new(),
         }
     }
+}
+
+/// A theme to make active, with where each of its packages is in the app's library. A package
+/// glassdeckd already holds the same copy of may be left out; one it doesn't hold must be given.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct ThemePush {
+    pub theme: Theme,
+    /// Package id to the path of its `.deck`, readable by glassdeckd
+    #[serde(default)]
+    pub packages: std::collections::BTreeMap<String, String>,
 }
 
 /// What `PUT /theme` did.
@@ -311,21 +334,6 @@ pub enum OptionKind {
     Choice { default: String, values: Vec<String> },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(export)]
-pub struct Deploy {
-    /// A `.deck`, as a path glassdeckd can read
-    pub path: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct Deployed {
-    /// What the keyboard installed, such as `package dev.glassdeck.clock.deck`
-    pub deployed: String,
-}
-
 /// What `GET /events` sends, each as one server-sent event's JSON data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -337,7 +345,6 @@ pub enum Event {
     Stream { status: StreamStatus },
     /// A new active theme
     Theme { theme: Theme },
-    Deployed { deployed: String },
 }
 
 #[cfg(test)]
@@ -346,8 +353,8 @@ mod tests {
 
     #[test]
     fn wire_shapes_are_tagged_and_snake_case() {
-        let event = Event::Deployed { deployed: "package a.b.deck".into() };
-        assert_eq!(serde_json::to_value(&event).unwrap(), serde_json::json!({ "type": "deployed", "deployed": "package a.b.deck" }));
+        let event = Event::Link { connected: true };
+        assert_eq!(serde_json::to_value(&event).unwrap(), serde_json::json!({ "type": "link", "connected": true }));
         let owner = OptionsOwner::Widget { index: 1, package: "dev.glassdeck.clock".into() };
         assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "dev.glassdeck.clock" }));
         let item = PanelItem::Heading { text: "Look".into() };
@@ -359,7 +366,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_in_requests_are_refused() {
-        assert!(serde_json::from_str::<Deploy>(r#"{"path":"a.b.deck","extra":1}"#).is_err());
+        assert!(serde_json::from_str::<ThemePush>(r#"{"theme":{"format":1,"background":{"package":"a.b"}},"extra":1}"#).is_err());
         let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"dev.glassdeck.gradient"}}"#).unwrap();
         assert_eq!(theme, Theme::starting("dev.glassdeck.gradient"));
         assert!(serde_json::from_str::<Theme>(r#"{"format":1,"background":{"package":"a.b"},"effects":[]}"#).is_err());

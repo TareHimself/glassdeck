@@ -24,6 +24,8 @@ pub enum Action<'a> {
     SelectBackground(&'a str),
     /// Run these widgets, in order, and remember them.
     SetWidgets(&'a [crate::WidgetSlot]),
+    /// Delete these packages from the keyboard.
+    RemovePackages(&'a [String]),
     /// Hand a widget instance what its host half sent; widgets run whether or not a stream is open.
     ModuleData {
         instance: u16,
@@ -67,12 +69,15 @@ impl std::error::Error for SessionError {}
 pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionState, Action<'a>), SessionError> {
     match (state, message) {
         (_, Message::StreamStart(info)) => Ok((SessionState::Streaming(*info), Action::Begin(*info))),
-        (_, Message::ClockReply { .. } | Message::PutDone { .. } | Message::PutRefused { .. }) => Err(SessionError::UnexpectedReply),
+        (_, Message::ClockReply { .. } | Message::PutDone { .. } | Message::PutRefused { .. } | Message::Inventory { .. }) => {
+            Err(SessionError::UnexpectedReply)
+        }
         (_, Message::PutFile(put)) => Ok((state, Action::PutFile(put))),
         (_, Message::ModuleResource { instance, name, data }) => Ok((state, Action::ModuleResource { instance: *instance, name, data })),
         (_, Message::BackgroundData { payload }) => Ok((state, Action::BackgroundData(payload))),
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::SetWidgets { widgets }) => Ok((state, Action::SetWidgets(widgets))),
+        (_, Message::RemovePackages { names }) => Ok((state, Action::RemovePackages(names))),
         (_, Message::ModuleData { instance, payload }) => Ok((state, Action::ModuleData { instance: *instance, payload })),
         (SessionState::Idle, Message::ClockProbe { sent_us }) => Ok((state, Action::AnswerProbe { probe_sent_us: *sent_us })),
         (SessionState::Streaming(_), Message::ClockProbe { .. }) => Err(SessionError::ProbeWhileStreaming),
@@ -123,6 +128,7 @@ mod tests {
             Ok((next, Action::AnswerProbe { .. })) => Expect::Moves(next, "answer probe"),
             Ok((next, Action::SelectBackground(_))) => Expect::Moves(next, "select background"),
             Ok((next, Action::SetWidgets(_))) => Expect::Moves(next, "set widgets"),
+            Ok((next, Action::RemovePackages(_))) => Expect::Moves(next, "remove packages"),
             Ok((next, Action::ModuleData { .. })) => Expect::Moves(next, "module data"),
             Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
             Ok((next, Action::ModuleResource { .. })) => Expect::Moves(next, "module resource"),

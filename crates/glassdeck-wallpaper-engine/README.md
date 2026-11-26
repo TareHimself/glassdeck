@@ -11,7 +11,7 @@ glassdeck-wallpaper-engine list                      # subscribed items, their t
 glassdeck-wallpaper-engine import <id-or-folder> [--out file.deck] [--mbps 12]
 ```
 
-The default output is `%APPDATA%\Glassdeck\packages\wallpaper-engine.<id>.deck`.
+The default output is `wallpaper-engine.<id>.deck` in the current folder.
 
 ## API
 

@@ -36,9 +36,8 @@ flowchart LR
 |---|---|
 | `%APPDATA%\Glassdeck\config.json` | The keyboard's address and the Link's rate |
 | `%APPDATA%\Glassdeck\theme.json` | The active theme, as the app last pushed it |
-| `%APPDATA%\Glassdeck\packages\` | Every package deployed, as `<id>.deck` |
+| `%LOCALAPPDATA%\Glassdeck\active\` | Copies of the active theme's packages only, with their keyboard copies in `keyboard\` and digests in `active.json`. The app keeps the library |
 | `%LOCALAPPDATA%\Glassdeck\api.json` | The API's port and token |
-| `%LOCALAPPDATA%\Glassdeck\staging\` | Keyboard copies of packages, made to be uploaded |
 
 ## Run
 

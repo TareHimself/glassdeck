@@ -4,7 +4,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use glassdeck_api::{ShowState, Theme, ThemeApplied};
+use std::collections::BTreeMap;
+
+use glassdeck_api::{ShowState, Theme, ThemeApplied, ThemePush};
 use glassdeck_luau::options::{Item, Kind, OptionValue, OptionsScript, Panel, Values, read_values};
 use glassdeck_package::{Package, PackageId};
 use serde_json::{Map, Value, json};
@@ -25,16 +27,17 @@ pub fn show_background() -> Result<()> {
     Ok(())
 }
 
-/// `gradient`, a package id, a `.deck` file here (deployed first), or `stream:<name>`.
+/// `gradient`, a package id glassdeckd already holds, a `.deck` file here (pushed with the theme), or `stream:<name>`.
 pub fn set_background(choice: &str) -> Result<()> {
     let mut theme: Theme = client::get("/theme")?;
+    let mut packages = BTreeMap::new();
     if let Some(stream) = choice.strip_prefix(STREAM_PREFIX) {
         theme.stream = Some(stream.to_owned());
     } else {
         let local = Path::new(choice);
         let package = if glassdeck_package::is_package(local) {
             let id = Package::open(local)?.id().clone();
-            println!("The keyboard installed {}", crate::deploy(local)?);
+            packages.insert(id.to_string(), absolute(local)?);
             id
         } else if choice == BUILT_IN_NAME {
             PackageId::parse(glassdeck_proto::BUILT_IN_BACKGROUND)?
@@ -44,7 +47,7 @@ pub fn set_background(choice: &str) -> Result<()> {
         theme.background = glassdeck_api::ThemeBackground { package: package.to_string(), options: Map::new() };
         theme.stream = None;
     }
-    let applied: ThemeApplied = client::put("/theme", &theme)?;
+    let applied: ThemeApplied = client::put("/theme", &ThemePush { theme: theme.clone(), packages })?;
     let state = match applied.stream {
         None | Some(ShowState::Shown) => "",
         Some(ShowState::WaitingForKeyboard) => " (waiting for the keyboard)",
@@ -79,7 +82,7 @@ fn owner(theme: &Theme, widget: Option<usize>) -> Result<Owner> {
     if id.as_str() == glassdeck_proto::BUILT_IN_BACKGROUND {
         bail!("{label} is the built-in gradient, which has no options");
     }
-    let path = glassdeck_convert::default_packages_dir()?.join(id.file_name());
+    let path = glassdeck_api::active_packages()?.join(id.file_name());
     let package = Package::open(&path).with_context(|| format!("{label}'s package"))?;
     let source = package.options_script()?.with_context(|| format!("{label} has no options"))?;
     let script = OptionsScript::new(&source);
@@ -122,7 +125,7 @@ pub fn set_option(widget: Option<usize>, path: &str, typed: Option<&str>) -> Res
         None => theme.background.options = stored,
         Some(index) => theme.widgets[index].options = stored,
     }
-    client::put::<ThemeApplied>("/theme", &theme)?;
+    client::put::<ThemeApplied>("/theme", &ThemePush { theme, packages: BTreeMap::new() })?;
     let shown = value.unwrap_or_else(|| option.kind.default_value()).to_json();
     println!("{} {path} = {shown}", owner.label);
     Ok(())
@@ -167,4 +170,31 @@ fn print_items(items: &[Item], values: &Values, depth: usize) {
             }
         }
     }
+}
+
+pub fn show_theme() -> Result<()> {
+    let theme: Theme = client::get("/theme")?;
+    println!("{}", serde_json::to_string_pretty(&theme)?);
+    Ok(())
+}
+
+/// Pushes a theme file, with every package it names that `library` holds as `<id>.deck`.
+pub fn push_theme_file(file: &Path, library: &Path) -> Result<()> {
+    let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let theme: Theme = serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+    let ids = std::iter::once(&theme.background.package).chain(theme.widgets.iter().map(|w| &w.package));
+    let mut packages = BTreeMap::new();
+    for id in ids {
+        let path = library.join(PackageId::parse(id)?.file_name());
+        if path.is_file() {
+            packages.insert(id.clone(), absolute(&path)?);
+        }
+    }
+    let applied: ThemeApplied = client::put("/theme", &ThemePush { theme, packages })?;
+    println!("Pushed {}{}", file.display(), if applied.stream.is_some() { ", with its stream" } else { "" });
+    Ok(())
+}
+
+fn absolute(path: &Path) -> Result<String> {
+    Ok(std::path::absolute(path).with_context(|| format!("finding {}", path.display()))?.to_string_lossy().into_owned())
 }

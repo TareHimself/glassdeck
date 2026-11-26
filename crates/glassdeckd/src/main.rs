@@ -1,6 +1,7 @@
 //! glassdeckd: the one program that talks to the keyboard. It owns the Link, runs sources (each in a
 //! worker process) and the widgets' PC halves, and takes requests from the CLI over a local API.
 
+mod active;
 mod api;
 mod config;
 mod error;
@@ -22,6 +23,7 @@ use std::thread;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use active::ActivePackages;
 use api::Api;
 use config::Paths;
 use link::Uplink;
@@ -93,12 +95,18 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let (published, _) = broadcast::channel(api::EVENT_BACKLOG);
     let (events, inbox) = mpsc::channel();
     let (link_up, link_changed) = (events.clone(), published.clone());
-    let uplink = Arc::new(Uplink::new(move |connected| {
-        if connected {
-            let _ = link_up.send(RunnerEvent::LinkUp);
-        }
-        let _ = link_changed.send(Event::Link { connected });
-    }));
+    let (reported, keyboard_reports) = mpsc::channel::<()>();
+    let uplink = Arc::new(Uplink::new(
+        move |connected| {
+            if connected {
+                let _ = link_up.send(RunnerEvent::LinkUp);
+            }
+            let _ = link_changed.send(Event::Link { connected });
+        },
+        move || {
+            let _ = reported.send(());
+        },
+    ));
     let stream_changed = published.clone();
     let status = Arc::new(StatusBoard::new(move |status| {
         let _ = stream_changed.send(Event::Stream { status: status.clone() });
@@ -107,30 +115,36 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
+    let held = ActivePackages::open(paths.active.clone())?;
     let (kept, active) = restored_theme(&paths)?;
-    let module_host = module_host::start(paths.packages.clone(), active.clone(), Arc::clone(&uplink), media::start()?)?;
-    let api = Api {
+    let module_host = module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), media::start()?)?;
+    let api = Arc::new(Api {
         token,
         runner,
         uplink,
         keyboard: config.keyboard,
-        packages: paths.packages.clone(),
-        staging: paths.staging.clone(),
+        active: Mutex::new(held),
         large_uploads: Mutex::new(0),
         theme_file: paths.theme.clone(),
         theme: Mutex::new((kept, active)),
         module_host,
         events: published,
-    };
+    });
     if let Err(e) = api.restore() {
         eprintln!("error: restoring the theme: {e:#}; the keyboard keeps its own");
     }
+    let syncing = Arc::clone(&api);
+    thread::Builder::new().name("keyboard sync".into()).spawn(move || {
+        for () in keyboard_reports {
+            syncing.keyboard_reported();
+        }
+    })?;
     api.serve(&paths.api)
 }
 
 /// The theme kept from last time, or the starting one if it no longer checks out against what's installed.
 fn restored_theme(paths: &Paths) -> Result<(glassdeck_api::Theme, theme::ActiveTheme)> {
-    let installed = theme::installed(&paths.packages)?;
+    let installed = theme::installed(&paths.active)?;
     let kept = theme::load(&paths.theme)?;
     match theme::ActiveTheme::check(&kept, &installed) {
         Ok(active) => Ok((kept, active)),

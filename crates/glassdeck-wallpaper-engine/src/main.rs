@@ -24,7 +24,7 @@ enum Command {
     Import {
         /// Workshop ID, or a folder holding a project.json
         item: String,
-        /// Package file (default: %APPDATA%\Glassdeck\packages\wallpaper-engine.<id>.deck)
+        /// Package file (default: wallpaper-engine.<id>.deck in the current folder)
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when re-encoding
@@ -51,7 +51,7 @@ fn run(command: Command) -> Result<()> {
             let project = item.project()?;
             let out = match out {
                 Some(out) => out,
-                None => we::package_path(&glassdeck_convert::default_packages_dir()?, &item)?,
+                None => we::package_path(std::path::Path::new("."), &item)?,
             };
             we::convert(&item, &project, &out, EncodeSettings { bitrate: mbps * 1_000_000 })?;
             println!("Wrote {}; show it with `glassdeck bg {}`", out.display(), out.display());

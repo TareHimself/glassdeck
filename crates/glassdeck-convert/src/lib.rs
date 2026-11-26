@@ -25,10 +25,10 @@ pub struct Details {
     pub preview: Option<PathBuf>,
 }
 
-/// Where packages go unless told otherwise: `%APPDATA%\Glassdeck\packages`, glassdeckd's own folder.
-pub fn default_packages_dir() -> Result<PathBuf> {
-    let roaming = std::env::var_os("APPDATA").context("APPDATA is not set")?;
-    Ok(PathBuf::from(roaming).join("Glassdeck").join("packages"))
+/// Where streaming a wallpaper keeps the background it builds on first use: `%LOCALAPPDATA%\Glassdeck\cache`.
+pub fn cache_dir() -> Result<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
+    Ok(PathBuf::from(local).join("Glassdeck").join("cache"))
 }
 
 /// A video goes in as it is when it meets the background spec, and is re-encoded otherwise.

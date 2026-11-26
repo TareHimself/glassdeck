@@ -94,6 +94,8 @@ pub struct Uplink {
     changed: Condvar,
     /// Told `true` when the keyboard connects and `false` when it goes away
     on_change: Box<dyn Fn(bool) + Send + Sync>,
+    /// Told when the keyboard has said what it holds, after each connect
+    on_inventory: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -110,6 +112,8 @@ struct Queues {
     selected: Option<String>,
     /// The widget layout, kept like `selected` for a reconnect
     widgets: Option<Vec<WidgetSlot>>,
+    /// What the keyboard holds, by file name, as it said on connecting and as uploads and removals since changed it
+    inventory: Option<BTreeMap<String, u64>>,
     /// The selected canvas's latest data from its host half, kept like `latest` for a reconnect.
     background_data: Option<Vec<u8>>,
     background_data_unsent: bool,
@@ -160,8 +164,39 @@ impl Upload {
 }
 
 impl Uplink {
-    pub fn new(on_change: impl Fn(bool) + Send + Sync + 'static) -> Self {
-        Self { queues: Mutex::new(Queues::default()), changed: Condvar::new(), on_change: Box::new(on_change) }
+    pub fn new(on_change: impl Fn(bool) + Send + Sync + 'static, on_inventory: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            queues: Mutex::new(Queues::default()),
+            changed: Condvar::new(),
+            on_change: Box::new(on_change),
+            on_inventory: Box::new(on_inventory),
+        }
+    }
+
+    /// What the keyboard holds, by file name and digest; `None` until it has said, after each connect.
+    pub fn inventory(&self) -> Option<BTreeMap<String, u64>> {
+        self.lock().inventory.clone()
+    }
+
+    /// The keyboard installed `name`, whose digest is `digest`.
+    pub fn record_installed(&self, name: String, digest: u64) {
+        if let Some(inventory) = self.lock().inventory.as_mut() {
+            inventory.insert(name, digest);
+        }
+    }
+
+    /// Asks the keyboard to delete packages, and stops counting them as held.
+    pub fn remove_packages(&self, names: Vec<String>) {
+        let mut queues = self.lock();
+        if let Some(inventory) = queues.inventory.as_mut() {
+            for name in &names {
+                inventory.remove(name);
+            }
+        }
+        if queues.connected {
+            queues.control.push_back(Message::RemovePackages { names });
+        }
+        self.changed.notify_all();
     }
 
     pub fn is_connected(&self) -> bool {
@@ -268,6 +303,11 @@ impl Uplink {
 
     /// The keyboard's answer to the oldest fully sent file, from the Link's reader thread.
     pub fn answered(&self, message: Message) {
+        if let Message::Inventory { packages } = message {
+            self.lock().inventory = Some(packages.into_iter().map(|p| (p.name, p.digest)).collect());
+            (self.on_inventory)();
+            return;
+        }
         let waiter = self.lock().awaiting.pop_front();
         let (target, result) = match message {
             Message::PutDone { target } => (target, Ok(())),
@@ -345,6 +385,7 @@ impl Uplink {
             }
             LinkEffect::DropQueued => {
                 queues.connected = false;
+                queues.inventory = None;
                 queues.control.clear();
                 queues.stream.clear();
                 let uploads: Vec<Waiter> = queues.uploads.drain(..).map(|upload| upload.waiter).collect();
@@ -476,7 +517,7 @@ mod tests {
 
     #[test]
     fn widgets_wait_behind_the_stream_and_control_goes_first() {
-        let uplink = Uplink::new(|_| {});
+        let uplink = Uplink::new(|_| {}, || {});
         uplink.apply(Resend);
         uplink.put_module_data(0, vec![1]);
         uplink.push_stream(Message::StreamEnd { stream_id: 7 }).unwrap();
@@ -490,7 +531,7 @@ mod tests {
     fn files_go_after_widgets_and_fail_when_the_link_drops() {
         let path = std::env::temp_dir().join(format!("glassdeckd-upload-{}", std::process::id()));
         std::fs::write(&path, [7u8; 10]).unwrap();
-        let uplink = Uplink::new(|_| {});
+        let uplink = Uplink::new(|_| {}, || {});
         assert!(uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).is_err());
         uplink.apply(Resend);
         let first = uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).unwrap();
@@ -510,7 +551,7 @@ mod tests {
 
     #[test]
     fn resources_go_after_widget_data_latest_wins_and_come_back_after_a_reconnect() {
-        let uplink = Uplink::new(|_| {});
+        let uplink = Uplink::new(|_| {}, || {});
         uplink.apply(Resend);
         uplink.put_module_resource(2, "cover".into(), vec![1]);
         uplink.put_module_resource(2, "cover".into(), vec![2]);
@@ -527,7 +568,7 @@ mod tests {
 
     #[test]
     fn a_widgets_newest_value_replaces_its_unsent_one() {
-        let uplink = Uplink::new(|_| {});
+        let uplink = Uplink::new(|_| {}, || {});
         uplink.apply(Resend);
         uplink.put_module_data(3, vec![1]);
         uplink.put_module_data(3, vec![2]);
@@ -536,7 +577,7 @@ mod tests {
 
     #[test]
     fn reconnecting_resends_every_widget_and_the_selection() {
-        let uplink = Uplink::new(|_| {});
+        let uplink = Uplink::new(|_| {}, || {});
         uplink.select_background("a.b".into());
         uplink.put_module_data(1, vec![9]);
         uplink.apply(Resend);

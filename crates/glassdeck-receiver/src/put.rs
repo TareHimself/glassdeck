@@ -9,8 +9,11 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::{Context, Result};
-use glassdeck_package::{Package, check_file_name};
-use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES, Message, PutFile};
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+use glassdeck_package::{Package, check_file_name, file_digest, is_package};
+use glassdeck_proto::{FileTarget, HeldPackage, LARGE_FILE_BYTES, Message, PutFile};
 
 use crate::director::{SharedDirector, lock};
 use crate::{report, send_reply};
@@ -63,6 +66,58 @@ fn show(widgets: &Sender<Input>, input: Input) {
 
 pub struct Folders {
     pub packages: PathBuf,
+}
+
+/// Each package file's digest, kept while its size and time stay the same, so a reconnect doesn't
+/// read every package again.
+#[derive(Default)]
+pub struct Digests(HashMap<PathBuf, (u64, SystemTime, u64)>);
+
+impl Digests {
+    /// What the packages folder holds, for the host to compare with what it wants there.
+    pub fn inventory(&mut self, folders: &Folders) -> Result<Vec<HeldPackage>> {
+        let mut held = Vec::new();
+        let entries = match fs::read_dir(&folders.packages) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(held),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", folders.packages.display())),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if !is_package(&path) {
+                continue;
+            }
+            let meta = fs::metadata(&path)?;
+            let stamp = (meta.len(), meta.modified()?);
+            let digest = match self.0.get(&path) {
+                Some(&(len, at, digest)) if (len, at) == stamp => digest,
+                _ => {
+                    let digest = file_digest(&path)?;
+                    self.0.insert(path.clone(), (stamp.0, stamp.1, digest));
+                    digest
+                }
+            };
+            let name = path.file_name().and_then(|n| n.to_str()).context("package file names are UTF-8")?.to_owned();
+            held.push(HeldPackage { name, digest });
+        }
+        held.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(held)
+    }
+}
+
+/// Deletes packages the host's active theme no longer uses. Each name is checked first, so nothing
+/// outside the packages folder can go.
+pub fn remove_packages(folders: &Folders, names: &[String]) -> Result<()> {
+    for name in names {
+        check_file_name(name)?;
+        let path = folders.packages.join(name);
+        match fs::remove_file(&path) {
+            Ok(()) => println!("Removed {name}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

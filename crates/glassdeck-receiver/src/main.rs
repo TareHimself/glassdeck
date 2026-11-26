@@ -123,6 +123,7 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
         eprintln!("error: starting the decoder: {e:#}");
         std::process::exit(1);
     }
+    let mut digests = put::Digests::default();
     for connection in listener.incoming() {
         let mut state = SessionState::Idle;
         let result = connection.context("accepting connection").and_then(|socket| {
@@ -132,7 +133,9 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
                 thread::Builder::new()
                     .name("files".into())
                     .spawn_scoped(scope, || put::write_files(folders, arriving, &replies, widgets, director))?;
-                let served = serve(socket, mailbox, director, widgets, &pieces, &replies, &mut state);
+                let inventory = Message::Inventory { packages: digests.inventory(folders)? };
+                send_reply(&replies, &inventory).context("telling the host what's installed")?;
+                let served = serve(socket, mailbox, director, widgets, &pieces, &replies, folders, &mut state);
                 drop(pieces);
                 served
             })
@@ -160,6 +163,7 @@ fn serve(
     widgets: &Sender<Input>,
     pieces: &SyncSender<PutFile>,
     replies: &Mutex<TcpStream>,
+    folders: &Folders,
     state: &mut SessionState,
 ) -> Result<()> {
     socket.set_nodelay(true)?;
@@ -201,6 +205,7 @@ fn serve(
                 lock(director).handle(Event::StreamEnded)?;
             }
             Action::SelectBackground(name) => report(lock(director).select(name)),
+            Action::RemovePackages(names) => report(put::remove_packages(folders, names)),
             Action::SetWidgets(slots) => match placed_widgets(slots) {
                 Ok(layout) => widgets.send(Input::SetWidgets(layout)).context("the widget thread has stopped")?,
                 Err(e) => report(Err(e.context("the host's widget layout"))),

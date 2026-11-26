@@ -246,6 +246,24 @@ pub fn check_file_name(name: &str) -> Result<PackageId> {
     PackageId::parse(stem).with_context(|| format!("{name:?} is not <id>.{EXTENSION}"))
 }
 
+/// A digest of a file's bytes (FNV-1a, 64-bit), so host and keyboard can tell whether they hold the same copy.
+pub fn file_digest(path: &Path) -> Result<u64> {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hash = FNV_OFFSET;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).with_context(|| format!("reading {}", path.display()))?;
+        if n == 0 {
+            return Ok(hash);
+        }
+        for &byte in &buf[..n] {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+        }
+    }
+}
+
 pub fn is_package(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
 }
@@ -417,6 +435,17 @@ pub(crate) mod tests {
 
         let error = format!("{:#}", Package::open(&path).err().unwrap());
         assert!(error.contains("web/index.html") && error.contains("compressed"), "{error}");
+    }
+
+    #[test]
+    fn the_digest_follows_the_bytes() {
+        let scratch = Scratch::new("digest");
+        let (a, b) = (scratch.0.join("a"), scratch.0.join("b"));
+        fs::write(&a, b"same").unwrap();
+        fs::write(&b, b"same").unwrap();
+        assert_eq!(file_digest(&a).unwrap(), file_digest(&b).unwrap());
+        fs::write(&b, b"other").unwrap();
+        assert_ne!(file_digest(&a).unwrap(), file_digest(&b).unwrap());
     }
 
     #[test]

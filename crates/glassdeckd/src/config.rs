@@ -14,12 +14,10 @@ pub struct Paths {
     pub config: PathBuf,
     /// The active theme, as the app last pushed it
     pub theme: PathBuf,
-    /// glassdeckd's own copy of every package it deployed
-    pub packages: PathBuf,
+    /// Copies of the active theme's packages; the app keeps the library
+    pub active: PathBuf,
     pub api: PathBuf,
     pub log: PathBuf,
-    /// Files made only to be uploaded, such as a package's keyboard copy.
-    pub staging: PathBuf,
 }
 
 impl Paths {
@@ -29,10 +27,9 @@ impl Paths {
         Ok(Self {
             config: roaming.join("config.json"),
             theme: roaming.join("theme.json"),
-            packages: roaming.join("packages"),
+            active: glassdeck_api::active_packages()?,
             api: glassdeck_api::api_file()?,
             log: local.join("logs").join("glassdeckd.log"),
-            staging: local.join("staging"),
         })
     }
 }

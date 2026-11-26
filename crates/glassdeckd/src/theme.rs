@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use glassdeck_api::{THEME_FORMAT_VERSION, Theme};
 use glassdeck_luau::placement::{Placement, PlacedWidget, WidgetArea, check_widgets};
 use glassdeck_package::{Kind, Package, PackageId, is_package};
@@ -26,7 +26,7 @@ pub struct Installed {
     pub modified: SystemTime,
 }
 
-/// Every package in glassdeckd's packages folder, by id. One that doesn't open is reported and left out.
+/// Every package glassdeckd holds a copy of, by id. One that doesn't open is reported and left out.
 pub fn installed(folder: &Path) -> Result<HashMap<PackageId, Installed>> {
     let mut packages = HashMap::new();
     let entries = match fs::read_dir(folder) {
@@ -81,7 +81,7 @@ impl ActiveTheme {
             match packages.get(&background).map(|i| &i.package.manifest().kind) {
                 Some(Kind::Background(_)) => {}
                 Some(Kind::Widget(_)) => return Err(bad_request(format!("{background} is a widget, not a background"))),
-                None => return Err(bad_request(format!("{background} isn't installed; deploy it first"))),
+                None => return Err(bad_request(format!("{background} isn't held; push its .deck with the theme"))),
             }
         }
         let stream = theme.stream.as_deref().map(StreamName::parse).transpose().map_err(|e| bad_request(format!("{e:#}")))?;
@@ -94,6 +94,12 @@ impl ActiveTheme {
         check_widgets(&layout, WidgetArea::of_panel().size, |id| packages.get(id).and_then(|i| i.package.manifest().widget().copied()))
             .map_err(|e| bad_request(format!("{e:#}")))?;
         Ok(Self { background: Entry { package: background, options: theme.background.options.clone() }, stream, widgets })
+    }
+
+    /// The ids of every package the theme uses, the built-in background aside.
+    pub fn package_ids(&self) -> std::collections::BTreeSet<String> {
+        let background = (self.background.package.as_str() != BUILT_IN_BACKGROUND).then(|| self.background.package.to_string());
+        background.into_iter().chain(self.widgets.iter().map(|(_, e)| e.package.to_string())).collect()
     }
 
     /// The layout as the Link carries it.
@@ -134,24 +140,6 @@ pub fn save(path: &Path, theme: &Theme) -> Result<()> {
     fs::rename(&staging, path).with_context(|| format!("moving {} into place", path.display()))
 }
 
-/// A package's keyboard copy: what to upload, never its host files.
-pub fn keyboard_copy(package: &Package, staging: &Path) -> Result<std::path::PathBuf> {
-    fs::create_dir_all(staging).with_context(|| format!("creating {}", staging.display()))?;
-    let copy = staging.join(package.id().file_name());
-    package.write_keyboard_copy(&copy).context("making the keyboard's copy")?;
-    Ok(copy)
-}
-
-/// What deploying a package needs: it opens, and its file is named for its id.
-pub fn deployable(path: &Path) -> Result<Package> {
-    let package = Package::open(path).map_err(|e| bad_request(format!("{e:#}")))?;
-    let named = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n == package.id().file_name());
-    if !named {
-        bail!(bad_request(format!("{} holds {}; name it {}", path.display(), package.id(), package.id().file_name())));
-    }
-    Ok(package)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,7 +154,7 @@ mod tests {
         assert!(active.slots().is_empty());
 
         let missing = Theme { background: ThemeBackground { package: "converted.nope".into(), options: Map::new() }, ..starting.clone() };
-        assert!(format!("{:#}", ActiveTheme::check(&missing, &packages).unwrap_err()).contains("isn't installed"));
+        assert!(format!("{:#}", ActiveTheme::check(&missing, &packages).unwrap_err()).contains("isn't held"));
         let widget = ThemeWidget { package: "dev.glassdeck.clock".into(), x: 0, y: 0, w: 8, h: 8, options: Map::new() };
         let unknown_widget = Theme { widgets: vec![widget], ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&unknown_widget, &packages).unwrap_err()).contains("no widget"));

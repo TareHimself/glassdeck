@@ -19,7 +19,7 @@ pub fn source(item: &str, rebuild: bool, mbps: u32, fps: u32, duration: Option<D
     if project.kind == Kind::Scene {
         return Ok(Source::Frames(Box::new(SceneSource::new(&item, scene_settings(mbps, fps), duration)?)));
     }
-    let path = we::package_path(&glassdeck_convert::default_packages_dir()?, &item)?;
+    let path = we::package_path(&glassdeck_convert::cache_dir()?, &item)?;
     let background = if glassdeck_package::is_package(&path) && !rebuild { Package::open(&path)? } else { convert(&item, &project, &path, mbps)? };
     background_source::open(background, true, WebEncoding { fps, bitrate: mbps * 1_000_000, duration })
 }

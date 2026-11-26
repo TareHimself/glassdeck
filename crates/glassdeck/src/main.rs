@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use glassdeck_capture::monitors::{self, MonitorQuery};
 use glassdeck_capture::record::{self, RecordOptions};
 use glassdeck_convert::{Details, EncodeSettings};
-use glassdeck_api::{Deploy, Deployed, Status, Streams};
+use glassdeck_api::{Status, Streams};
 use glassdeck_package::{Origin, PackageId};
 
 #[derive(Parser)]
@@ -35,8 +35,14 @@ enum Command {
         /// gradient, a package id, a .deck file (uploaded if it's a file here), or stream:<name>
         choice: Option<String>,
     },
-    /// Put a .deck on the keyboard
-    Deploy { file: PathBuf },
+    /// Show the active theme as JSON, or push a theme file, with its packages from a library folder
+    Theme {
+        /// A theme .json to make active
+        file: Option<PathBuf>,
+        /// Where its packages are, as <id>.deck (defaults to the current folder)
+        #[arg(long)]
+        library: Option<PathBuf>,
+    },
     /// Show the background's (or a widget's) options, or set one: glassdeck options look.tint "#ff8000"
     Options {
         /// A widget's place in the theme, instead of the background
@@ -64,7 +70,7 @@ enum Command {
     /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a background .deck
     Convert {
         input: PathBuf,
-        /// Defaults to %APPDATA%\Glassdeck\packages\converted.<name>.deck
+        /// Defaults to converted.<name>.deck in the current folder
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when a video has to be re-encoded
@@ -110,10 +116,8 @@ fn run(command: Command) -> Result<()> {
             (None, true) => theme::set_option(widget, &path, None),
             (None, false) => bail!("give {path} a value, or --reset it to its default"),
         },
-        Command::Deploy { file } => {
-            println!("The keyboard installed {}", deploy(&file)?);
-            Ok(())
-        }
+        Command::Theme { file: None, .. } => theme::show_theme(),
+        Command::Theme { file: Some(file), library } => theme::push_theme_file(&file, library.as_deref().unwrap_or(Path::new("."))),
         Command::Pack { folder, out, watch } if glassdeck_slang::pack::is_canvas_folder(&folder) => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::EXTENSION));
             let native = native_libraries()?;
@@ -200,18 +204,12 @@ fn native_libraries() -> Result<PathBuf> {
     Ok(exe.parent().context("this program has no folder")?.to_path_buf())
 }
 
-pub(crate) fn deploy(file: &Path) -> Result<String> {
-    let path = std::path::absolute(file).with_context(|| format!("finding {}", file.display()))?;
-    let answer: Deployed = client::put("/deploy", &Deploy { path: path.to_string_lossy().into_owned() })?;
-    Ok(answer.deployed)
-}
-
 fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
     let title = input.file_stem().context("the input has no name")?.to_string_lossy().into_owned();
     let id = PackageId::from_name("converted", &title)?;
     let out = match out {
         Some(out) => out,
-        None => glassdeck_convert::default_packages_dir()?.join(id.file_name()),
+        None => PathBuf::from(id.file_name()),
     };
     let details = Details { id, title, origin: Origin::Converted { from: file_name(input)? }, preview: None };
     let is_html = input.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));

@@ -14,11 +14,11 @@ use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
 use axum::response::sse::{self, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::{Json, Router};
 use glassdeck_api::{
-    API_FORMAT_VERSION, ApiFile, Deploy, Deployed, ErrorCode, Event, LinkStatus, ShowState, Status, StreamEntry, StreamMode, StreamState,
-    Streams, Theme, ThemeApplied,
+    API_FORMAT_VERSION, ApiFile, ErrorCode, Event, LinkStatus, ShowState, Status, StreamEntry, StreamMode, StreamState, Streams, Theme,
+    ThemeApplied, ThemePush,
 };
 use glassdeck_capture::monitors;
 use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES};
@@ -26,6 +26,7 @@ use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::active::ActivePackages;
 use crate::error::{Failure, answer, conflict};
 use crate::link::Uplink;
 use crate::module_host::HostCommand;
@@ -47,9 +48,8 @@ pub struct Api {
     pub runner: Runner,
     pub uplink: Arc<Uplink>,
     pub keyboard: SocketAddr,
-    /// glassdeckd's own copy of every package it deployed; host sides run from here
-    pub packages: PathBuf,
-    pub staging: PathBuf,
+    /// Copies of the active theme's packages, which host sides run from. Locked after `theme`.
+    pub active: Mutex<ActivePackages>,
     /// Large uploads running now; the source stays paused until the last one is answered.
     pub large_uploads: Mutex<usize>,
     /// Where the active theme is kept across restarts
@@ -86,7 +86,7 @@ type Reply<T> = Result<Json<T>, Failure>;
 
 impl Api {
     /// Serves forever on this thread.
-    pub fn serve(self, api_file: &Path) -> Result<()> {
+    pub fn serve(self: Arc<Self>, api_file: &Path) -> Result<()> {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(API_THREADS)
             .max_blocking_threads(MAX_BLOCKING_THREADS)
@@ -98,7 +98,7 @@ impl Api {
             .block_on(self.serve_on(api_file))
     }
 
-    async fn serve_on(self, api_file: &Path) -> Result<()> {
+    async fn serve_on(self: Arc<Self>, api_file: &Path) -> Result<()> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.context("starting the local API")?;
         let port = listener.local_addr()?.port();
         if let Some(folder) = api_file.parent() {
@@ -107,7 +107,7 @@ impl Api {
         let file = ApiFile { format: API_FORMAT_VERSION, port, token: self.token.clone() };
         std::fs::write(api_file, serde_json::to_vec_pretty(&file)?).with_context(|| format!("writing {}", api_file.display()))?;
         println!("API: http://127.0.0.1:{port} (token in {})", api_file.display());
-        axum::serve(listener, router(Arc::new(self))).await.context("serving the local API")
+        axum::serve(listener, router(self)).await.context("serving the local API")
     }
 
     fn publish(&self, event: Event) {
@@ -140,12 +140,10 @@ impl Api {
     }
 
     /// What glassdeckd kept from last time, applied at start-up without waiting: a stream starts once
-    /// the keyboard connects, and the background and widgets go on connect.
+    /// the keyboard connects, and the keyboard is brought up to date when it says what it holds.
     pub fn restore(&self) -> Result<()> {
         let guard = self.theme.lock().expect("theme poisoned");
         let active = &guard.1;
-        self.uplink.select_background(active.background.package.to_string());
-        self.uplink.set_widgets(active.slots());
         if let Some(name) = &active.stream {
             match self.find_stream(name)? {
                 Some(stream) => self.runner.send(RunnerEvent::Start(stream.request()))?,
@@ -156,18 +154,18 @@ impl Api {
         Ok(())
     }
 
-    /// Makes `theme` the active one, acting only on what differs from the running theme.
-    fn apply_theme(&self, theme: Theme) -> Result<ThemeApplied> {
-        let installed = theme::installed(&self.packages)?;
-        let active = ActiveTheme::check(&theme, &installed)?;
+    /// Makes `push.theme` the active one: takes in the packages it brings, brings the keyboard up to
+    /// date, and drops what the theme no longer uses, here and on the keyboard.
+    fn apply_theme(&self, push: ThemePush) -> Result<ThemeApplied> {
+        let ThemePush { theme, packages } = push;
         let mut guard = self.theme.lock().expect("theme poisoned");
+        let mut held = self.active.lock().expect("active packages poisoned");
+        for (id, path) in &packages {
+            held.take_in(id, Path::new(path))?;
+        }
+        let active = ActiveTheme::check(&theme, &theme::installed(held.folder())?)?;
         let before = guard.1.clone();
-        if active.background.package != before.background.package {
-            self.uplink.select_background(active.background.package.to_string());
-        }
-        if active.slots() != before.slots() {
-            self.uplink.set_widgets(active.slots());
-        }
+        self.sync_keyboard(&active, &held)?;
         let stream = match &active.stream {
             Some(name) if before.stream.as_ref() != Some(name) || self.runner.status().worker.is_none() => Some(self.show(name)?),
             Some(_) => Some(ShowState::Shown),
@@ -181,29 +179,60 @@ impl Api {
         if self.module_host.send(HostCommand::Theme(active.clone())).is_err() {
             eprintln!("error: the module host has stopped");
         }
+        held.keep_only(&active.package_ids())?;
         *guard = (theme.clone(), active);
-        drop(guard);
+        drop((held, guard));
         self.publish(Event::Theme { theme });
         Ok(ThemeApplied { stream })
     }
 
-    /// Installs a package on the keyboard, as its keyboard copy, then keeps glassdeckd's own copy.
-    /// Answers once the keyboard has it in place.
-    fn deploy(&self, path: &Path) -> Result<Deployed> {
-        let package = theme::deployable(path)?;
-        let copy = theme::keyboard_copy(&package, &self.staging)?;
-        let removing = RemoveOnDrop(&copy);
-        let target = FileTarget::Package(package.id().file_name());
-        let size = std::fs::metadata(&copy).with_context(|| format!("reading {}", copy.display()))?.len();
+    /// Run when the keyboard says what it holds: brings it up to the active theme.
+    pub fn keyboard_reported(&self) {
+        let guard = self.theme.lock().expect("theme poisoned");
+        let held = self.active.lock().expect("active packages poisoned");
+        if let Err(e) = self.sync_keyboard(&guard.1, &held) {
+            eprintln!("error: bringing the keyboard up to date: {e:#}");
+        }
+    }
+
+    /// Uploads what the keyboard lacks for `active`, switches it over, then removes what it no longer
+    /// needs. Without a connection, the choice waits for the next connect, which runs this again.
+    fn sync_keyboard(&self, active: &ActiveTheme, held: &ActivePackages) -> Result<()> {
+        let needed: Vec<String> = active.package_ids().into_iter().collect();
+        if let Some(inventory) = self.uplink.inventory() {
+            for id in &needed {
+                let id = glassdeck_package::PackageId::parse(id)?;
+                let (copy, digest) = held.keyboard_copy(&id).with_context(|| format!("glassdeckd holds no copy of {id}"))?;
+                let name = id.file_name();
+                if inventory.get(&name) != Some(&digest) {
+                    self.upload(&name, &copy)?;
+                    self.uplink.record_installed(name, digest);
+                }
+            }
+        }
+        self.uplink.select_background(active.background.package.to_string());
+        self.uplink.set_widgets(active.slots());
+        if let Some(inventory) = self.uplink.inventory() {
+            let wanted: std::collections::BTreeSet<String> =
+                needed.iter().map(|id| format!("{id}.{}", glassdeck_package::EXTENSION)).collect();
+            let unused: Vec<String> = inventory.into_keys().filter(|name| !wanted.contains(name)).collect();
+            if !unused.is_empty() {
+                println!("Keyboard: removing {}", unused.join(", "));
+                self.uplink.remove_packages(unused);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends one keyboard copy, and waits for the keyboard to have it in place.
+    fn upload(&self, name: &str, copy: &Path) -> Result<()> {
+        let target = FileTarget::Package(name.to_owned());
+        let size = std::fs::metadata(copy).with_context(|| format!("reading {}", copy.display()))?.len();
         let _pause = (size >= LARGE_FILE_BYTES).then(|| self.pause_for_upload()).transpose()?;
-        let answered = self.uplink.put_file(target.clone(), &copy)?;
+        let answered = self.uplink.put_file(target.clone(), copy)?;
         answered.recv().context("the Link stopped before the keyboard answered")??;
-        drop(removing);
-        keep_locally(path, &self.packages.join(package.id().file_name()))?;
-        println!("Deployed {target}");
-        let deployed = target.to_string();
-        self.publish(Event::Deployed { deployed: deployed.clone() });
-        Ok(Deployed { deployed })
+        println!("Keyboard: installed {target}");
+        Ok(())
     }
 
     /// The keyboard falls back to its own background, and the transfer gets the whole Link.
@@ -266,40 +295,11 @@ impl Api {
     }
 }
 
-/// The keyboard copy made for an upload, removed once it's sent or the upload fails.
-struct RemoveOnDrop<'a>(&'a Path);
-
-impl Drop for RemoveOnDrop<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(self.0) {
-            eprintln!("error: removing {}: {e}", self.0.display());
-        }
-    }
-}
-
-/// glassdeckd keeps every deployed package, unless it's deploying the copy it already keeps.
-fn keep_locally(from: &Path, place: &Path) -> Result<()> {
-    let same = match (std::fs::canonicalize(from), std::fs::canonicalize(place)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    };
-    if same {
-        return Ok(());
-    }
-    if let Some(folder) = place.parent() {
-        std::fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
-    }
-    let staging = place.with_extension("deck.tmp");
-    std::fs::copy(from, &staging).with_context(|| format!("copying {} to {}", from.display(), staging.display()))?;
-    std::fs::rename(&staging, place).with_context(|| format!("moving {} into place", place.display()))
-}
-
 fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/streams", get(list_streams))
         .route("/theme", get(get_theme).put(put_theme))
-        .route("/deploy", put(deploy_file))
         .route("/events", get(events))
         .fallback(|| async { answer(ErrorCode::NotFound, "no such route".to_owned()) })
         .method_not_allowed_fallback(|| async { answer(ErrorCode::MethodNotAllowed, "that route doesn't take this method".to_owned()) })
@@ -335,12 +335,8 @@ async fn get_theme(State(api): State<Arc<Api>>) -> Reply<Theme> {
     blocking(api, |api| Ok(api.active_theme())).await
 }
 
-async fn put_theme(State(api): State<Arc<Api>>, Body(theme): Body<Theme>) -> Reply<ThemeApplied> {
-    blocking(api, move |api| api.apply_theme(theme)).await
-}
-
-async fn deploy_file(State(api): State<Arc<Api>>, Body(Deploy { path }): Body<Deploy>) -> Reply<Deployed> {
-    blocking(api, move |api| api.deploy(Path::new(&path))).await
+async fn put_theme(State(api): State<Arc<Api>>, Body(push): Body<ThemePush>) -> Reply<ThemeApplied> {
+    blocking(api, move |api| api.apply_theme(push)).await
 }
 
 /// The whole status first, then each change. A client that falls behind gets the whole status again.

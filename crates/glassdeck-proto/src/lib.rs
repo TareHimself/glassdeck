@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 10;
+pub const VERSION: u8 = 11;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// The built-in canvas's package id: the default background, always on the keyboard and never a file.
@@ -37,6 +37,8 @@ const KIND_PUT_REFUSED: u8 = 10;
 const KIND_MODULE_RESOURCE: u8 = 11;
 const KIND_BACKGROUND_DATA: u8 = 12;
 const KIND_SET_WIDGETS: u8 = 13;
+const KIND_INVENTORY: u8 = 14;
+const KIND_REMOVE_PACKAGES: u8 = 15;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
@@ -50,6 +52,10 @@ const TARGET_PACKAGE: u8 = 1;
 const SET_WIDGETS_FIXED_LEN: usize = 4;
 /// x, y, w, h as u16, then the id's length
 const WIDGET_SLOT_FIXED_LEN: usize = 9;
+/// A count, then padding, before a list's items
+const LIST_FIXED_LEN: usize = 4;
+/// The digest, then the name's length
+const HELD_FIXED_LEN: usize = 9;
 const FLAG_KEYFRAME: u8 = 0b0000_0001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +105,13 @@ impl fmt::Display for FileTarget {
             Self::Package(name) => write!(f, "package {name}"),
         }
     }
+}
+
+/// A package the keyboard holds: its file name, and the digest of its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldPackage {
+    pub name: String,
+    pub digest: u64,
 }
 
 /// One widget in a `SetWidgets` layout: its package id, and where it sits in the widget area.
@@ -156,6 +169,14 @@ pub enum Message {
     SetWidgets {
         widgets: Vec<WidgetSlot>,
     },
+    /// Keyboard to host, on every connect: the packages it holds, so the host uploads only what's missing.
+    Inventory {
+        packages: Vec<HeldPackage>,
+    },
+    /// Host to keyboard: delete these packages, which the active theme no longer uses.
+    RemovePackages {
+        names: Vec<String>,
+    },
     /// Host to keyboard: what a widget's `host.luau` sent, for the instance numbered by its place in
     /// the widget list. `payload` is MessagePack.
     ModuleData {
@@ -199,6 +220,7 @@ pub enum ProtoError {
     BackgroundNameNotUtf8,
     BadFileTarget,
     BadWidgetList,
+    BadList,
     TextNotUtf8,
     Io(io::Error),
 }
@@ -215,6 +237,7 @@ impl fmt::Display for ProtoError {
             Self::BackgroundNameNotUtf8 => write!(f, "background name is not UTF-8"),
             Self::BadFileTarget => write!(f, "malformed file target"),
             Self::BadWidgetList => write!(f, "malformed widget list"),
+            Self::BadList => write!(f, "malformed package list"),
             Self::TextNotUtf8 => write!(f, "text is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
@@ -281,6 +304,8 @@ impl Message {
             Self::ModuleData { payload, .. } | Self::BackgroundData { payload } => payload.len() + 4,
             Self::ModuleResource { name, data, .. } => name.len() + data.len() + 4,
             Self::SetWidgets { widgets } => SET_WIDGETS_FIXED_LEN + widgets.iter().map(|w| WIDGET_SLOT_FIXED_LEN + w.package.len()).sum::<usize>(),
+            Self::Inventory { packages } => LIST_FIXED_LEN + packages.iter().map(|p| HELD_FIXED_LEN + p.name.len()).sum::<usize>(),
+            Self::RemovePackages { names } => LIST_FIXED_LEN + names.iter().map(|n| 1 + n.len()).sum::<usize>(),
             _ => 64,
         }
     }
@@ -347,6 +372,21 @@ impl Message {
                     out.extend_from_slice(slot.package.as_bytes());
                 }
                 KIND_SET_WIDGETS
+            }
+            Self::Inventory { packages } => {
+                write_count(out, packages.len());
+                for held in packages {
+                    out.extend_from_slice(&held.digest.to_le_bytes());
+                    write_name(out, &held.name);
+                }
+                KIND_INVENTORY
+            }
+            Self::RemovePackages { names } => {
+                write_count(out, names.len());
+                for name in names {
+                    write_name(out, name);
+                }
+                KIND_REMOVE_PACKAGES
             }
             Self::PutFile(put) => {
                 let (head, name) = encode_target(&put.target);
@@ -431,6 +471,8 @@ impl Message {
             }
             KIND_BACKGROUND_DATA => Ok(Self::BackgroundData { payload: body }),
             KIND_SET_WIDGETS if body.len() >= SET_WIDGETS_FIXED_LEN => decode_widgets(&body).map(|widgets| Self::SetWidgets { widgets }),
+            KIND_INVENTORY if body.len() >= LIST_FIXED_LEN => decode_inventory(&body).map(|packages| Self::Inventory { packages }),
+            KIND_REMOVE_PACKAGES if body.len() >= LIST_FIXED_LEN => decode_names(&body).map(|names| Self::RemovePackages { names }),
             KIND_PUT_FILE if body.len() >= PUT_FILE_FIXED_LEN => {
                 let (target, name_end) = decode_target(&body, PUT_FILE_FIXED_LEN)?;
                 let (offset, total) = (u64_at(&body, 4), u64_at(&body, 12));
@@ -455,7 +497,9 @@ impl Message {
                 Ok(Self::ModuleResource { instance, name, data: body.split_off(name_end) })
             }
             KIND_STREAM_START | KIND_FRAME | KIND_STREAM_END | KIND_CLOCK_PROBE | KIND_CLOCK_REPLY | KIND_MODULE_DATA | KIND_PUT_FILE
-            | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE | KIND_SET_WIDGETS => Err(bad_length()),
+            | KIND_PUT_DONE | KIND_PUT_REFUSED | KIND_MODULE_RESOURCE | KIND_SET_WIDGETS | KIND_INVENTORY | KIND_REMOVE_PACKAGES => {
+                Err(bad_length())
+            }
             other => Err(ProtoError::UnknownKind(other)),
         }
     }
@@ -481,6 +525,55 @@ fn decode_target(body: &[u8], name_at: usize) -> Result<(FileTarget, usize), Pro
         _ => return Err(ProtoError::BadFileTarget),
     };
     Ok((target, name_end))
+}
+
+fn write_count(out: &mut Vec<u8>, count: usize) {
+    out.extend_from_slice(&u16::try_from(count).expect("lists hold at most u16::MAX items").to_le_bytes());
+    out.extend_from_slice(&[0, 0]);
+}
+
+fn write_name(out: &mut Vec<u8>, name: &str) {
+    out.push(u8::try_from(name.len()).expect("package file names are at most 255 bytes"));
+    out.extend_from_slice(name.as_bytes());
+}
+
+/// A name written by `write_name` at `at`, and where the next item starts.
+fn read_name(body: &[u8], at: usize) -> Result<(String, usize), ProtoError> {
+    let len = usize::from(*body.get(at).ok_or(ProtoError::BadList)?);
+    let name = body.get(at + 1..at + 1 + len).ok_or(ProtoError::BadList)?;
+    Ok((String::from_utf8(name.to_vec()).map_err(|_| ProtoError::TextNotUtf8)?, at + 1 + len))
+}
+
+fn decode_inventory(body: &[u8]) -> Result<Vec<HeldPackage>, ProtoError> {
+    let count = u16::from_le_bytes([body[0], body[1]]);
+    let mut at = LIST_FIXED_LEN;
+    let mut packages = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let digest = body.get(at..at + 8).ok_or(ProtoError::BadList)?;
+        let digest = u64::from_le_bytes(digest.try_into().expect("eight bytes"));
+        let (name, next) = read_name(body, at + 8)?;
+        packages.push(HeldPackage { name, digest });
+        at = next;
+    }
+    if at != body.len() {
+        return Err(ProtoError::BadList);
+    }
+    Ok(packages)
+}
+
+fn decode_names(body: &[u8]) -> Result<Vec<String>, ProtoError> {
+    let count = u16::from_le_bytes([body[0], body[1]]);
+    let mut at = LIST_FIXED_LEN;
+    let mut names = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (name, next) = read_name(body, at)?;
+        names.push(name);
+        at = next;
+    }
+    if at != body.len() {
+        return Err(ProtoError::BadList);
+    }
+    Ok(names)
 }
 
 fn decode_widgets(body: &[u8]) -> Result<Vec<WidgetSlot>, ProtoError> {
@@ -558,6 +651,14 @@ mod tests {
             ],
         });
         round_trip(Message::SetWidgets { widgets: vec![] });
+        round_trip(Message::Inventory {
+            packages: vec![
+                HeldPackage { name: "dev.glassdeck.clock.deck".into(), digest: 0x0123_4567_89ab_cdef },
+                HeldPackage { name: "converted.late-night.deck".into(), digest: 7 },
+            ],
+        });
+        round_trip(Message::Inventory { packages: vec![] });
+        round_trip(Message::RemovePackages { names: vec!["a.b.deck".into(), "c.d.deck".into()] });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
         round_trip(Message::PutFile(PutFile {
             target: FileTarget::Package("converted.late-night.deck".into()),

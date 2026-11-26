@@ -10,7 +10,7 @@ Turns a video file or a web page folder into a background `.deck`. Host only, Wi
 | `web(folder, entry, properties, out, details)` | Packs the whole folder under `web/`, with `entry` as the page to open |
 | `Details` | Id, title, `Origin`, optional preview image |
 | `EncodeSettings` | Re-encode bitrate |
-| `default_packages_dir()` | `%APPDATA%\Glassdeck\packages`, glassdeckd's own folder |
+| `cache_dir()` | `%LOCALAPPDATA%\Glassdeck\cache`, where streaming a wallpaper keeps the background it builds on first use |
 | `video::{probe, transcode, cover}` | Media Foundation probe and re-encode. `cover` crops to fill the panel |
 | `web_media::{probe, plan, convert}` | Media inside web pages |
 
