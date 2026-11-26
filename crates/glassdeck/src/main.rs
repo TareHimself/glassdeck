@@ -3,9 +3,11 @@
 
 mod client;
 mod flash_image;
+mod keyboard;
 mod picoboot;
 mod scanner;
 mod theme;
+mod usb_command;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -98,6 +100,9 @@ enum Command {
     /// The key scanner (the keyboard's RP2040), straight over USB
     #[command(subcommand)]
     Scanner(scanner::ScannerCommand),
+    /// The keyboard's Linux side, through its stock bridge on USB: versions, install, probe, backup
+    #[command(subcommand)]
+    Keyboard(keyboard::KeyboardCommand),
 }
 
 fn main() -> ExitCode {
@@ -114,6 +119,7 @@ fn run(command: Command) -> Result<()> {
     match command {
         Command::Status => status(),
         Command::Scanner(command) => scanner::run(command),
+        Command::Keyboard(command) => keyboard::run(command),
         Command::Streams => streams(),
         Command::Background { choice: None } => theme::show_background(),
         Command::Background { choice: Some(choice) } => theme::set_background(&choice),

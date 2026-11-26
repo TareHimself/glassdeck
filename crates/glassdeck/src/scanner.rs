@@ -13,8 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use glassdeck_scanner_proto::keymap::ProfileSettings;
 use glassdeck_scanner_proto::usb::{
-    Command, FIRMWARE_PACKET, Header, PID, REFINEMENT_RECORD_LEN, RefinementState, Reply,
-    RuntimeState, VID,
+    Command, FIRMWARE_PACKET, PID, REFINEMENT_RECORD_LEN, RefinementState, Reply, RuntimeState, VID,
 };
 use glassdeck_scanner_proto::usb_descriptors::{
     EP_COMMANDS_IN, EP_COMMANDS_OUT, INTERFACE_COMMANDS,
@@ -27,6 +26,7 @@ use crate::flash_image::{
     PARTITION_OFFSET,
 };
 use crate::picoboot::{self, BootRom, FLASH_SIZE, SECTOR};
+use crate::usb_command::{self, Pipe};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 /// How long the boot ROM may take to appear after the reboot, and its drive to mount.
@@ -100,13 +100,6 @@ pub fn run(command: ScannerCommand) -> Result<()> {
     }
 }
 
-/// One request/response exchange on the command interface.
-trait Pipe {
-    fn send(&mut self, bytes: &[u8]) -> Result<()>;
-    /// One IN transfer of up to a packet; may be empty (a zero-length packet).
-    fn receive(&mut self) -> Result<Vec<u8>>;
-}
-
 struct UsbPipe {
     out: nusb::Endpoint<Bulk, Out>,
     input: nusb::Endpoint<Bulk, In>,
@@ -142,6 +135,8 @@ impl UsbPipe {
 }
 
 impl Pipe for UsbPipe {
+    const PACKET: usize = FIRMWARE_PACKET;
+
     fn send(&mut self, bytes: &[u8]) -> Result<()> {
         let mut buf = Buffer::new(bytes.len());
         buf.extend_from_slice(bytes);
@@ -162,55 +157,8 @@ impl Pipe for UsbPipe {
     }
 }
 
-/// A request's bytes: the header packet, then the payload zero-padded to whole packets.
-fn request_bytes(command: Command, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Header::for_payload::<FIRMWARE_PACKET>(command as u8, payload.len())
-        .encode::<FIRMWARE_PACKET>()
-        .to_vec();
-    for chunk in payload.chunks(FIRMWARE_PACKET) {
-        let start = bytes.len();
-        bytes.extend_from_slice(chunk);
-        bytes.resize(start + FIRMWARE_PACKET, 0);
-    }
-    bytes
-}
-
-/// Sends `command`, then reads the answer, skipping the zero-length packets the firmware puts
-/// between and after packets.
 fn request(pipe: &mut impl Pipe, command: Command, payload: &[u8]) -> Result<(Reply, Vec<u8>)> {
-    pipe.send(&request_bytes(command, payload))?;
-    pipe.send(&[])?;
-    let header = loop {
-        let packet = pipe.receive()?;
-        if packet.is_empty() {
-            continue;
-        }
-        break Header::parse(&packet)
-            .with_context(|| format!("a {}-byte answer header", packet.len()))?;
-    };
-    let reply = match header.code {
-        0 => Reply::Nak,
-        1 => Reply::Ack,
-        other => bail!("the answer's reply code is {other}, neither ACK nor NAK"),
-    };
-    let mut payload = Vec::with_capacity(header.packets as usize * FIRMWARE_PACKET);
-    let mut got = 0;
-    while got < header.packets {
-        let packet = pipe.receive()?;
-        if !packet.is_empty() {
-            payload.extend_from_slice(&packet);
-            got += 1;
-        }
-    }
-    if payload.len() < header.bytes as usize {
-        bail!(
-            "the answer says {} bytes but carried {}",
-            header.bytes,
-            payload.len()
-        );
-    }
-    payload.truncate(header.bytes as usize);
-    Ok((reply, payload))
+    usb_command::request(pipe, command as u8, payload)
 }
 
 /// The answer's payload, or an error naming the command it refused.
@@ -657,7 +605,7 @@ fn restore(backup_dir: &Path, settings: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glassdeck_scanner_proto::usb::response_packets;
+    use glassdeck_scanner_proto::usb::{Header, response_packets};
     use std::collections::VecDeque;
 
     #[derive(Default)]
@@ -678,6 +626,8 @@ mod tests {
     }
 
     impl Pipe for Fake {
+        const PACKET: usize = FIRMWARE_PACKET;
+
         fn send(&mut self, bytes: &[u8]) -> Result<()> {
             self.sent.push(bytes.to_vec());
             Ok(())

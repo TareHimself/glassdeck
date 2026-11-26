@@ -1,6 +1,6 @@
 #!/bin/sh
 # Backs up the stock keyboard into /home/root/glassdeck-backup: every eMMC partition that fits,
-# gzipped, with its SHA-256, and a tarball of the system files the bootstrap touches. Reads the
+# gzipped in 64 MiB pieces (<name>.img.gz.000, ...; cat them to get one gzip), with its SHA-256, and a tarball of the system files the bootstrap touches. Reads the
 # eMMC and writes only that folder. The copy runs detached, so the package installs at once;
 # DONE appears when it's finished. Pull the folder back with the bridge's GET_FILE.
 OUT=${GLASSDECK_BACKUP_DIR:-/home/root/glassdeck-backup}
@@ -10,6 +10,7 @@ RESERVE_KB=${GLASSDECK_BACKUP_RESERVE_KB:-262144}
 BLOCKS=${GLASSDECK_BACKUP_BLOCKS:-mmcblk*p*}
 ONLY=${GLASSDECK_BACKUP_ONLY:-}
 WORKER=/tmp/glassdeck-backup-worker.sh
+CHUNK_KB=65536
 
 if [ "${1:-}" != "--worker" ]; then
     cp "$0" "$WORKER" && chmod +x "$WORKER"
@@ -65,33 +66,43 @@ backup_partition() {
         echo "$n skipped no-space" >> "$OUT/RESULTS"
         return
     fi
-    # The copy stops one byte past what fits, so it can never eat into the reserve.
-    limit=$(( ($(free_kb) - RESERVE_KB) * 1024 ))
-    log "$n ($label, $kb KiB): copying, at most $limit bytes"
-    dd if="/dev/$n" bs=1M 2>/dev/null | gzip -c | head -c $((limit + 1)) > "$OUT/$n.img.gz"
-    if [ "$(wc -c < "$OUT/$n.img.gz")" -gt "$limit" ]; then
-        rm -f "$OUT/$n.img.gz"
-        log "$n: removed, compressed it doesn't fit"
-        echo "$n skipped too-big" >> "$OUT/RESULTS"
-        return
-    fi
-    if ! gzip -t "$OUT/$n.img.gz" 2>/dev/null; then
-        rm -f "$OUT/$n.img.gz"
-        log "$n: removed, the compressed copy doesn't verify"
-        echo "$n skipped bad-gzip" >> "$OUT/RESULTS"
-        return
-    fi
+    # 64 MiB of partition per piece, so each file comes back in one bridge request. Each piece
+    # stops one byte past what fits, so the copy can never eat into the reserve.
+    pieces=$(( (kb + CHUNK_KB - 1) / CHUNK_KB ))
+    log "$n ($label, $kb KiB): copying in $pieces pieces"
+    i=0
+    while [ "$i" -lt "$pieces" ]; do
+        part="$OUT/$n.img.gz.$(printf %03d "$i")"
+        limit=$(( ($(free_kb) - RESERVE_KB) * 1024 ))
+        [ "$limit" -gt 0 ] || limit=0
+        dd if="/dev/$n" bs=1M skip=$((i * CHUNK_KB / 1024)) count=$((CHUNK_KB / 1024)) 2>/dev/null \
+            | gzip -c | head -c $((limit + 1)) > "$part"
+        if [ "$(wc -c < "$part")" -gt "$limit" ]; then
+            rm -f "$OUT/$n.img.gz."*
+            log "$n: removed, compressed it doesn't fit"
+            echo "$n skipped too-big" >> "$OUT/RESULTS"
+            return
+        fi
+        if ! gzip -t "$part" 2>/dev/null; then
+            rm -f "$OUT/$n.img.gz."*
+            log "$n: removed, piece $i doesn't verify"
+            echo "$n skipped bad-gzip" >> "$OUT/RESULTS"
+            return
+        fi
+        i=$((i + 1))
+    done
     raw=$(dd if="/dev/$n" bs=1M 2>/dev/null | sha256sum | cut -d' ' -f1)
-    unpacked=$(gzip -dc "$OUT/$n.img.gz" | sha256sum | cut -d' ' -f1)
+    unpacked=$(cat "$OUT/$n.img.gz."* | gzip -dc | sha256sum | cut -d' ' -f1)
     if [ "$raw" != "$unpacked" ]; then
-        rm -f "$OUT/$n.img.gz"
+        rm -f "$OUT/$n.img.gz."*
         log "$n: removed, the copy doesn't match the partition (it changed while copying?)"
         echo "$n skipped changed-while-copying" >> "$OUT/RESULTS"
         return
     fi
+    size=$(cat "$OUT/$n.img.gz."* | wc -c)
     echo "$raw  $n.img" >> "$OUT/SHA256SUMS"
-    echo "$n ok $label $((sectors * 512)) $(wc -c < "$OUT/$n.img.gz")" >> "$OUT/RESULTS"
-    log "$n: done, $(wc -c < "$OUT/$n.img.gz") bytes compressed"
+    echo "$n ok ${label:--} $((sectors * 512)) $pieces $size" >> "$OUT/RESULTS"
+    log "$n: done, $size bytes compressed"
 }
 
 log "backup started"

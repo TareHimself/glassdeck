@@ -1,6 +1,6 @@
 # glassdeck
 
-The CLI. Anything that reaches the keyboard goes through [glassdeckd](../glassdeckd) over its local API, using the types in [glassdeck-api](../glassdeck-api). Packing, converting, recording and listing monitors run in the CLI itself. Windows only.
+The CLI. Most of what reaches the keyboard goes through [glassdeckd](../glassdeckd) over its local API, using the types in [glassdeck-api](../glassdeck-api). Packing, converting, recording and listing monitors run in the CLI itself. Windows only.
 
 ## Commands
 
@@ -17,6 +17,20 @@ The CLI. Anything that reaches the keyboard goes through [glassdeckd](../glassde
 | `record <monitor>` | Records a monitor to an MP4 |
 
 `options` turns typed text into the JSON value an option's kind takes (`parse_typed`), so the theme only ever holds JSON.
+
+### Straight to the keyboard over USB
+
+These don't go through glassdeckd. They're for getting onto a stock keyboard and looking after its key scanner.
+
+| Command | What it does |
+|---|---|
+| `scanner version \| backup \| check-backup \| bootloader \| flash \| restore` | The key scanner (RP2040); see [firmware/README.md](../../firmware/README.md) |
+| `keyboard versions` | The stock bridge's bridge, display and OS versions, and free space |
+| `keyboard install <file.ipk>` | Uploads one `.ipk` to `/home/root`, where the stock system installs it as root, and waits for it to be picked up |
+| `keyboard probe` | Installs `target/packages/glassdeck-probe.ipk` and saves its report as `glassdeck-probe.txt` |
+| `keyboard backup <dir>` | Installs `glassdeck-backup.ipk`, waits for it, downloads every piece into a new folder and checks each partition against its SHA-256 |
+
+`keyboard` offers only these steps. It never uploads anything but a checked `.ipk` to `/home/root`, reads only the probe report and the backup folder, and deletes only the last probe report and the backup's `DONE` marker. The bridge itself can move any file under `/home`; this keeps that out of everyday reach.
 
 ## Native libraries
 
