@@ -3,6 +3,8 @@
 
 pub mod essl;
 mod native;
+pub mod pack;
+pub mod scene;
 
 use std::ffi::CString;
 use std::path::Path;
@@ -13,6 +15,7 @@ use serde::Deserialize;
 pub use native::Status;
 
 /// A module as source text. Modules load in order, so each may import the ones before it.
+#[derive(Clone, Copy)]
 pub struct Source<'a> {
     pub name: &'a str,
     pub path: &'a str,

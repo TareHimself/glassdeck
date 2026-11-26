@@ -39,3 +39,21 @@ impl FallbackScene {
         match self {}
     }
 }
+
+/// Scene backgrounds need the keyboard's GPU too.
+pub enum SceneBackground {}
+
+impl SceneBackground {
+    pub fn start(
+        _background: &Path,
+        _registrar: Registrar,
+        _mailbox: Arc<Mailbox>,
+        _stopped: impl FnOnce(anyhow::Error) + Send + 'static,
+    ) -> Result<Self> {
+        bail!("scene backgrounds render only on the keyboard; the preview shows black instead")
+    }
+
+    pub fn stop(self) {
+        match self {}
+    }
+}

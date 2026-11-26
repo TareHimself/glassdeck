@@ -1,5 +1,5 @@
-//! glassdeck-scene: the keyboard's own GPU renderer. For now it draws the built-in scene, shown
-//! whenever nothing else owns the screen, into buffers it hands the receiver's compositor.
+//! glassdeck-scene: the keyboard's own GPU renderer. It draws the built-in scene, shown whenever
+//! nothing else owns the screen, or a scene background, into buffers it hands the receiver's compositor.
 
 #[cfg(target_os = "linux")]
 mod compositor;
@@ -9,16 +9,21 @@ mod gpu;
 mod gradient;
 #[cfg(target_os = "linux")]
 mod program;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod script;
 
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "The keyboard's GPU renderer: draws the built-in scene for the receiver")]
+#[command(about = "The keyboard's GPU renderer: draws the built-in scene or a scene background for the receiver")]
 struct Cli {
     /// The receiver's compositor socket, which it passes when it starts us
     #[arg(long)]
     compositor_fd: Option<i32>,
-    /// Render size as a fraction of the panel; the display scales it up for free
+    /// Draw this scene background (.deckbg) instead of the built-in scene; it sets its own scale and frame rate
+    #[arg(long)]
+    scene: Option<std::path::PathBuf>,
+    /// The built-in scene's render size as a fraction of the panel; the display scales it up for free
     #[arg(long, default_value_t = 0.5)]
     scale: f32,
     /// The built-in scene drifts slowly enough that 30 looks the same as 60, at half the GPU time
@@ -27,10 +32,7 @@ struct Cli {
     /// Draw this many frames with no receiver, then print what they cost
     #[arg(long)]
     bench: Option<u32>,
-    /// Spike: draw this GLSL ES fragment shader, compiled from the Slang gradient, instead of the built-in one
-    #[arg(long)]
-    program: Option<std::path::PathBuf>,
-    /// Spike: draw one frame at 10 s and write it here as raw RGBA, to compare scenes
+    /// Draw one frame at 10 s and write it here as raw RGBA, to compare scenes
     #[arg(long)]
     snapshot: Option<std::path::PathBuf>,
 }
@@ -59,18 +61,19 @@ mod linux {
     use crate::compositor::{Compositor, Received};
     use crate::gpu::{Gpu, Target};
     use crate::gradient::Gradient;
-    use crate::program::Program;
+    use crate::program::SceneProgram;
 
     enum Scene {
         BuiltIn(Gradient),
-        Compiled(Program),
+        Background(Box<SceneProgram>),
     }
 
     impl Scene {
-        fn draw(&mut self, gl: &glow::Context, target: &Target, seconds: f32) -> Duration {
+        /// None: nothing changed, so the last frame still stands.
+        fn draw(&mut self, gl: &glow::Context, target: &Target, seconds: f32) -> Result<Option<Duration>> {
             match self {
-                Self::BuiltIn(gradient) => gradient.draw(gl, target, seconds),
-                Self::Compiled(program) => program.draw(gl, target, seconds),
+                Self::BuiltIn(gradient) => Ok(Some(gradient.draw(gl, target, seconds))),
+                Self::Background(scene) => scene.draw(gl, target, seconds),
             }
         }
     }
@@ -84,15 +87,16 @@ mod linux {
         ensure!(cli.scale > 0.0 && cli.scale <= 1.0, "--scale must be in (0, 1]");
         ensure!(cli.fps > 0, "--fps must be above 0");
         let gpu = Gpu::open()?;
-        let size = scaled(cli.scale);
-        let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
-        let mut scene = match &cli.program {
+        let (mut scene, scale, fps) = match &cli.scene {
             Some(path) => {
-                let fragment = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-                Scene::Compiled(Program::new(&gpu.gl, &fragment)?)
+                let scene = SceneProgram::open(&gpu.gl, path).with_context(|| format!("opening the scene {}", path.display()))?;
+                let (scale, fps) = (scene.plan.scale, scene.plan.frame_rate);
+                (Scene::Background(Box::new(scene)), scale, fps)
             }
-            None => Scene::BuiltIn(Gradient::new(&gpu.gl)?),
+            None => (Scene::BuiltIn(Gradient::new(&gpu.gl)?), cli.scale, cli.fps),
         };
+        let size = scaled(scale);
+        let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
         println!(
             "glassdeck-scene: {} at {}x{}, modifier {:#x}",
             gpu.renderer_name(),
@@ -107,12 +111,9 @@ mod linux {
             (Some(fd), None) => {
                 // SAFETY: the receiver hands us this socket at this number and nothing else owns it.
                 let compositor = unsafe { Compositor::from_fd(fd) };
-                present(&gpu, &targets, &mut scene, &compositor, cli.fps)
+                present(&gpu, &targets, &mut scene, &compositor, fps)
             }
-            (None, Some(frames)) => {
-                bench(&gpu, &targets, &mut scene, frames);
-                Ok(())
-            }
+            (None, Some(frames)) => bench(&gpu, &targets, &mut scene, frames),
             _ => bail!("give either --compositor-fd (from the receiver) or --bench"),
         }
     }
@@ -151,26 +152,32 @@ mod linux {
             }
             due = (due + period).max(Instant::now());
             let index = free.pop().expect("a free buffer, waited for above");
-            let took = scene.draw(&gpu.gl, &targets[index], started.elapsed().as_secs_f32());
-            stats.add(took, targets[index].layout.width, targets[index].layout.height);
-            compositor.present(ids[index])?;
+            match scene.draw(&gpu.gl, &targets[index], started.elapsed().as_secs_f32())? {
+                Some(took) => {
+                    stats.add(took, targets[index].layout.width, targets[index].layout.height);
+                    compositor.present(ids[index])?;
+                }
+                None => free.push(index),
+            }
         }
     }
 
-    fn bench(gpu: &Gpu, targets: &[Target], scene: &mut Scene, frames: u32) {
+    fn bench(gpu: &Gpu, targets: &[Target], scene: &mut Scene, frames: u32) -> Result<()> {
         let mut stats = Stats::new();
         let started = Instant::now();
         for frame in 0..frames {
             let target = &targets[frame as usize % targets.len()];
-            let took = scene.draw(&gpu.gl, target, started.elapsed().as_secs_f32());
-            stats.add(took, target.layout.width, target.layout.height);
+            if let Some(took) = scene.draw(&gpu.gl, target, started.elapsed().as_secs_f32())? {
+                stats.add(took, target.layout.width, target.layout.height);
+            }
         }
         stats.print();
+        Ok(())
     }
 
     fn snapshot(gpu: &Gpu, target: &Target, scene: &mut Scene, path: &std::path::Path) -> Result<()> {
         use glow::HasContext;
-        scene.draw(&gpu.gl, target, 10.0);
+        scene.draw(&gpu.gl, target, 10.0)?;
         let (w, h) = (target.layout.width, target.layout.height);
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         // SAFETY: the context is current and the target was just drawn.

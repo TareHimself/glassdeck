@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use glassdeck_package::{Content, Background, PANEL};
 use glassdeck_proto::Codec;
 
@@ -28,6 +28,7 @@ pub fn open(background: Background, looping: bool, web: WebEncoding) -> Result<S
             let entry = background.entry(&file).with_context(|| format!("the background has no {file}"))?;
             Ok(Source::Encoded(Box::new(FileSource::open(Media::BackgroundEntry { background, entry }, looping)?)))
         }
+        Content::Scene { .. } => bail!("{} is a scene, which the keyboard draws itself; it can't be streamed", background.manifest().title),
         Content::Web { entry, properties } => {
             let settings = EncoderSettings {
                 width: PANEL.0 as u32,

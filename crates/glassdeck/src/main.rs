@@ -35,10 +35,11 @@ enum Command {
     },
     /// Put a .deckbg, .deckmod or profile .json on the keyboard
     Deploy { file: PathBuf },
-    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod
+    /// Pack a module folder (module.json, keyboard.luau, optional host.luau and assets/) into a .deckmod,
+    /// or a scene folder (scene.slang, optional keyboard.luau) into a .deckbg
     Pack {
         folder: PathBuf,
-        /// Defaults to <folder>.deckmod
+        /// Defaults to <folder>.deckmod, or <folder>.deckbg for a scene
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -92,6 +93,13 @@ fn run(command: Command) -> Result<()> {
             println!("The keyboard installed {}", deploy(&file)?);
             Ok(())
         }
+        Command::Pack { folder, out } if glassdeck_slang::pack::is_scene_folder(&folder) => {
+            let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::EXTENSION));
+            let slang = glassdeck_slang::Slang::load(&slang_native()?)?;
+            let scene = glassdeck_slang::pack::pack_scene(&slang, &folder, &out)?;
+            println!("Packed the scene {} into {}", scene.manifest().title, out.display());
+            Ok(())
+        }
         Command::Pack { folder, out } => {
             let out = out.unwrap_or_else(|| folder.with_extension(glassdeck_package::MODULE_EXTENSION));
             let package = glassdeck_package::pack_folder(&folder, &out)?;
@@ -130,6 +138,15 @@ fn set_bg(choice: &str) -> Result<()> {
     };
     println!("{}{state}", describe_bg(&answer));
     Ok(())
+}
+
+/// Where glassdeck_slang and Slang's libraries are: GLASSDECK_SLANG_NATIVE, else beside this program.
+fn slang_native() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("GLASSDECK_SLANG_NATIVE") {
+        return Ok(PathBuf::from(dir));
+    }
+    let exe = std::env::current_exe().context("finding this program")?;
+    Ok(exe.parent().context("this program has no folder")?.to_path_buf())
 }
 
 fn deploy(file: &Path) -> Result<String> {

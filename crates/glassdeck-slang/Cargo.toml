@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+glassdeck-package.workspace = true
 libloading = "0.8"
 serde.workspace = true
 serde_json.workspace = true

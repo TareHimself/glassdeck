@@ -9,7 +9,7 @@ use anyhow::Result;
 
 pub use compositor::{Compositor, Registrar};
 pub use mpp::Decoder;
-pub use scene::FallbackScene;
+pub use scene::{FallbackScene, SceneBackground};
 pub use web::WebBackground;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";

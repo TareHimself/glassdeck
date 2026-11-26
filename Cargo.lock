@@ -640,6 +640,7 @@ dependencies = [
  "glassdeck-capture",
  "glassdeck-convert",
  "glassdeck-package",
+ "glassdeck-slang",
  "serde",
  "serde_json",
  "ureq",
@@ -737,11 +738,15 @@ dependencies = [
  "anyhow",
  "clap",
  "drm",
+ "glassdeck-luau",
+ "glassdeck-package",
  "glassdeck-proto",
  "glow",
  "khronos-egl",
  "libloading",
+ "mlua",
  "rustix",
+ "serde_json",
 ]
 
 [[package]]
@@ -749,6 +754,7 @@ name = "glassdeck-slang"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glassdeck-package",
  "libloading",
  "serde",
  "serde_json",

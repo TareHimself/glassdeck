@@ -4,6 +4,7 @@
 mod manifest;
 mod module;
 mod resource;
+mod scene;
 mod zip;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ pub use module::{
     Size, is_module, pack_folder,
 };
 pub use resource::{Resource, ResourceKind, ResourceName, literal_resources};
+pub use scene::{InputField, InputKind, SCENE_API, SCENE_FRAGMENT, SCENE_PLAN, SCENE_SCRIPT, ScenePlan};
 pub use zip::{ALIGNMENT, Entry, check_name};
 
 pub const EXTENSION: &str = "deckbg";

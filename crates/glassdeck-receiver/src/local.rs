@@ -1,4 +1,4 @@
-//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web.
+//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web, scenes through glassdeck-scene.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
-use crate::platform::{self, Decoder, Registrar, WebBackground};
+use crate::platform::{self, Decoder, Registrar, SceneBackground, WebBackground};
 use crate::playout::{PlayoutClock, wait_until};
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
@@ -23,6 +23,8 @@ pub enum LocalBackground {
     Video { stop: Arc<AtomicBool>, thread: JoinHandle<()> },
     /// Rendered by glassdeck-local-web
     Web(WebBackground),
+    /// Drawn by glassdeck-scene
+    Scene(SceneBackground),
 }
 
 impl LocalBackground {
@@ -37,6 +39,7 @@ impl LocalBackground {
         let entry = match &background.manifest().content {
             Content::Video { file, .. } => background.entry(file).context("the background's video is missing")?,
             Content::Web { .. } => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
+            Content::Scene { .. } => return SceneBackground::start(path, registrar, mailbox, stopped).map(Self::Scene),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
@@ -61,6 +64,7 @@ impl LocalBackground {
                 }
             }
             Self::Web(web) => web.stop(),
+            Self::Scene(scene) => scene.stop(),
         }
     }
 }
