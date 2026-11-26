@@ -3,6 +3,7 @@
 //! speaks them. Ported from Keyglass (`keyboard/firmware`, MIT OR Apache-2.0); see `docs/protocol/uart.md` there.
 
 pub mod hdlc;
+pub mod keymap;
 pub mod serial;
 pub mod usb;
 
