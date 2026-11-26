@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::{Context, Result};
-use glassdeck_package::{EXTENSION, MODULE_EXTENSION};
+use glassdeck_package::{EXTENSION, MODULE_EXTENSION, check_file_name};
 use glassdeck_proto::{FileTarget, LARGE_FILE_BYTES, Message, PutFile};
 
 use crate::director::{SharedDirector, lock};
@@ -134,19 +134,13 @@ fn step(phase: Phase, put: &PutFile) -> (Phase, Vec<Effect>) {
     (Phase::Idle, effects)
 }
 
-/// Only a plain file name with its kind's extension, so nothing lands outside the keyboard's folders.
 fn check_name(target: &FileTarget) -> Result<(), String> {
     let (name, extension) = match target {
         FileTarget::Background(name) => (name, EXTENSION),
         FileTarget::Module(name) => (name, MODULE_EXTENSION),
         FileTarget::Profile => return Ok(()),
     };
-    let plain = !name.starts_with('.') && !name.contains(['/', '\\', ':']) && Path::new(name).file_name() == Some(name.as_ref());
-    let suffix = format!(".{extension}");
-    match plain && name.len() > suffix.len() && name.ends_with(&suffix) {
-        true => Ok(()),
-        false => Err(format!("{name:?} isn't a plain .{extension} file name")),
-    }
+    check_file_name(name, extension).map_err(|e| format!("{e:#}"))
 }
 
 /// One connection's uploads.
@@ -280,8 +274,8 @@ mod tests {
             (Phase::Idle, piece("a.deckmod", 0, 4, 10), receiving("a.deckmod", 4, 10), vec![Create, Append]),
             (Phase::Idle, piece("a.deckmod", 0, 10, 10), Phase::Idle, vec![Create, Append, Install]),
             (Phase::Idle, piece("a.deckmod", 0, 0, 0), Phase::Idle, vec![Create, Append, Install]),
-            (Phase::Idle, piece("../a.deckmod", 0, 4, 10), refusing("\"../a.deckmod\" isn't a plain .deckmod file name"), vec![]),
-            (Phase::Idle, piece("a.deckbg", 0, 4, 10), refusing("\"a.deckbg\" isn't a plain .deckmod file name"), vec![]),
+            (Phase::Idle, piece("../a.deckmod", 0, 4, 10), refusing("\"../a.deckmod\" is not a plain file name"), vec![]),
+            (Phase::Idle, piece("a.deckbg", 0, 4, 10), refusing("\"a.deckbg\" does not end in .deckmod"), vec![]),
             (Phase::Idle, piece("a.deckmod", 4, 4, 10), refusing("a piece at byte 4 arrived with no start"), vec![]),
             (
                 Phase::Idle,

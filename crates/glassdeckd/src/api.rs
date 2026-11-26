@@ -1,66 +1,51 @@
-//! The local API: HTTP on 127.0.0.1, a random port and token written to `api.json`. Routes exist for
-//! what the CLI does; more come with the clients that need them.
+//! The local API: HTTP on 127.0.0.1 at a random port, with the port and token written to `api.json`.
+//! The routes and their types are in glassdeck-api. Handlers run glassdeckd's blocking work on
+//! tokio's blocking pool; `/events` streams what changes as it happens.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use axum::extract::{FromRequest, FromRequestParts, Request, State};
+use axum::http::header::AUTHORIZATION;
+use axum::middleware::{self, Next};
+use axum::response::sse::{self, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, put};
+use axum::{Json, Router};
+use glassdeck_api::{
+    API_FORMAT_VERSION, ApiFile, BgChosen, BgView, Deploy, Deployed, ErrorCode, Event, LinkStatus, OptionSet, OptionsOwner,
+    OptionsView, RunsOn, SetBg, SetOption, ShowState, Status, StreamEntry, StreamMode, StreamState, Streams,
+};
 use glassdeck_capture::monitors;
-use glassdeck_luau::options::{OptionsScript, Panel};
+use glassdeck_luau::options::{OptionValue, OptionsScript, Panel, Values};
 use glassdeck_package::{Background, CanvasFiles};
 use glassdeck_proto::LARGE_FILE_BYTES;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tiny_http::{Header, Method, Request, Response, Server};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 use crate::deploy;
+use crate::error::{Failure, answer, bad_request, conflict, not_found};
 use crate::link::Uplink;
-use crate::module_host::{HostCommand, CanvasSelection};
-use crate::options::{OptionsStore, panel_json, parse_typed};
-use crate::runner::{PAUSED_FOR_UPLOAD, Runner, RunnerEvent};
+use crate::module_host::{CanvasSelection, HostCommand};
+use crate::options::{OptionsStore, panel_view};
+use crate::runner::{Runner, RunnerEvent};
 use crate::streams::{self, Choice, Effect, MonitorStream, StreamName, effects, monitor_streams};
 
-pub const API_FORMAT_VERSION: u32 = 1;
-/// How long starting a source may take before the CLI is told it's still starting (CEF is the slow one).
+/// How long starting a source may take before the client is told it's still starting (CEF is the slow one).
 const START_WAIT: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(100);
 /// Longer than the runner gives a worker to stop before killing it.
 const STOP_WAIT: Duration = Duration::from_secs(15);
-
-#[derive(Serialize)]
-struct ApiFile<'a> {
-    format: u32,
-    port: u16,
-    token: &'a str,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetBg {
-    bg: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Deploy {
-    path: PathBuf,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetOption {
-    /// A widget's place in the profile; without it, the selected background
-    #[serde(default)]
-    widget: Option<usize>,
-    path: String,
-    /// As typed; `null` goes back to the default
-    value: Option<String>,
-}
+/// Events a slow `/events` client may fall behind by before it's sent the whole status again.
+pub const EVENT_BACKLOG: usize = 64;
+const API_THREADS: usize = 2;
+const MAX_BLOCKING_THREADS: usize = 16;
 
 pub struct Api {
     pub token: String,
@@ -75,10 +60,13 @@ pub struct Api {
     /// Where the `bg` choice is remembered across restarts
     pub bg_file: PathBuf,
     pub bg: Mutex<Option<Choice>>,
+    /// Held while a background choice is carried out, so two choices never interleave their effects
+    pub choosing: Mutex<()>,
     /// glassdeckd's own copies of canvas backgrounds that have options or a host half
     pub canvases: PathBuf,
     pub options: Mutex<OptionsStore>,
-    pub module_host: Mutex<Sender<HostCommand>>,
+    pub module_host: Sender<HostCommand>,
+    pub events: broadcast::Sender<Event>,
 }
 
 /// Held for the length of a large upload.
@@ -98,87 +86,77 @@ impl Drop for UploadPause<'_> {
     }
 }
 
+/// A JSON body, refused as a bad request when it doesn't parse.
+#[derive(FromRequest)]
+#[from_request(via(Json), rejection(Failure))]
+struct Body<T>(T);
+
+/// A path parameter, refused as a bad request when it doesn't parse.
+#[derive(FromRequestParts)]
+#[from_request(via(axum::extract::Path), rejection(Failure))]
+struct Param<T>(T);
+
+type Reply<T> = Result<Json<T>, Failure>;
+
 impl Api {
     /// Serves forever on this thread.
     pub fn serve(self, api_file: &Path) -> Result<()> {
-        let server = Server::http("127.0.0.1:0").map_err(|e| anyhow!("starting the local API: {e}"))?;
-        let port = server.server_addr().to_ip().context("the API listens on an IP address")?.port();
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(API_THREADS)
+            .max_blocking_threads(MAX_BLOCKING_THREADS)
+            .thread_name("api")
+            .enable_io()
+            .enable_time()
+            .build()
+            .context("starting the API's runtime")?
+            .block_on(self.serve_on(api_file))
+    }
+
+    async fn serve_on(self, api_file: &Path) -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.context("starting the local API")?;
+        let port = listener.local_addr()?.port();
         if let Some(folder) = api_file.parent() {
             std::fs::create_dir_all(folder)?;
         }
-        let file = ApiFile { format: API_FORMAT_VERSION, port, token: &self.token };
+        let file = ApiFile { format: API_FORMAT_VERSION, port, token: self.token.clone() };
         std::fs::write(api_file, serde_json::to_vec_pretty(&file)?).with_context(|| format!("writing {}", api_file.display()))?;
         println!("API: http://127.0.0.1:{port} (token in {})", api_file.display());
-        let api = Arc::new(self);
-        for request in server.incoming_requests() {
-            let api = Arc::clone(&api);
-            thread::spawn(move || api.handle(request));
-        }
-        Ok(())
+        axum::serve(listener, router(Arc::new(self))).await.context("serving the local API")
     }
 
-    fn handle(&self, mut request: Request) {
-        let expected = format!("Bearer {}", self.token);
-        let authorized = request.headers().iter().any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected);
-        let (status, body) = if authorized {
-            match self.route(&mut request) {
-                Ok(body) => (200, body),
-                Err(e) => (400, json!({ "error": format!("{e:#}") })),
-            }
-        } else {
-            (401, json!({ "error": "missing or wrong token; it's in api.json" }))
+    fn publish(&self, event: Event) {
+        let _ = self.events.send(event);
+    }
+
+    fn status(&self) -> Status {
+        Status {
+            link: LinkStatus { keyboard: self.keyboard.to_string(), connected: self.uplink.is_connected() },
+            bg: self.bg_view(),
+            stream: self.runner.status(),
+        }
+    }
+
+    fn streams(&self) -> Result<Streams> {
+        let shown = match &*self.bg.lock().expect("bg poisoned") {
+            Some(Choice::Stream(name)) if self.runner.status().worker.is_some() => Some(name.clone()),
+            _ => None,
         };
-        let header = Header::from_bytes("Content-Type", "application/json").expect("a valid header");
-        let _ = request.respond(Response::from_string(body.to_string()).with_status_code(status).with_header(header));
-    }
-
-    fn route(&self, request: &mut Request) -> Result<serde_json::Value> {
-        match (request.method(), request.url()) {
-            (Method::Get, "/status") => Ok(json!({
-                "link": { "keyboard": self.keyboard.to_string(), "connected": self.uplink.is_connected() },
-                "bg": self.bg_json(),
-                "stream": self.runner.status(),
-            })),
-            (Method::Get, "/streams") => {
-                let shown = match &*self.bg.lock().expect("bg poisoned") {
-                    Some(Choice::Stream(name)) if self.runner.status().worker.is_some() => Some(name.clone()),
-                    _ => None,
-                };
-                let streams: Vec<serde_json::Value> = monitor_streams(&monitors::enumerate()?)
-                    .into_iter()
-                    .map(|s| json!({ "name": s.name.as_str(), "mode": "live", "from": "built in", "shown": shown.as_ref() == Some(&s.name) }))
-                    .collect();
-                Ok(json!({ "streams": streams }))
-            }
-            (Method::Get, "/bg") => Ok(self.bg_json()),
-            (Method::Put, "/bg") => {
-                let SetBg { bg } = serde_json::from_slice(&body(request)?).context("reading the bg request")?;
-                self.choose(Choice::parse(&bg)?)
-            }
-            (Method::Get, "/options") => self.options_view(),
-            (Method::Get, url) if url.starts_with("/options?widget=") => {
-                let index = url.trim_start_matches("/options?widget=").parse().context("a widget's place in the profile is a number")?;
-                self.widget_options_view(index)
-            }
-            (Method::Put, "/options") => {
-                let SetOption { widget, path, value } = serde_json::from_slice(&body(request)?).context("reading the options request")?;
-                match widget {
-                    Some(index) => self.set_widget_option(index, &path, value.as_deref()),
-                    None => self.set_option(&path, value.as_deref()),
-                }
-            }
-            (Method::Put, "/deploy") => {
-                let Deploy { path } = serde_json::from_slice(&body(request)?).context("reading the deploy request")?;
-                self.deploy(&path)
-            }
-            (method, url) => bail!("no route {method} {url}"),
-        }
+        let streams = monitor_streams(&monitors::enumerate()?)
+            .into_iter()
+            .map(|s| StreamEntry {
+                name: s.name.as_str().to_owned(),
+                mode: StreamMode::Live,
+                from: "built in".to_owned(),
+                shown: shown.as_ref() == Some(&s.name),
+            })
+            .collect();
+        Ok(Streams { streams })
     }
 
     /// Installs a background, module or profile on the keyboard, then keeps glassdeckd's own copy.
     /// Answers once the keyboard has the file in place.
-    fn deploy(&self, path: &Path) -> Result<serde_json::Value> {
-        let target = deploy::target_for(path, &self.modules)?;
+    fn deploy(&self, path: &Path) -> Result<Deployed> {
+        let target = deploy::target_for(path, &self.modules).map_err(|e| bad_request(format!("{e:#}")))?;
         let sending = deploy::keyboard_file(&target, path, &self.staging)?;
         let size = std::fs::metadata(sending.path()).with_context(|| format!("reading {}", sending.path().display()))?.len();
         let _pause = (size >= LARGE_FILE_BYTES).then(|| self.pause_for_upload()).transpose()?;
@@ -186,12 +164,15 @@ impl Api {
         answered.recv().context("the Link stopped before the keyboard answered")??;
         deploy::keep_locally(&target, path, &self.modules, &self.profile, &self.canvases)?;
         println!("Deployed {target}");
+        let _choosing = self.choosing.lock().expect("choosing poisoned");
         if let glassdeck_proto::FileTarget::Background(name) = &target
             && matches!(&*self.bg.lock().expect("bg poisoned"), Some(Choice::Background(chosen)) if chosen == name)
         {
             self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&Choice::Background(name.clone()))));
         }
-        Ok(json!({ "deployed": target.to_string() }))
+        let deployed = target.to_string();
+        self.publish(Event::Deployed { deployed: deployed.clone() });
+        Ok(Deployed { deployed })
     }
 
     /// The keyboard falls back to its own background, and the transfer gets the whole Link.
@@ -204,16 +185,17 @@ impl Api {
         Ok(UploadPause { api: self })
     }
 
-    fn bg_json(&self) -> serde_json::Value {
+    fn bg_view(&self) -> BgView {
         match &*self.bg.lock().expect("bg poisoned") {
-            Some(choice) => json!({ "bg": choice.to_string(), "runs_on": choice.runs_on() }),
-            None => json!({ "bg": null, "runs_on": "keyboard" }),
+            Some(choice) => BgView { bg: Some(choice.to_string()), runs_on: choice.runs_on() },
+            None => BgView { bg: None, runs_on: RunsOn::Keyboard },
         }
     }
 
     /// What glassdeckd remembered, applied at start-up without waiting: a stream starts once the
     /// keyboard connects, and a keyboard choice is sent on connect.
     pub fn restore(&self) -> Result<()> {
+        let _choosing = self.choosing.lock().expect("choosing poisoned");
         let Some(choice) = streams::load(&self.bg_file)? else { return Ok(()) };
         for effect in effects(&choice) {
             match effect {
@@ -222,19 +204,24 @@ impl Api {
                 Effect::ShowStream(name) => self.runner.send(RunnerEvent::Start(self.find_stream(&name)?.request()))?,
             }
         }
-        println!("Background: {choice} (on the {})", choice.runs_on());
+        let on = match choice.runs_on() {
+            RunsOn::Keyboard => "keyboard",
+            RunsOn::Host => "host",
+        };
+        println!("Background: {choice} (on the {on})");
         self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&choice)));
         *self.bg.lock().expect("bg poisoned") = Some(choice);
         Ok(())
     }
 
     /// Shows `choice` and remembers it. A stream is looked up first, so an unknown name changes nothing.
-    fn choose(&self, choice: Choice) -> Result<serde_json::Value> {
+    fn choose(&self, choice: Choice) -> Result<BgChosen> {
+        let _choosing = self.choosing.lock().expect("choosing poisoned");
         let stream = match &choice {
             Choice::Stream(name) => Some(self.find_stream(name)?),
             Choice::BuiltIn | Choice::Background(_) => None,
         };
-        let mut state = "shown";
+        let mut state = ShowState::Shown;
         for effect in effects(&choice) {
             match effect {
                 Effect::StopStream => self.stop_stream()?,
@@ -245,7 +232,8 @@ impl Api {
         streams::save(&self.bg_file, &choice)?;
         self.tell_module_host(HostCommand::Canvas(self.canvas_selection(&choice)));
         *self.bg.lock().expect("bg poisoned") = Some(choice.clone());
-        Ok(json!({ "bg": choice.to_string(), "runs_on": choice.runs_on(), "state": state }))
+        self.publish(Event::Bg { bg: self.bg_view() });
+        Ok(BgChosen { bg: choice.to_string(), runs_on: choice.runs_on(), state })
     }
 
     /// The selected canvas for the module host, when glassdeckd has a copy (canvases with options or a host half).
@@ -256,7 +244,7 @@ impl Api {
     }
 
     fn tell_module_host(&self, command: HostCommand) {
-        if self.module_host.lock().expect("module host sender poisoned").send(command).is_err() {
+        if self.module_host.send(command).is_err() {
             eprintln!("error: the module host has stopped");
         }
     }
@@ -264,14 +252,14 @@ impl Api {
     /// The selected background's options: its name, its options.luau and the first pass.
     fn selected_options(&self) -> Result<(String, OptionsScript, Panel)> {
         let choice = self.bg.lock().expect("bg poisoned").clone();
-        let Some(Choice::Background(name)) = choice else { bail!("the background isn't a canvas, so it has no options") };
+        let Some(Choice::Background(name)) = choice else { return Err(not_found("the background isn't a canvas, so it has no options")) };
         let path = self.canvases.join(&name);
         if !path.is_file() {
-            bail!("{name} has no options");
+            return Err(not_found(format!("{name} has no options")));
         }
         let background = Background::open(&path)?;
         let files = CanvasFiles::read(&background)?;
-        let entry = files.plan.options.as_deref().with_context(|| format!("{name} has no options"))?;
+        let entry = files.plan.options.as_deref().ok_or_else(|| not_found(format!("{name} has no options")))?;
         let entry = background.entry(entry).with_context(|| format!("{name} has no {entry}"))?;
         let script = OptionsScript::new(&String::from_utf8(background.read_entry(entry)?).context("options.luau isn't UTF-8")?);
         let first = script.first_pass()?;
@@ -279,134 +267,220 @@ impl Api {
     }
 
     /// The panel as the user would see it now: rerun with the stored values, so visibility is current.
-    fn options_view(&self) -> Result<serde_json::Value> {
+    fn bg_options(&self) -> Result<OptionsView> {
         let (name, script, first) = self.selected_options()?;
         let resolved = first.resolve(&self.options.lock().expect("options poisoned").chosen(&name, &first)?);
         let panel = script.run(&first, &resolved.values)?;
-        let mut view = panel_json(&panel, &resolved.values);
-        view["background"] = json!(name);
-        view["dropped"] = json!(resolved.dropped);
-        Ok(view)
+        Ok(OptionsView { owner: OptionsOwner::Background { name }, items: panel_view(&panel, &resolved.values), dropped: resolved.dropped })
     }
 
-    fn set_option(&self, path: &str, typed: Option<&str>) -> Result<serde_json::Value> {
+    fn set_bg_option(&self, set: &SetOption) -> Result<OptionSet> {
         let (name, script, first) = self.selected_options()?;
-        let option = first.options().into_iter().find(|o| o.path == path).with_context(|| format!("{name} has no option {path}"))?;
-        let value = typed.map(|text| parse_typed(&option.kind, text)).transpose().with_context(|| path.to_owned())?;
+        let owner = OptionsOwner::Background { name: name.clone() };
+        let (value, shown) = checked_value(&owner, &first, set)?;
         let store = self.options.lock().expect("options poisoned");
-        store.set(&name, &first, path, value)?;
-        let resolved = first.resolve(&store.chosen(&name, &first)?);
-        drop(store);
+        let resolved = first.resolve(&with_choice(store.chosen(&name, &first)?, &set.path, value.clone()));
         script.run(&first, &resolved.values)?;
-        self.tell_module_host(HostCommand::CanvasOptionsChanged(BTreeSet::from([path.to_owned()])));
-        Ok(json!({ "background": name, "option": path, "value": resolved.values.get(path).map(|v| v.to_json()) }))
+        store.set(&name, &first, &set.path, value)?;
+        drop(store);
+        self.tell_module_host(HostCommand::CanvasOptionsChanged(BTreeSet::from([set.path.clone()])));
+        self.publish(Event::Options { owner: owner.clone() });
+        Ok(OptionSet { owner, path: set.path.clone(), value: shown })
     }
 
-    /// A placed widget's options: its label, options.luau, first pass, and the values in its profile entry.
-    fn widget_options(&self, index: usize) -> Result<(String, OptionsScript, Panel, glassdeck_luau::options::Values)> {
+    /// A placed widget's options: whose they are, its options.luau, first pass, and the values in its profile entry.
+    fn widget_options_of(&self, index: u32) -> Result<(OptionsOwner, OptionsScript, Panel, Values)> {
         let packages = crate::module_host::installed(&self.modules)?;
         let profile = glassdeck_luau::profile::Profile::read(&self.profile, glassdeck_luau::profile::WidgetArea::of_panel().size, |id| {
             packages.get(id).map(|p| p.manifest().clone())
         })?;
         let widget = profile
             .widgets
-            .get(index)
-            .with_context(|| format!("the profile has {} widgets, so there's no widget {index}", profile.widgets.len()))?;
-        let label = format!("widget {index} ({})", widget.module);
-        let source = packages[&widget.module].options_script()?.with_context(|| format!("{label} has no options"))?;
+            .get(index as usize)
+            .ok_or_else(|| not_found(format!("the profile has {} widgets, so there's no widget {index}", profile.widgets.len())))?;
+        let owner = OptionsOwner::Widget { index, module: widget.module.to_string() };
+        let source = packages[&widget.module].options_script()?.ok_or_else(|| not_found(format!("{owner} has no options")))?;
         let script = OptionsScript::new(&source);
         let first = script.first_pass()?;
-        let chosen = crate::options::read_values(&label, &first, widget.options.iter());
-        Ok((label, script, first, chosen))
+        let chosen = crate::options::read_values(&owner.to_string(), &first, widget.options.iter());
+        Ok((owner, script, first, chosen))
     }
 
-    fn widget_options_view(&self, index: usize) -> Result<serde_json::Value> {
-        let (label, script, first, chosen) = self.widget_options(index)?;
+    fn widget_options(&self, index: u32) -> Result<OptionsView> {
+        let (owner, script, first, chosen) = self.widget_options_of(index)?;
         let resolved = first.resolve(&chosen);
         let panel = script.run(&first, &resolved.values)?;
-        let mut view = panel_json(&panel, &resolved.values);
-        view["background"] = json!(label);
-        view["dropped"] = json!(resolved.dropped);
-        Ok(view)
+        Ok(OptionsView { owner, items: panel_view(&panel, &resolved.values), dropped: resolved.dropped })
     }
 
     /// Writes the value into glassdeckd's profile; the module host sees the change and restarts that widget's host side.
-    fn set_widget_option(&self, index: usize, path: &str, typed: Option<&str>) -> Result<serde_json::Value> {
-        let (label, script, first, _) = self.widget_options(index)?;
-        let option = first.options().into_iter().find(|o| o.path == path).with_context(|| format!("{label} has no option {path}"))?;
-        let value = typed.map(|text| parse_typed(&option.kind, text)).transpose().with_context(|| path.to_owned())?;
-        if let Some(value) = &value
-            && let Some(why) = option.kind.refuses(value)
-        {
-            bail!("{path}: {why}");
-        }
+    fn set_widget_option(&self, index: u32, set: &SetOption) -> Result<OptionSet> {
+        let (owner, script, first, chosen) = self.widget_options_of(index)?;
+        let (value, shown) = checked_value(&owner, &first, set)?;
+        script.run(&first, &first.resolve(&with_choice(chosen, &set.path, value.clone())).values)?;
         let text = std::fs::read_to_string(&self.profile).with_context(|| format!("reading {}", self.profile.display()))?;
         let mut profile: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing {}", self.profile.display()))?;
-        let entry = profile["widgets"].get_mut(index).with_context(|| format!("the profile has no widget {index}"))?;
+        let entry = profile["widgets"].get_mut(index as usize).with_context(|| format!("the profile has no widget {index}"))?;
         let options = entry.as_object_mut().context("a widget entry is an object")?.entry("options").or_insert_with(|| json!({}));
         let options = options.as_object_mut().context("a widget's options are an object")?;
         match &value {
-            Some(value) => options.insert(path.to_owned(), value.to_json()),
-            None => options.remove(path),
+            Some(value) => options.insert(set.path.clone(), value.to_json()),
+            None => options.remove(&set.path),
         };
         let staging = self.profile.with_extension("json.tmp");
         std::fs::write(&staging, serde_json::to_vec_pretty(&profile)?).with_context(|| format!("writing {}", staging.display()))?;
         std::fs::rename(&staging, &self.profile).with_context(|| format!("moving {} into place", self.profile.display()))?;
-        let (_, _, _, chosen) = self.widget_options(index)?;
-        script.run(&first, &first.resolve(&chosen).values)?;
-        let shown = value.map_or_else(|| option.kind.default_value().to_json(), |v| v.to_json());
-        Ok(json!({ "background": label, "option": path, "value": shown }))
+        self.publish(Event::Options { owner: owner.clone() });
+        Ok(OptionSet { owner, path: set.path.clone(), value: shown })
     }
 
     fn find_stream(&self, name: &StreamName) -> Result<MonitorStream> {
         let streams = monitor_streams(&monitors::enumerate()?);
         let listed = streams.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
-        streams.into_iter().find(|s| s.name == *name).ok_or_else(|| anyhow!("no stream named {name}; there are: {listed}"))
+        streams.into_iter().find(|s| s.name == *name).ok_or_else(|| not_found(format!("no stream named {name}; there are: {listed}")))
     }
 
     fn stop_stream(&self) -> Result<()> {
         self.runner.send(RunnerEvent::Stop)?;
         let deadline = Instant::now() + STOP_WAIT;
-        while self.runner.status().state != "idle" {
-            if Instant::now() > deadline {
-                bail!("the stream is still stopping");
-            }
-            thread::sleep(POLL);
+        match self.runner.status.wait_for(deadline, |now| (now.state == StreamState::Idle).then_some(())) {
+            Some(()) => Ok(()),
+            None => Err(conflict("the stream is still stopping")),
         }
-        Ok(())
     }
 
     /// Starts the stream and waits until it shows, fails, or is still starting after `START_WAIT`.
-    fn show(&self, stream: &MonitorStream) -> Result<&'static str> {
+    fn show(&self, stream: &MonitorStream) -> Result<ShowState> {
         let before = self.runner.status();
         self.runner.send(RunnerEvent::Start(stream.request()))?;
-        let deadline = Instant::now() + START_WAIT;
-        while Instant::now() < deadline {
-            thread::sleep(POLL);
-            let now = self.runner.status();
+        let reached = self.runner.status.wait_for(Instant::now() + START_WAIT, |now| {
+            if *now == before {
+                return None;
+            }
             let new_worker = now.worker.is_some() && now.worker != before.worker;
             if new_worker && now.streaming {
-                return Ok("shown");
+                return Some(Ok(ShowState::Shown));
             }
-            if let Some((worker, said)) = &now.last_ended
+            if let Some(ended) = &now.last_ended
                 && now.last_ended != before.last_ended
-                && Some(*worker) != before.worker
+                && Some(ended.worker) != before.worker
             {
-                bail!("stream:{} {said}", stream.name);
+                return Some(Err(ended.said.clone()));
             }
-            if now.state == "waiting for the keyboard" {
-                return Ok("waiting for the keyboard");
+            match now.state {
+                StreamState::WaitingForKeyboard => Some(Ok(ShowState::WaitingForKeyboard)),
+                StreamState::PausedForUpload => Some(Ok(ShowState::AfterUpload)),
+                StreamState::Idle | StreamState::Running => None,
             }
-            if now.state == PAUSED_FOR_UPLOAD {
-                return Ok("after the upload");
-            }
+        });
+        match reached {
+            Some(Ok(state)) => Ok(state),
+            Some(Err(said)) => bail!("stream:{} {said}", stream.name),
+            None => Ok(ShowState::Starting),
         }
-        Ok("starting")
     }
 }
 
-fn body(request: &mut Request) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    request.as_reader().read_to_end(&mut bytes).context("reading the request body")?;
-    Ok(bytes)
+fn router(api: Arc<Api>) -> Router {
+    Router::new()
+        .route("/status", get(status))
+        .route("/streams", get(list_streams))
+        .route("/bg", get(bg).put(set_bg))
+        .route("/bg/options", get(bg_options).put(set_bg_option))
+        .route("/widgets/{index}/options", get(widget_options).put(set_widget_option))
+        .route("/deploy", put(deploy_file))
+        .route("/events", get(events))
+        .fallback(|| async { answer(ErrorCode::NotFound, "no such route".to_owned()) })
+        .method_not_allowed_fallback(|| async { answer(ErrorCode::MethodNotAllowed, "that route doesn't take this method".to_owned()) })
+        .layer(middleware::from_fn_with_state(Arc::clone(&api), authorize))
+        .with_state(api)
+}
+
+async fn authorize(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
+    let expected = format!("Bearer {}", api.token);
+    match request.headers().get(AUTHORIZATION) {
+        Some(given) if given.as_bytes() == expected.as_bytes() => next.run(request).await,
+        _ => answer(ErrorCode::Unauthorized, "missing or wrong token; it's in api.json".to_owned()),
+    }
+}
+
+/// Runs glassdeckd's blocking work for one request off the async threads.
+async fn blocking<T: Send + 'static>(api: Arc<Api>, work: impl FnOnce(&Api) -> Result<T> + Send + 'static) -> Reply<T> {
+    match tokio::task::spawn_blocking(move || work(&api)).await {
+        Ok(result) => Ok(Json(result?)),
+        Err(e) => Err(anyhow!("the request's handler panicked: {e}").into()),
+    }
+}
+
+async fn status(State(api): State<Arc<Api>>) -> Reply<Status> {
+    blocking(api, |api| Ok(api.status())).await
+}
+
+async fn list_streams(State(api): State<Arc<Api>>) -> Reply<Streams> {
+    blocking(api, Api::streams).await
+}
+
+async fn bg(State(api): State<Arc<Api>>) -> Reply<BgView> {
+    blocking(api, |api| Ok(api.bg_view())).await
+}
+
+async fn set_bg(State(api): State<Arc<Api>>, Body(SetBg { bg }): Body<SetBg>) -> Reply<BgChosen> {
+    blocking(api, move |api| api.choose(Choice::parse(&bg).map_err(|e| bad_request(format!("{e:#}")))?)).await
+}
+
+async fn bg_options(State(api): State<Arc<Api>>) -> Reply<OptionsView> {
+    blocking(api, Api::bg_options).await
+}
+
+async fn set_bg_option(State(api): State<Arc<Api>>, Body(set): Body<SetOption>) -> Reply<OptionSet> {
+    blocking(api, move |api| api.set_bg_option(&set)).await
+}
+
+async fn widget_options(State(api): State<Arc<Api>>, Param(index): Param<u32>) -> Reply<OptionsView> {
+    blocking(api, move |api| api.widget_options(index)).await
+}
+
+async fn set_widget_option(State(api): State<Arc<Api>>, Param(index): Param<u32>, Body(set): Body<SetOption>) -> Reply<OptionSet> {
+    blocking(api, move |api| api.set_widget_option(index, &set)).await
+}
+
+async fn deploy_file(State(api): State<Arc<Api>>, Body(Deploy { path }): Body<Deploy>) -> Reply<Deployed> {
+    blocking(api, move |api| api.deploy(Path::new(&path))).await
+}
+
+/// The whole status first, then each change. A client that falls behind gets the whole status again.
+async fn events(State(api): State<Arc<Api>>) -> impl IntoResponse {
+    let changes = BroadcastStream::new(api.events.subscribe());
+    let first = Event::Status { status: api.status() };
+    let resync = Arc::clone(&api);
+    let events = tokio_stream::once(first)
+        .chain(changes.map(move |change| change.unwrap_or_else(|_lagged| Event::Status { status: resync.status() })))
+        .map(|event| sse::Event::default().json_data(event).map_err(|e| anyhow!("encoding an event: {e}")));
+    Sse::new(events).keep_alive(KeepAlive::default())
+}
+
+/// The value `set` asks for, checked against the option's kind, and the value that will show.
+fn checked_value(owner: &OptionsOwner, first: &Panel, set: &SetOption) -> Result<(Option<OptionValue>, serde_json::Value)> {
+    let path = &set.path;
+    let option = first.options().into_iter().find(|o| o.path == *path).ok_or_else(|| not_found(format!("{owner} has no option {path}")))?;
+    let value = match &set.value {
+        Some(json) => Some(OptionValue::from_json(&option.kind, json).map_err(|e| bad_request(format!("{path}: {e:#}")))?),
+        None => None,
+    };
+    if let Some(value) = &value
+        && let Some(why) = option.kind.refuses(value)
+    {
+        return Err(bad_request(format!("{path}: {why}")));
+    }
+    let shown = value.clone().unwrap_or_else(|| option.kind.default_value()).to_json();
+    Ok((value, shown))
+}
+
+/// `chosen` with `path` set to `value`, or back to its default when `value` is `None`.
+fn with_choice(mut chosen: Values, path: &str, value: Option<OptionValue>) -> Values {
+    match value {
+        Some(value) => chosen.insert(path.to_owned(), value),
+        None => chosen.remove(path),
+    };
+    chosen
 }

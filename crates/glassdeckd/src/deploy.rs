@@ -77,7 +77,7 @@ pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &
     let place = match target {
         FileTarget::Background(name) => match runs_on_host(from)? {
             true => canvases.join(name),
-            false => return Ok(()),
+            false => return forget_local_copy(from, &canvases.join(name)),
         },
         FileTarget::Module(name) => modules.join(name),
         FileTarget::Profile => profile.to_owned(),
@@ -91,6 +91,18 @@ pub fn keep_locally(target: &FileTarget, from: &Path, modules: &Path, profile: &
     let staging = staging(&place);
     fs::copy(from, &staging).with_context(|| format!("copying {} to {}", from.display(), staging.display()))?;
     fs::rename(&staging, &place).with_context(|| format!("moving {} into place", place.display()))
+}
+
+/// A redeployed background that no longer runs on the host drops the copy an earlier version left,
+/// so its old host side stops with it.
+fn forget_local_copy(from: &Path, copy: &Path) -> Result<()> {
+    if same_file(from, copy) {
+        return Ok(());
+    }
+    match fs::remove_file(copy) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("removing {}", copy.display())),
+        _ => Ok(()),
+    }
 }
 
 /// A canvas with options or a host half, which glassdeckd runs part of.

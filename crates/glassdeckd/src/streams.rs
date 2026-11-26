@@ -10,6 +10,7 @@ use glassdeck_capture::EncoderKind;
 use glassdeck_capture::monitors::MonitorInfo;
 use glassdeck_capture::pipeline::VideoCodec;
 use glassdeck_capture::sources::{Play, SourceRequest};
+use glassdeck_api::RunsOn;
 use serde::{Deserialize, Serialize};
 
 pub const BG_FORMAT_VERSION: u32 = 1;
@@ -63,10 +64,10 @@ impl Choice {
         Ok(Self::Background(text.to_owned()))
     }
 
-    pub fn runs_on(&self) -> &'static str {
+    pub fn runs_on(&self) -> RunsOn {
         match self {
-            Self::BuiltIn | Self::Background(_) => "keyboard",
-            Self::Stream(_) => "host",
+            Self::BuiltIn | Self::Background(_) => RunsOn::Keyboard,
+            Self::Stream(_) => RunsOn::Host,
         }
     }
 }

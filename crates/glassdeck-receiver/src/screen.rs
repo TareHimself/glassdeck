@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use glassdeck_proto::BUILT_IN_BACKGROUND;
 
 /// A background's file name inside the background folder, checked so it can't name anything outside it.
@@ -11,15 +11,7 @@ pub struct BackgroundName(String);
 
 impl BackgroundName {
     pub fn parse(name: &str) -> Result<Self> {
-        let is_plain = !name.is_empty()
-            && !name.starts_with('.')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_. ".contains(c));
-        ensure!(is_plain, "{name:?} is not a plain file name");
-        ensure!(
-            name.strip_suffix(glassdeck_package::EXTENSION).is_some_and(|stem| stem.ends_with('.') && stem.len() > 1),
-            "{name:?} does not end in .{}",
-            glassdeck_package::EXTENSION
-        );
+        glassdeck_package::check_file_name(name, glassdeck_package::EXTENSION)?;
         Ok(Self(name.to_owned()))
     }
 

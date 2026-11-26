@@ -12,6 +12,10 @@ use clap::{Parser, Subcommand};
 use glassdeck_capture::monitors::{self, MonitorQuery};
 use glassdeck_capture::record::{self, RecordOptions};
 use glassdeck_convert::{Details, EncodeSettings};
+use glassdeck_api::{
+    BgChosen, BgView, Deploy, Deployed, OptionKind, OptionSet, OptionView, OptionsView, PanelItem, RunsOn, SetBg, SetOption,
+    ShowState, Status, Streams,
+};
 use glassdeck_package::Origin;
 use serde_json::{Value, json};
 
@@ -101,21 +105,26 @@ fn run(command: Command) -> Result<()> {
         Command::Status => status(),
         Command::Streams => streams(),
         Command::Bg { choice: None } => {
-            println!("{}", describe_bg(&client::call("GET", "/bg", None)?));
+            println!("{}", describe_bg(&client::get::<BgView>("/bg")?));
             Ok(())
         }
         Command::Bg { choice: Some(choice) } => set_bg(&choice),
         Command::Options { widget, path: None, .. } => {
-            let url = widget.map_or_else(|| "/options".to_owned(), |index| format!("/options?widget={index}"));
-            print_options(&client::call("GET", &url, None)?);
+            print_options(&client::get(&options_route(widget))?);
             Ok(())
         }
         Command::Options { widget, path: Some(path), value, reset } => {
-            if value.is_none() && !reset {
-                bail!("give {path} a value, or --reset it to its default");
-            }
-            let answer = client::call("PUT", "/options", Some(json!({ "widget": widget, "path": path, "value": value })))?;
-            println!("{} {path} = {}", answer["background"].as_str().unwrap_or("?"), answer["value"]);
+            let value = match (value, reset) {
+                (Some(text), _) => {
+                    let view: OptionsView = client::get(&options_route(widget))?;
+                    let option = find_option(&view.items, &path).with_context(|| format!("{} has no option {path}", view.owner))?;
+                    Some(parse_typed(&option.kind, &text).with_context(|| path.clone())?)
+                }
+                (None, true) => None,
+                (None, false) => bail!("give {path} a value, or --reset it to its default"),
+            };
+            let answer: OptionSet = client::put(&options_route(widget), &SetOption { path, value })?;
+            println!("{} {} = {}", answer.owner, answer.path, answer.value);
             Ok(())
         }
         Command::Deploy { file } => {
@@ -184,47 +193,71 @@ fn set_bg(choice: &str) -> Result<()> {
     } else {
         choice.to_owned()
     };
-    let answer = client::call("PUT", "/bg", Some(json!({ "bg": name })))?;
-    let state = match answer["state"].as_str() {
-        Some("shown") | None => String::new(),
-        Some(other) => format!(" ({other})"),
+    let answer: BgChosen = client::put("/bg", &SetBg { bg: name })?;
+    let state = match answer.state {
+        ShowState::Shown => "",
+        ShowState::WaitingForKeyboard => " (waiting for the keyboard)",
+        ShowState::AfterUpload => " (after the upload)",
+        ShowState::Starting => " (starting)",
     };
-    println!("{}{state}", describe_bg(&answer));
+    println!("{}{state}", describe_bg(&BgView { bg: Some(answer.bg), runs_on: answer.runs_on }));
     Ok(())
 }
 
+fn options_route(widget: Option<usize>) -> String {
+    widget.map_or_else(|| "/bg/options".to_owned(), |index| format!("/widgets/{index}/options"))
+}
+
+fn find_option<'a>(items: &'a [PanelItem], path: &str) -> Option<&'a OptionView> {
+    items.iter().find_map(|item| match item {
+        PanelItem::Section { items, .. } => find_option(items, path),
+        PanelItem::Option(option) if option.path == path => Some(option),
+        PanelItem::Option(_) | PanelItem::Heading { .. } => None,
+    })
+}
+
+/// A value as typed on the command line (`on`, `0.5`, `#ff8000`), as the JSON its option's kind takes.
+fn parse_typed(kind: &OptionKind, text: &str) -> Result<Value> {
+    Ok(match kind {
+        OptionKind::Range { .. } | OptionKind::Number { .. } => json!(text.parse::<f64>().with_context(|| format!("{text:?} isn't a number"))?),
+        OptionKind::Toggle { .. } => match text {
+            "true" | "on" | "yes" => json!(true),
+            "false" | "off" | "no" => json!(false),
+            _ => bail!("{text:?} isn't true or false"),
+        },
+        OptionKind::Color { .. } | OptionKind::Text { .. } | OptionKind::Choice { .. } => json!(text),
+    })
+}
+
 /// The panel as the app would draw it: sections indented, hidden options marked.
-fn print_options(view: &Value) {
-    fn walk(items: &[Value], depth: usize) {
+fn print_options(view: &OptionsView) {
+    fn walk(items: &[PanelItem], depth: usize) {
         let indent = "  ".repeat(depth);
         for item in items {
-            if let Some(section) = item["section"].as_str() {
-                println!("{indent}{} ({section})", item["label"].as_str().unwrap_or(section));
-                walk(item["items"].as_array().map_or(&[][..], Vec::as_slice), depth + 1);
-            } else if let Some(heading) = item["heading"].as_str() {
-                println!("{indent}-- {heading} --");
-            } else if let Some(path) = item["option"].as_str() {
-                let kind = &item["kind"];
-                let limits = match kind["type"].as_str() {
-                    Some("range") => format!("range {} to {}", kind["min"], kind["max"]),
-                    Some("choice") => format!(
-                        "one of {}",
-                        kind["values"]
-                            .as_array()
-                            .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
-                            .unwrap_or_default()
-                    ),
-                    Some(other) => other.to_owned(),
-                    None => String::new(),
-                };
-                let hidden = if item["visible"].as_bool() == Some(false) { "  [hidden]" } else { "" };
-                println!("{indent}{}: {}  ({path}, {limits}){hidden}", item["label"].as_str().unwrap_or(path), item["value"]);
+            match item {
+                PanelItem::Section { path, label, items } => {
+                    println!("{indent}{label} ({path})");
+                    walk(items, depth + 1);
+                }
+                PanelItem::Heading { text } => println!("{indent}-- {text} --"),
+                PanelItem::Option(option) => {
+                    let limits = match &option.kind {
+                        OptionKind::Range { min, max, .. } => format!("range {min} to {max}"),
+                        OptionKind::Choice { values, .. } => format!("one of {}", values.join(", ")),
+                        OptionKind::Color { .. } => "colour".to_owned(),
+                        OptionKind::Number { .. } => "number".to_owned(),
+                        OptionKind::Toggle { .. } => "toggle".to_owned(),
+                        OptionKind::Text { .. } => "text".to_owned(),
+                    };
+                    let hidden = if option.visible { "" } else { "  [hidden]" };
+                    println!("{indent}{}: {}  ({}, {limits}){hidden}", option.label, option.value, option.path);
+                }
             }
         }
     }
-    println!("Options for {}", view["background"].as_str().unwrap_or("?"));
-    walk(view["items"].as_array().map_or(&[][..], Vec::as_slice), 1);
-    for dropped in view["dropped"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    println!("Options for {}", view.owner);
+    walk(&view.items, 1);
+    for dropped in &view.dropped {
         println!("  (dropped a stored value: {dropped})");
     }
 }
@@ -265,8 +298,8 @@ fn native_libraries() -> Result<PathBuf> {
 
 fn deploy(file: &Path) -> Result<String> {
     let path = std::path::absolute(file).with_context(|| format!("finding {}", file.display()))?;
-    let answer = client::call("PUT", "/deploy", Some(json!({ "path": path })))?;
-    Ok(text(&answer["deployed"]))
+    let answer: Deployed = client::put("/deploy", &Deploy { path: path.to_string_lossy().into_owned() })?;
+    Ok(answer.deployed)
 }
 
 fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
@@ -297,38 +330,33 @@ fn file_name(path: &Path) -> Result<String> {
 }
 
 fn status() -> Result<()> {
-    let status = client::call("GET", "/status", None)?;
-    let link = &status["link"];
-    let connected = if link["connected"] == Value::Bool(true) { "connected" } else { "not connected" };
-    println!("Keyboard {}: {connected}", text(&link["keyboard"]));
-    println!("{}", describe_bg(&status["bg"]));
-    let stream = &status["stream"];
-    if let Some(playing) = stream["playing"].as_str() {
-        println!("Stream: {playing} ({})", text(&stream["state"]));
+    let status: Status = client::get("/status")?;
+    let connected = if status.link.connected { "connected" } else { "not connected" };
+    println!("Keyboard {}: {connected}", status.link.keyboard);
+    println!("{}", describe_bg(&status.bg));
+    if let Some(playing) = &status.stream.playing {
+        println!("Stream: {playing} ({})", status.stream.state.describe());
     }
-    if let Some(ended) = stream["last_ended"].as_array().and_then(|pair| pair.get(1)) {
-        println!("Last stream: {}", text(ended));
+    if let Some(ended) = &status.stream.last_ended {
+        println!("Last stream: {}", ended.said);
     }
     Ok(())
 }
 
 fn streams() -> Result<()> {
-    let answer = client::call("GET", "/streams", None)?;
-    for stream in answer["streams"].as_array().context("glassdeckd sent no stream list")? {
-        let shown = if stream["shown"] == Value::Bool(true) { "shown" } else { "" };
-        println!("{:<28} {:<6} {:<9} {shown}", text(&stream["name"]), text(&stream["mode"]), text(&stream["from"]));
+    let answer: Streams = client::get("/streams")?;
+    for stream in answer.streams {
+        let shown = if stream.shown { "shown" } else { "" };
+        let mode = serde_json::to_value(stream.mode)?;
+        println!("{:<28} {:<6} {:<9} {shown}", stream.name, mode.as_str().unwrap_or("?"), stream.from);
     }
     Ok(())
 }
 
-fn describe_bg(answer: &Value) -> String {
-    match (answer["bg"].as_str(), answer["runs_on"].as_str()) {
+fn describe_bg(bg: &BgView) -> String {
+    match (&bg.bg, bg.runs_on) {
         (None, _) => "Background: the keyboard's own choice (none set from here)".into(),
-        (Some(bg), Some("host")) => format!("Background: {bg}, streamed from this PC"),
-        (Some(bg), _) => format!("Background: {bg}, played by the keyboard itself"),
+        (Some(bg), RunsOn::Host) => format!("Background: {bg}, streamed from this host"),
+        (Some(bg), RunsOn::Keyboard) => format!("Background: {bg}, played by the keyboard itself"),
     }
-}
-
-fn text(value: &Value) -> String {
-    value.as_str().map_or_else(|| value.to_string(), str::to_owned)
 }

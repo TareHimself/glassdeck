@@ -4,6 +4,7 @@
 mod api;
 mod config;
 mod deploy;
+mod error;
 mod host_api;
 mod link;
 mod media;
@@ -25,7 +26,9 @@ use clap::{Parser, Subcommand};
 use api::Api;
 use config::Paths;
 use link::Uplink;
-use runner::{Runner, RunnerEvent};
+use glassdeck_api::Event;
+use runner::{Runner, RunnerEvent, StatusBoard};
+use tokio::sync::broadcast;
 
 #[derive(Parser)]
 #[command(about = "Glassdeck's host: owns the Link to the keyboard, runs sources and widgets' host halves")]
@@ -88,12 +91,20 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     println!("glassdeckd: keyboard at {}, profile {}", config.keyboard, paths.profile.display());
 
     let token = new_token()?;
+    let (published, _) = broadcast::channel(api::EVENT_BACKLOG);
     let (events, inbox) = mpsc::channel();
-    let link_up = events.clone();
-    let uplink = Arc::new(Uplink::new(move || {
-        let _ = link_up.send(RunnerEvent::LinkUp);
+    let (link_up, link_changed) = (events.clone(), published.clone());
+    let uplink = Arc::new(Uplink::new(move |connected| {
+        if connected {
+            let _ = link_up.send(RunnerEvent::LinkUp);
+        }
+        let _ = link_changed.send(Event::Link { connected });
     }));
-    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox)?;
+    let stream_changed = published.clone();
+    let status = Arc::new(StatusBoard::new(move |status| {
+        let _ = stream_changed.send(Event::Stream { status: status.clone() });
+    }));
+    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status)?;
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
@@ -111,9 +122,11 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
         large_uploads: Mutex::new(0),
         bg_file: paths.bg.clone(),
         bg: Mutex::new(None),
+        choosing: Mutex::new(()),
         canvases: paths.canvases.clone(),
         options: Mutex::new(options::OptionsStore::new(paths.options.clone())),
-        module_host: Mutex::new(module_host),
+        module_host,
+        events: published,
     };
     if let Err(e) = api.restore() {
         eprintln!("error: restoring the background: {e:#}; the keyboard keeps its own");

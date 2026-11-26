@@ -249,6 +249,7 @@ fn check_key(key: &str) -> Result<()> {
 /// `#rgb`, `#rrggbb` or `#rrggbbaa`, as sRGB from 0 to 1.
 pub fn parse_color(text: &str) -> Result<[f32; 4]> {
     let digits = text.strip_prefix('#').with_context(|| format!("colour {text:?} must start with #"))?;
+    ensure!(digits.bytes().all(|b| b.is_ascii_hexdigit()), "colour {text:?} has a digit that isn't hex");
     let expanded: String = match digits.len() {
         3 => digits.chars().flat_map(|c| [c, c]).chain("ff".chars()).collect(),
         6 => format!("{digits}ff"),
@@ -257,8 +258,7 @@ pub fn parse_color(text: &str) -> Result<[f32; 4]> {
     };
     let mut channels = [0.0; 4];
     for (i, channel) in channels.iter_mut().enumerate() {
-        let byte =
-            u8::from_str_radix(&expanded[i * 2..i * 2 + 2], 16).with_context(|| format!("colour {text:?} has a digit that isn't hex"))?;
+        let byte = u8::from_str_radix(&expanded[i * 2..i * 2 + 2], 16).expect("checked as hex digits");
         *channel = f32::from(byte) / 255.0;
     }
     Ok(channels)
@@ -872,5 +872,8 @@ mod tests {
         assert_eq!(label_from_key("on"), "On");
         let color = parse_color("#0f0a29").unwrap();
         assert_eq!(format_color(color), "#0f0a29ff");
+        for bad in ["#aéaaa", "#éa", "#+fffff", "#12345"] {
+            assert!(parse_color(bad).is_err(), "{bad}");
+        }
     }
 }

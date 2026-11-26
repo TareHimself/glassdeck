@@ -33,6 +33,7 @@ struct VideoFile {
 
 struct Sample {
     pts_us: u64,
+    duration_us: u64,
     keyframe: bool,
     data: Vec<u8>,
 }
@@ -60,7 +61,8 @@ pub struct FileSource {
     format: VideoFormat,
     seq: u32,
     loop_offset_us: u64,
-    last_pts_us: u64,
+    /// When the latest frame sent so far stops showing, where the next pass of a loop starts
+    end_us: u64,
 }
 
 impl FileSource {
@@ -78,7 +80,7 @@ impl FileSource {
         }
         let format = VideoFormat { codec: file.codec, width: file.width as u16, height: file.height as u16 };
         println!("Playing {media} ({:?} {}x{}) without re-encoding", file.codec, file.width, file.height);
-        Ok(Self { media, looping, file, format, seq: 0, loop_offset_us: 0, last_pts_us: 0 })
+        Ok(Self { media, looping, file, format, seq: 0, loop_offset_us: 0, end_us: 0 })
     }
 }
 
@@ -92,16 +94,14 @@ impl EncodedSource for FileSource {
             Some(sample) => sample,
             None if self.looping => {
                 self.file = VideoFile::open(&self.media)?;
-                self.loop_offset_us = self.last_pts_us + 1;
-                match self.file.next_sample()? {
-                    Some(sample) => sample,
-                    None => bail!("{} has no frames", self.media),
-                }
+                let first = self.file.next_sample()?.with_context(|| format!("{} has no frames", self.media))?;
+                self.loop_offset_us = self.end_us.saturating_sub(first.pts_us);
+                first
             }
             None => return Ok(None),
         };
         let time_us = sample.pts_us + self.loop_offset_us;
-        self.last_pts_us = self.last_pts_us.max(time_us);
+        self.end_us = self.end_us.max(time_us + sample.duration_us);
         let seq = self.seq;
         self.seq += 1;
         Ok(Some(EncodedFrame { seq, time_us, keyframe: sample.keyframe, data: sample.data, encode_time: Duration::ZERO }))
@@ -171,7 +171,8 @@ impl VideoFile {
                     _ => body,
                 };
                 let pts_us = (timestamp / HUNDRED_NS_PER_US).max(0) as u64;
-                return Ok(Some(Sample { pts_us, keyframe, data }));
+                let duration_us = (sample.GetSampleDuration().context("a video sample has no duration")? / HUNDRED_NS_PER_US).max(0) as u64;
+                return Ok(Some(Sample { pts_us, duration_us, keyframe, data }));
             }
         }
     }
@@ -214,6 +215,25 @@ unsafe fn blob(media_type: &IMFMediaType, key: &windows::core::GUID) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs ffmpeg on PATH; run with cargo test -- --ignored"]
+    fn a_loop_starts_one_frame_after_the_last_frame() {
+        let video = std::env::temp_dir().join("glassdeck-loop-test.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=30", "-frames:v", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let mut source = FileSource::open(Media::File(video.clone()), true).unwrap();
+        let times: Vec<u64> = (0..10).map(|_| source.next_frame().unwrap().unwrap().time_us).collect();
+        let _ = std::fs::remove_file(&video);
+        let mut sorted = times.clone();
+        sorted.sort_unstable();
+        let gaps: Vec<u64> = sorted.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|&gap| gap.abs_diff(33_333) <= 1), "{times:?}");
+    }
 
     #[test]
     fn parameter_sets_go_before_the_keyframe() {

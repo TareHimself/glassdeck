@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+glassdeck-api.workspace = true
 glassdeck-capture.workspace = true
 glassdeck-convert.workspace = true
 glassdeck-luau-check.workspace = true

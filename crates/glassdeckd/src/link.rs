@@ -92,7 +92,8 @@ impl std::error::Error for LinkDown {}
 pub struct Uplink {
     queues: Mutex<Queues>,
     changed: Condvar,
-    on_connected: Box<dyn Fn() + Send + Sync>,
+    /// Told `true` when the keyboard connects and `false` when it goes away
+    on_change: Box<dyn Fn(bool) + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -157,8 +158,8 @@ impl Upload {
 }
 
 impl Uplink {
-    pub fn new(on_connected: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { queues: Mutex::new(Queues::default()), changed: Condvar::new(), on_connected: Box::new(on_connected) }
+    pub fn new(on_change: impl Fn(bool) + Send + Sync + 'static) -> Self {
+        Self { queues: Mutex::new(Queues::default()), changed: Condvar::new(), on_change: Box::new(on_change) }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -316,6 +317,7 @@ impl Uplink {
 
     fn apply(&self, effect: LinkEffect) {
         let mut queues = self.lock();
+        let was_connected = queues.connected;
         match effect {
             LinkEffect::Resend => {
                 queues.connected = true;
@@ -337,9 +339,10 @@ impl Uplink {
             }
         }
         self.changed.notify_all();
+        let connected = queues.connected;
         drop(queues);
-        if effect == LinkEffect::Resend {
-            (self.on_connected)();
+        if connected != was_connected {
+            (self.on_change)(connected);
         }
     }
 }
@@ -458,7 +461,7 @@ mod tests {
 
     #[test]
     fn widgets_wait_behind_the_stream_and_control_goes_first() {
-        let uplink = Uplink::new(|| {});
+        let uplink = Uplink::new(|_| {});
         uplink.apply(Resend);
         uplink.put_module_data(0, vec![1]);
         uplink.push_stream(Message::StreamEnd { stream_id: 7 }).unwrap();
@@ -472,7 +475,7 @@ mod tests {
     fn files_go_after_widgets_and_fail_when_the_link_drops() {
         let path = std::env::temp_dir().join(format!("glassdeckd-upload-{}", std::process::id()));
         std::fs::write(&path, [7u8; 10]).unwrap();
-        let uplink = Uplink::new(|| {});
+        let uplink = Uplink::new(|_| {});
         assert!(uplink.put_file(FileTarget::Profile, &path).is_err());
         uplink.apply(Resend);
         let first = uplink.put_file(FileTarget::Profile, &path).unwrap();
@@ -492,7 +495,7 @@ mod tests {
 
     #[test]
     fn resources_go_after_widget_data_latest_wins_and_come_back_after_a_reconnect() {
-        let uplink = Uplink::new(|| {});
+        let uplink = Uplink::new(|_| {});
         uplink.apply(Resend);
         uplink.put_module_resource(2, "cover".into(), vec![1]);
         uplink.put_module_resource(2, "cover".into(), vec![2]);
@@ -509,7 +512,7 @@ mod tests {
 
     #[test]
     fn a_widgets_newest_value_replaces_its_unsent_one() {
-        let uplink = Uplink::new(|| {});
+        let uplink = Uplink::new(|_| {});
         uplink.apply(Resend);
         uplink.put_module_data(3, vec![1]);
         uplink.put_module_data(3, vec![2]);
@@ -518,7 +521,7 @@ mod tests {
 
     #[test]
     fn reconnecting_resends_every_widget_and_the_selection() {
-        let uplink = Uplink::new(|| {});
+        let uplink = Uplink::new(|_| {});
         uplink.select_background("a.deckbg".into());
         uplink.put_module_data(1, vec![9]);
         uplink.apply(Resend);

@@ -1,5 +1,5 @@
 //! What the user chose for each background's options, kept in `options.json` until the desktop client
-//! has its own store, and the views of a panel the CLI shows.
+//! has its own store, and the panel views the API sends.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -7,8 +7,9 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use glassdeck_api::{OptionKind, OptionView, PanelItem};
 use glassdeck_luau::options::{Item, Kind, OptionValue, Panel, Values, format_color};
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 
 /// Background name, then option path, then the stored value.
 type Stored = BTreeMap<String, BTreeMap<String, Json>>;
@@ -90,59 +91,38 @@ pub fn read_values<'a>(owner: &str, panel: &Panel, stored: impl Iterator<Item = 
     values
 }
 
-/// A value typed on the command line, read for the option's kind.
-pub fn parse_typed(kind: &Kind, text: &str) -> Result<OptionValue> {
-    let json = match kind {
-        Kind::Range { .. } | Kind::Number { .. } => json!(text.parse::<f64>().with_context(|| format!("{text:?} isn't a number"))?),
-        Kind::Toggle { .. } => match text {
-            "true" | "on" | "yes" => json!(true),
-            "false" | "off" | "no" => json!(false),
-            _ => bail!("{text:?} isn't true or false"),
+/// The panel with each option's current value, as the API sends it.
+pub fn panel_view(panel: &Panel, values: &Values) -> Vec<PanelItem> {
+    panel.items.iter().map(|item| item_view(item, values)).collect()
+}
+
+fn item_view(item: &Item, values: &Values) -> PanelItem {
+    match item {
+        Item::Section { path, label, items } => PanelItem::Section {
+            path: path.clone(),
+            label: label.clone(),
+            items: items.iter().map(|item| item_view(item, values)).collect(),
         },
-        Kind::Color { .. } | Kind::Text { .. } | Kind::Choice { .. } => json!(text),
-    };
-    OptionValue::from_json(kind, &json)
-}
-
-/// The panel for the CLI: sections and options in order, with each option's current value.
-pub fn panel_json(panel: &Panel, values: &Values) -> Json {
-    fn entries(items: &[Item], values: &Values) -> Vec<Json> {
-        items
-            .iter()
-            .map(|item| match item {
-                Item::Section { path, label, items: inner } => json!({ "section": path, "label": label, "items": entries(inner, values) }),
-                Item::Heading(text) => json!({ "heading": text }),
-                Item::Option(option) => {
-                    let value = values.get(&option.path).cloned().unwrap_or_else(|| option.kind.default_value());
-                    json!({
-                        "option": option.path,
-                        "label": option.label,
-                        "kind": kind_json(&option.kind),
-                        "value": value.to_json(),
-                        "visible": option.visible,
-                        "hint": option.hint,
-                    })
-                }
-            })
-            .collect()
+        Item::Heading(text) => PanelItem::Heading { text: text.clone() },
+        Item::Option(option) => PanelItem::Option(OptionView {
+            path: option.path.clone(),
+            label: option.label.clone(),
+            kind: kind_view(&option.kind),
+            value: values.get(&option.path).cloned().unwrap_or_else(|| option.kind.default_value()).to_json(),
+            visible: option.visible,
+            hint: option.hint.clone(),
+        }),
     }
-    json!({ "items": entries(&panel.items, values) })
 }
 
-fn kind_json(kind: &Kind) -> Json {
-    match kind {
-        Kind::Color { default, alpha } => json!({ "type": "color", "default": format_color(*default), "alpha": alpha }),
-        Kind::Range { default, min, max, step, unit } => {
-            json!({ "type": "range", "default": default, "min": min, "max": max, "step": step, "unit": unit })
-        }
-        Kind::Number { default, min, max, step, unit } => {
-            json!({ "type": "number", "default": default, "min": min, "max": max, "step": step, "unit": unit })
-        }
-        Kind::Toggle { default } => json!({ "type": "toggle", "default": default }),
-        Kind::Text { default, placeholder, max_length } => {
-            json!({ "type": "text", "default": default, "placeholder": placeholder, "max_length": max_length })
-        }
-        Kind::Choice { default, values } => json!({ "type": "choice", "default": default, "values": values }),
+fn kind_view(kind: &Kind) -> OptionKind {
+    match kind.clone() {
+        Kind::Color { default, alpha } => OptionKind::Color { default: format_color(default), alpha },
+        Kind::Range { default, min, max, step, unit } => OptionKind::Range { default, min, max, step, unit },
+        Kind::Number { default, min, max, step, unit } => OptionKind::Number { default, min, max, step, unit },
+        Kind::Toggle { default } => OptionKind::Toggle { default },
+        Kind::Text { default, placeholder, max_length } => OptionKind::Text { default, placeholder, max_length },
+        Kind::Choice { default, values } => OptionKind::Choice { default, values },
     }
 }
 
@@ -164,7 +144,7 @@ mod tests {
         let store = OptionsStore::new(dir.join("options.json"));
         let panel = panel();
         store
-            .set("a.deckbg", &panel, "look.tint", Some(parse_typed(&Kind::Color { default: [0.0; 4], alpha: true }, "#ff0000").unwrap()))
+            .set("a.deckbg", &panel, "look.tint", Some(OptionValue::Color([1.0, 0.0, 0.0, 1.0])))
             .unwrap();
         store.set("a.deckbg", &panel, "speed", Some(OptionValue::Number(2.0))).unwrap();
         assert!(store.set("a.deckbg", &panel, "speed", Some(OptionValue::Number(9.0))).is_err());
@@ -176,11 +156,5 @@ mod tests {
         assert!(!store.chosen("a.deckbg", &panel).unwrap().contains_key("speed"));
         assert!(store.chosen("other.deckbg", &panel).unwrap().is_empty());
         let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn typed_values_are_read_for_their_kind() {
-        assert_eq!(parse_typed(&Kind::Toggle { default: false }, "on").unwrap(), OptionValue::Bool(true));
-        assert!(parse_typed(&Kind::Range { default: 0.0, min: 0.0, max: 1.0, step: None, unit: None }, "fast").is_err());
     }
 }

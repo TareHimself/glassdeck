@@ -7,14 +7,14 @@ use std::net::{TcpListener, TcpStream};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use glassdeck_api::{Ended, StreamState, StreamStatus};
 use glassdeck_capture::sources::SourceRequest;
 use glassdeck_proto::Message;
-use serde::Serialize;
 
 use crate::link::Uplink;
 use crate::worker::handshake;
@@ -25,7 +25,6 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const CONNECT_GRACE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(20);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-pub const PAUSED_FOR_UPLOAD: &str = "paused for an upload";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerState {
@@ -98,27 +97,60 @@ pub fn step(state: RunnerState, event: RunnerEvent, next_worker: u64) -> (Runner
     }
 }
 
-/// What `glassdeck status` shows about sources.
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct SourceStatus {
-    pub state: &'static str,
-    pub playing: Option<String>,
-    pub worker: Option<u64>,
-    /// The current worker has sent its StreamStart.
-    pub streaming: bool,
-    pub last_ended: Option<(u64, String)>,
+/// The runner's status, which waiters block on and every change of is published.
+pub struct StatusBoard {
+    status: Mutex<StreamStatus>,
+    changed: Condvar,
+    publish: Box<dyn Fn(&StreamStatus) + Send + Sync>,
+}
+
+impl StatusBoard {
+    pub fn new(publish: impl Fn(&StreamStatus) + Send + Sync + 'static) -> Self {
+        Self { status: Mutex::new(StreamStatus::default()), changed: Condvar::new(), publish: Box::new(publish) }
+    }
+
+    pub fn get(&self) -> StreamStatus {
+        self.status.lock().expect("status poisoned").clone()
+    }
+
+    fn update(&self, change: impl FnOnce(&mut StreamStatus)) {
+        let mut status = self.status.lock().expect("status poisoned");
+        let before = status.clone();
+        change(&mut status);
+        if *status != before {
+            self.changed.notify_all();
+            (self.publish)(&status);
+        }
+    }
+
+    /// Waits until `check` finds what it looks for in the status, or `deadline` passes.
+    pub fn wait_for<T>(&self, deadline: Instant, mut check: impl FnMut(&StreamStatus) -> Option<T>) -> Option<T> {
+        let mut status = self.status.lock().expect("status poisoned");
+        loop {
+            if let Some(found) = check(&status) {
+                return Some(found);
+            }
+            let left = deadline.checked_duration_since(Instant::now())?;
+            status = self.changed.wait_timeout(status, left).expect("status poisoned").0;
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct Runner {
     events: Sender<RunnerEvent>,
-    pub status: Arc<Mutex<SourceStatus>>,
+    pub status: Arc<StatusBoard>,
 }
 
 impl Runner {
     /// `events` and `inbox` are one channel, made by the caller so the Link can report LinkUp into it.
-    pub fn start(uplink: Arc<Uplink>, token: String, events: Sender<RunnerEvent>, inbox: Receiver<RunnerEvent>) -> Result<Self> {
-        let status = Arc::new(Mutex::new(SourceStatus { state: "idle", ..SourceStatus::default() }));
+    pub fn start(
+        uplink: Arc<Uplink>,
+        token: String,
+        events: Sender<RunnerEvent>,
+        inbox: Receiver<RunnerEvent>,
+        status: Arc<StatusBoard>,
+    ) -> Result<Self> {
         let runner = Self { events: events.clone(), status: Arc::clone(&status) };
         let looped = events.clone();
         thread::Builder::new()
@@ -131,15 +163,15 @@ impl Runner {
         self.events.send(event).context("the source runner has stopped")
     }
 
-    pub fn status(&self) -> SourceStatus {
-        self.status.lock().expect("status poisoned").clone()
+    pub fn status(&self) -> StreamStatus {
+        self.status.get()
     }
 }
 
 struct Loop {
     uplink: Arc<Uplink>,
     token: String,
-    status: Arc<Mutex<SourceStatus>>,
+    status: Arc<StatusBoard>,
     events: Sender<RunnerEvent>,
     workers: HashMap<u64, Arc<Worker>>,
 }
@@ -170,7 +202,7 @@ impl Loop {
                             Outcome::LinkLost => "cut off: the keyboard disconnected; it starts again when it's back".to_owned(),
                         };
                         println!("Source {worker} {said}");
-                        self.status.lock().expect("status poisoned").last_ended = Some((worker, said));
+                        self.status.update(|status| status.last_ended = Some(Ended { worker, said }));
                     }
                 }
             }
@@ -179,17 +211,18 @@ impl Loop {
     }
 
     fn show(&self, state: &RunnerState) {
-        let mut status = self.status.lock().expect("status poisoned");
-        let (name, playing, worker) = match state {
-            RunnerState::Idle => ("idle", None, None),
-            RunnerState::Running { request, worker } => ("running", Some(request.play.to_string()), Some(*worker)),
-            RunnerState::WaitingForLink { request } => ("waiting for the keyboard", Some(request.play.to_string()), None),
-            RunnerState::PausedForUpload { request } => (PAUSED_FOR_UPLOAD, Some(request.play.to_string()), None),
+        let (state, playing, worker) = match state {
+            RunnerState::Idle => (StreamState::Idle, None, None),
+            RunnerState::Running { request, worker } => (StreamState::Running, Some(request.play.to_string()), Some(*worker)),
+            RunnerState::WaitingForLink { request } => (StreamState::WaitingForKeyboard, Some(request.play.to_string()), None),
+            RunnerState::PausedForUpload { request } => (StreamState::PausedForUpload, Some(request.play.to_string()), None),
         };
-        if status.worker != worker {
-            status.streaming = false;
-        }
-        (status.state, status.playing, status.worker) = (name, playing, worker);
+        self.status.update(|status| {
+            if status.worker != worker {
+                status.streaming = false;
+            }
+            (status.state, status.playing, status.worker) = (state, playing, worker);
+        });
     }
 
     fn spawn(&mut self, id: u64, request: SourceRequest) -> Result<()> {
@@ -250,7 +283,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn forward(&self, id: u64, listener: TcpListener, token: &str, uplink: &Uplink, status: &Mutex<SourceStatus>, last_error: &Mutex<Option<String>>) -> Outcome {
+    fn forward(&self, id: u64, listener: TcpListener, token: &str, uplink: &Uplink, status: &StatusBoard, last_error: &Mutex<Option<String>>) -> Outcome {
         let result = self.accept(listener, token).and_then(|socket| {
             *self.socket.lock().expect("worker poisoned") = Some(socket.try_clone()?);
             Ok(relay(id, socket, uplink, status))
@@ -309,7 +342,7 @@ impl Worker {
 
 /// Hands the worker's messages to the Link until the worker ends. Returns whether the Link dropped
 /// mid-stream; then the rest is read and discarded while the worker winds down.
-fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &Mutex<SourceStatus>) -> bool {
+fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &StatusBoard) -> bool {
     let mut link_lost = false;
     loop {
         let message = match Message::read_from(&mut socket) {
@@ -330,10 +363,11 @@ fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &Mutex<SourceS
             continue;
         }
         if starts {
-            let mut status = status.lock().expect("status poisoned");
-            if status.worker == Some(id) {
-                status.streaming = true;
-            }
+            status.update(|status| {
+                if status.worker == Some(id) {
+                    status.streaming = true;
+                }
+            });
         }
     }
 }

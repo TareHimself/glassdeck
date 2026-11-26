@@ -138,6 +138,18 @@ pub fn preview_name(source: &Path) -> String {
     }
 }
 
+/// A plain file name ending in `.extension`, so it can't name anything outside its folder. The one
+/// rule for every file the keyboard installs or selects.
+pub fn check_file_name(name: &str, extension: &str) -> Result<()> {
+    let is_plain = !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_. ".contains(c));
+    ensure!(is_plain, "{name:?} is not a plain file name");
+    ensure!(
+        name.strip_suffix(extension).is_some_and(|stem| stem.ends_with('.') && stem.len() > 1),
+        "{name:?} does not end in .{extension}"
+    );
+    Ok(())
+}
+
 pub fn is_background(path: &Path) -> bool {
     path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
 }

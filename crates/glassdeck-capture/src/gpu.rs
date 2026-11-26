@@ -24,7 +24,7 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMF2DBuffer, IMFActivate, IMFAttributes, IMFDXGIDeviceManager,
     IMFMediaEventGenerator, IMFMediaType, IMFTransform, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
-    METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
+    METransformDrainComplete, METransformHaveOutput, METransformNeedInput, MFT_MESSAGE_COMMAND_DRAIN, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_TYPE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE,
     MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_YUV_MATRIX, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
@@ -114,6 +114,20 @@ impl GpuEncoder {
             Some(Ok(Err(e))) => e.context("GPU encoder failed"),
             Some(Err(_)) => anyhow!("GPU encoder thread panicked"),
             _ => anyhow!("GPU encoder stopped"),
+        }
+    }
+}
+
+/// Closing the input makes the thread drain the encoder's last frames, so dropping waits for them and
+/// reports how the thread ended.
+impl Drop for GpuEncoder {
+    fn drop(&mut self) {
+        let (closed, _) = mpsc::sync_channel(0);
+        drop(std::mem::replace(&mut self.input, closed));
+        match self.thread.take().map(JoinHandle::join) {
+            Some(Ok(Err(e))) => eprintln!("error: GPU encoder: {e:#}"),
+            Some(Err(_)) => eprintln!("error: GPU encoder thread panicked"),
+            _ => {}
         }
     }
 }
@@ -289,20 +303,26 @@ impl HardwareEncoder {
         }
     }
 
+    /// Encodes until the input closes, then drains the frames the encoder still holds.
     unsafe fn run(&mut self, input: Receiver<GpuFrame>, output: SyncSender<EncodedFrame>) -> Result<()> {
+        let mut draining = false;
         loop {
             let event = unsafe { self.events.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0))? };
             unsafe { event.GetStatus()?.ok().context("encoder reported an error event")? };
             match MF_EVENT_TYPE(unsafe { event.GetType()? } as i32) {
-                t if t == METransformNeedInput => match input.recv() {
+                t if t == METransformNeedInput && !draining => match input.recv() {
                     Ok(frame) => unsafe { self.feed(frame)? },
-                    Err(_) => return Ok(()),
+                    Err(_) => {
+                        unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)? };
+                        draining = true;
+                    }
                 },
                 t if t == METransformHaveOutput => {
                     if let Some(encoded) = unsafe { self.drain()? } {
                         output.send(encoded).map_err(|_| anyhow!("network thread stopped"))?;
                     }
                 }
+                t if t == METransformDrainComplete => return Ok(()),
                 _ => {}
             }
         }
@@ -438,15 +458,10 @@ unsafe fn configure_codec(codec: &ICodecAPI, config: EncoderSettings) -> Result<
                 .SetValue(&CODECAPI_AVEncCommonBufferSize, &variant_u32(vbv_bits(config, frames)))
                 .context("encoder refused the rate-control buffer size")?;
         }
-        let tuning: [(&GUID, u32, &str); 2] = [
-            (&CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32, "CBR"),
-            (&CODECAPI_AVEncCommonMeanBitRate, config.bitrate, "bitrate"),
-        ];
-        for (key, value, what) in tuning {
-            if let Err(e) = codec.SetValue(key, &variant_u32(value)) {
-                eprintln!("warning: encoder ignored {what}: {e}");
-            }
-        }
+        codec
+            .SetValue(&CODECAPI_AVEncCommonRateControlMode, &variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32))
+            .context("encoder refused constant bitrate")?;
+        codec.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant_u32(config.bitrate)).context("encoder refused the bitrate")?;
     }
     Ok(())
 }
@@ -546,10 +561,14 @@ mod tests {
     }
 
     fn solid_bgra(device: &ID3D11Device, bgra: [u8; 4]) -> ID3D11Texture2D {
-        let pixels: Vec<u8> = bgra.iter().copied().cycle().take((SIZE * SIZE * 4) as usize).collect();
+        solid_bgra_sized(device, bgra, SIZE, SIZE)
+    }
+
+    fn solid_bgra_sized(device: &ID3D11Device, bgra: [u8; 4], width: u32, height: u32) -> ID3D11Texture2D {
+        let pixels: Vec<u8> = bgra.iter().copied().cycle().take((width * height * 4) as usize).collect();
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: SIZE,
-            Height: SIZE,
+            Width: width,
+            Height: height,
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -559,7 +578,7 @@ mod tests {
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
-        let data = D3D11_SUBRESOURCE_DATA { pSysMem: pixels.as_ptr().cast(), SysMemPitch: SIZE * 4, SysMemSlicePitch: 0 };
+        let data = D3D11_SUBRESOURCE_DATA { pSysMem: pixels.as_ptr().cast(), SysMemPitch: width * 4, SysMemSlicePitch: 0 };
         let mut texture = None;
         unsafe { device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)).unwrap() };
         texture.unwrap()
@@ -621,6 +640,30 @@ mod tests {
             let nv12 = converter.convert(&solid_bgra(&device, bgra)).unwrap();
             assert_close(read_yuv(&device, &context, &nv12), expected, what);
         }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU; run with cargo test -- --ignored"]
+    fn dropping_the_encoder_drains_every_submitted_frame() {
+        let (device, context) = device();
+        let settings = EncoderSettings {
+            width: 1280,
+            height: 720,
+            codec: Codec::H264,
+            fps: 60,
+            bitrate: 4_000_000,
+            keyframe_every: 120,
+            vbv_frames: None,
+        };
+        let (out, encoded) = mpsc::sync_channel(64);
+        let mut encoder = GpuEncoder::start(&device, &context, settings, out).unwrap();
+        let frame = solid_bgra_sized(&device, [40, 80, 120, 255], 1280, 720);
+        const FRAMES: u64 = 30;
+        for i in 0..FRAMES {
+            encoder.submit(&frame, 1_000_000 + i * 16_667).unwrap();
+        }
+        drop(encoder);
+        assert_eq!(encoded.try_iter().count() as u64, FRAMES);
     }
 
     #[test]

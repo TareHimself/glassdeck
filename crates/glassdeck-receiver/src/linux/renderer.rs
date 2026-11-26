@@ -10,12 +10,13 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glassdeck_proto::compositor::{BufferId, FromCompositor, MAX_MESSAGE_LEN, ToCompositor};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType};
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 
 use super::Picture;
 use super::compositor::{Registrar, SharedBuffer};
@@ -27,6 +28,9 @@ const RENDERER_SOCKET_FD: i32 = 3;
 const FIRST_SPARE_FD: i32 = 10;
 /// The unprivileged user renderers run as; it may use the GPU and display, nothing else of ours.
 pub const RENDERER_USER: &str = "glassdeck-local-web";
+/// How long a renderer gets to exit after SIGTERM before it's killed.
+const STOP_GRACE: Duration = Duration::from_secs(2);
+const STOP_POLL: Duration = Duration::from_millis(10);
 
 /// A renderer's picture on its way to the screen; dropping it hands the buffer back to the renderer.
 pub struct SharedPicture {
@@ -61,7 +65,8 @@ pub struct RendererProcess {
     label: &'static str,
     stop: Arc<AtomicBool>,
     socket: Arc<OwnedFd>,
-    renderer: Pid,
+    /// runuser, which leads the process group the renderer runs in
+    runuser: Pid,
     thread: JoinHandle<()>,
 }
 
@@ -82,6 +87,8 @@ impl RendererProcess {
         let theirs_raw = theirs.as_raw_fd();
         let mut command = Command::new("runuser");
         command.args(["-u", RENDERER_USER, "--", program]).arg(format!("--compositor-fd={RENDERER_SOCKET_FD}")).args(args);
+        // Its own process group, so a last-resort SIGKILL takes the renderer along with runuser.
+        command.process_group(0);
         // SAFETY: dup2 is async-signal-safe, and nothing else runs between fork and exec.
         unsafe {
             command.pre_exec(move || match dup2(theirs_raw, RENDERER_SOCKET_FD) {
@@ -90,7 +97,7 @@ impl RendererProcess {
             });
         }
         let mut child = command.spawn().with_context(|| format!("starting {label}"))?;
-        let renderer = Pid::from_child(&child);
+        let runuser = Pid::from_child(&child);
         drop(theirs);
         println!("{label} started (pid {})", child.id());
 
@@ -112,7 +119,7 @@ impl RendererProcess {
                 stopped(error);
             })?
         };
-        Ok(Self { label, stop, socket, renderer, thread })
+        Ok(Self { label, stop, socket, runuser, thread })
     }
 
     /// Data for the renderer's script (glassdeck-gpu); refused if it's larger than one message holds.
@@ -121,16 +128,48 @@ impl RendererProcess {
         send(&self.socket, &message).map_err(|RendererGone| anyhow!("{} hung up", self.label))
     }
 
+    /// Asks the renderer to exit, and kills it and runuser if it hasn't within `STOP_GRACE`. SIGTERM
+    /// goes to the renderer itself: runuser answers one by waiting 2 s and then killing it.
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Err(e) = kill_process(self.renderer, Signal::TERM) {
-            eprintln!("error: stopping {}: {e}", self.label);
+        for renderer in self.renderers() {
+            self.signal(kill_process(renderer, Signal::TERM));
         }
         if let Err(e) = rustix::net::shutdown(&*self.socket, Shutdown::Both) {
             eprintln!("error: closing {}'s compositor socket: {e}", self.label);
         }
+        let deadline = Instant::now() + STOP_GRACE;
+        while !self.thread.is_finished() && Instant::now() < deadline {
+            thread::sleep(STOP_POLL);
+        }
+        if !self.thread.is_finished() {
+            eprintln!("{} ignored SIGTERM for {STOP_GRACE:?}; killing it", self.label);
+            self.signal(kill_process_group(self.runuser, Signal::KILL));
+        }
         if self.thread.join().is_err() {
             eprintln!("error: the {} thread panicked", self.label);
+        }
+    }
+
+    /// The renderer processes runuser started; none once they've exited.
+    fn renderers(&self) -> Vec<Pid> {
+        let pid = self.runuser.as_raw_nonzero();
+        let children = format!("/proc/{pid}/task/{pid}/children");
+        match std::fs::read_to_string(&children) {
+            Ok(text) => text.split_whitespace().filter_map(|n| n.parse().ok()).filter_map(Pid::from_raw).collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                eprintln!("error: reading {children}: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// A process that already exited by itself has nothing left to signal, which is fine.
+    fn signal(&self, sent: rustix::io::Result<()>) {
+        match sent {
+            Ok(()) | Err(Errno::SRCH) => {}
+            Err(e) => eprintln!("error: signalling {}: {e}", self.label),
         }
     }
 }

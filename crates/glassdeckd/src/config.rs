@@ -35,7 +35,7 @@ impl Paths {
             profile: roaming.join("profile.json"),
             bg: roaming.join("bg.json"),
             modules: roaming.join("modules"),
-            api: local.join("api.json"),
+            api: glassdeck_api::api_file()?,
             log: local.join("logs").join("glassdeckd.log"),
             staging: local.join("staging"),
             options: roaming.join("options.json"),

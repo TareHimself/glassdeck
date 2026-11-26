@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
+glassdeck-api = { path = "crates/glassdeck-api" }
 glassdeck-package = { path = "crates/glassdeck-package" }
 glassdeck-capture = { path = "crates/glassdeck-capture" }
 glassdeck-convert = { path = "crates/glassdeck-convert" }

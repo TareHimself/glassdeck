@@ -113,19 +113,31 @@ fn inputs_table(lua: &Lua, state: Rc<RefCell<Inputs>>) -> Result<Table> {
     let metatable = lua.create_table().lua_context("creating inputs")?;
     let written = store.clone();
     let write = lua
-        .create_function(move |_, (_, name, value): (Table, String, Value)| {
+        .create_function(move |lua, (_, name, value): (Table, String, Value)| {
             let mut state = state.borrow_mut();
             let kind = *state.kinds.get(&name).ok_or_else(|| mlua::Error::runtime(format!("the shader has no input {name}")))?;
             let converted = convert(&name, kind, &value).map_err(|e| mlua::Error::runtime(format!("{e:#}")))?;
+            let kept = match &converted {
+                InputValue::Array(values) => Value::Table(frozen_copy(lua, values)?),
+                _ => value,
+            };
             state.written.insert(name.clone());
             state.changed.insert(name.clone(), converted);
-            written.raw_set(name, value)
+            written.raw_set(name, kept)
         })
         .lua_context("creating inputs")?;
     metatable.raw_set("__newindex", write).lua_context("creating inputs")?;
     metatable.raw_set("__index", store).lua_context("creating inputs")?;
     inputs.set_metatable(Some(metatable)).lua_context("creating inputs")?;
     Ok(inputs)
+}
+
+/// What reading an array input gives back: a frozen copy, so a write into it errors instead of
+/// silently never reaching the shader.
+fn frozen_copy(lua: &Lua, values: &[f32]) -> mlua::Result<Table> {
+    let table = lua.create_sequence_from(values.iter().copied())?;
+    table.set_readonly(true);
+    Ok(table)
 }
 
 fn convert(name: &str, kind: InputKind, value: &Value) -> Result<InputValue> {
@@ -233,6 +245,14 @@ mod tests {
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("input night takes a vector"));
         let script = CanvasScript::load("canvas.on_frame(function() inputs.bands = { 1 } end)", &fields()).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("takes 2 numbers, not 1"));
+    }
+
+    #[test]
+    fn an_array_input_reads_back_frozen_so_writes_into_it_error() {
+        let script = CanvasScript::load("inputs.bands = { 1, 2 } inputs.bands[1] = 5", &fields());
+        assert!(format!("{:#}", script.err().unwrap()).contains("readonly"));
+        let script = CanvasScript::load("local b = { 1, 2 } inputs.bands = b b[1] = 5 inputs.bands = inputs.bands", &fields()).unwrap();
+        assert_eq!(script.take_changes()["bands"], InputValue::Array(vec![1.0, 2.0]));
     }
 
     #[test]
