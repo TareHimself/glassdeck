@@ -1,6 +1,6 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use crate::platform::Picture;
+use crate::platform::{Doorbell, Picture};
 
 pub enum Timing {
     Live { capture_us: u64, received_us: u64, decoded_us: u64 },
@@ -15,11 +15,12 @@ pub struct ShownFrame {
 /// Holds only the newest frame, so a slow display skips frames instead of falling behind.
 pub struct Mailbox {
     slot: Mutex<(Option<ShownFrame>, u32)>,
+    doorbell: Arc<Doorbell>,
 }
 
 impl Mailbox {
-    pub fn new() -> Self {
-        Self { slot: Mutex::new((None, 0)) }
+    pub fn new(doorbell: Arc<Doorbell>) -> Self {
+        Self { slot: Mutex::new((None, 0)), doorbell }
     }
 
     pub fn put(&self, frame: ShownFrame) {
@@ -27,6 +28,8 @@ impl Mailbox {
         if slot.0.replace(frame).is_some() {
             slot.1 += 1;
         }
+        drop(slot);
+        self.doorbell.ring();
     }
 
     pub fn take(&self) -> (Option<ShownFrame>, u32) {

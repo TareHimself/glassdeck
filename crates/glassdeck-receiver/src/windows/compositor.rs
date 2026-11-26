@@ -1,14 +1,20 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use glassdeck_proto::unix_micros;
 use glassdeck_layout::{PANEL_HEIGHT, PANEL_WIDTH};
 use minifb::{Key, ScaleMode, Window, WindowOptions};
 
+use super::Doorbell;
 use super::decode::Picture;
 use crate::overlay::{Labels, Overlay};
 use crate::presentation::Outcome;
 use crate::widgets::Tile;
 
 const UNTHROTTLED: usize = 0;
+/// How often the idle preview window handles its events.
+const WINDOW_FRAME: Duration = Duration::from_millis(16);
 const PANEL: (usize, usize) = (PANEL_WIDTH as usize, PANEL_HEIGHT as usize);
 
 /// A desktop window standing in for the keyboard panel, open from the start so widgets show with
@@ -20,6 +26,7 @@ pub struct Compositor {
     background: Option<Picture>,
     outcomes: Vec<Outcome>,
     widgets: Vec<Tile>,
+    doorbell: Arc<Doorbell>,
 }
 
 impl Compositor {
@@ -27,7 +34,15 @@ impl Compositor {
         let options = WindowOptions { resize: true, scale_mode: ScaleMode::AspectRatioStretch, ..WindowOptions::default() };
         let mut window = Window::new("glassdeck-receiver", PANEL.0, PANEL.1, options)?;
         window.set_target_fps(UNTHROTTLED);
-        let mut compositor = Self { labels, window, overlay: None, background: None, outcomes: Vec::new(), widgets: Vec::new() };
+        let mut compositor = Self {
+            labels,
+            window,
+            overlay: None,
+            background: None,
+            outcomes: Vec::new(),
+            widgets: Vec::new(),
+            doorbell: Arc::new(Doorbell::new()?),
+        };
         compositor.present()?;
         Ok(compositor)
     }
@@ -71,8 +86,15 @@ impl Compositor {
         Ok(std::mem::take(&mut self.outcomes))
     }
 
-    pub fn idle(&mut self) {
+    pub fn doorbell(&self) -> Arc<Doorbell> {
+        Arc::clone(&self.doorbell)
+    }
+
+    /// Sleeps until the doorbell rings or `timeout` passes, at most a frame so the window stays responsive.
+    pub fn wait(&mut self, timeout: Duration) -> Result<()> {
+        self.doorbell.wait(timeout.min(WINDOW_FRAME));
         self.window.update();
+        Ok(())
     }
 
     pub fn registrar(&self) -> super::Registrar {

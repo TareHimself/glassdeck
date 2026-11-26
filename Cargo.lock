@@ -813,6 +813,7 @@ dependencies = [
  "cc",
  "clap",
  "drm",
+ "drm-ffi",
  "fontdue",
  "glassdeck-gpu",
  "glassdeck-layout",

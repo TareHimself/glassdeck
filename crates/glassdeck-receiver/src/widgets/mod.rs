@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -25,6 +25,8 @@ use glassdeck_luau::LiveName;
 use installing::Installing;
 use instance::Instance;
 use live::LiveCache;
+
+use crate::platform::Doorbell;
 
 /// How often the profile and module folder are checked for changes.
 const RESCAN: Duration = Duration::from_secs(1);
@@ -42,17 +44,20 @@ pub struct Tile {
 /// Tiles waiting for the compositor. A newer tile for the same spot replaces the waiting one.
 pub struct Tiles {
     waiting: Mutex<Vec<Tile>>,
+    doorbell: Arc<Doorbell>,
 }
 
 impl Tiles {
-    pub fn new() -> Self {
-        Self { waiting: Mutex::new(Vec::new()) }
+    pub fn new(doorbell: Arc<Doorbell>) -> Self {
+        Self { waiting: Mutex::new(Vec::new()), doorbell }
     }
 
     fn put(&self, tile: Tile) {
         let mut waiting = self.waiting.lock().expect("tiles poisoned");
         waiting.retain(|t| (t.x, t.y, t.w, t.h) != (tile.x, tile.y, tile.w, tile.h));
         waiting.push(tile);
+        drop(waiting);
+        self.doorbell.ring();
     }
 
     pub fn take(&self) -> Vec<Tile> {
@@ -112,6 +117,10 @@ struct Host {
     /// What the last scan saw, to notice changes.
     seen: Option<Snapshot>,
     last_frame: Option<Instant>,
+    /// When the widgets last drew, so a burst of inputs draws once per frame
+    last_publish: Option<Instant>,
+    /// Inputs or timers arrived since the last draw
+    draw_due: bool,
     /// While set, widgets keep running but their redraws wait until the install ends.
     installing: Option<Installing>,
     /// Each instance's live resources, by its number in the profile.
@@ -133,6 +142,8 @@ impl Host {
             instances: Vec::new(),
             seen: None,
             last_frame: None,
+            last_publish: None,
+            draw_due: true,
             installing: None,
             live: HashMap::new(),
         }
@@ -148,28 +159,48 @@ impl Host {
             }
             let wake = self.next_wake().map_or(next_scan, |at| at.min(next_scan));
             match inputs.recv_timeout(wake.saturating_duration_since(Instant::now())) {
-                Ok(Input::Data { instance, payload }) => match self.instances.get_mut(usize::from(instance)) {
-                    Some(target) => target.on_data(&payload),
-                    None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
-                },
-                Ok(Input::Resource { instance, name, data }) => self.store_live(instance, &name, data),
-                Ok(Input::InstallProgress { what, fraction }) => match &mut self.installing {
-                    Some(installing) if installing.what == what => installing.fraction = fraction,
-                    _ => self.installing = Some(Installing::new(what, fraction)),
-                },
-                Ok(Input::InstallEnded) => self.end_install(),
+                Ok(input) => self.handle(input),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            self.tick(Instant::now());
-            self.publish();
+            loop {
+                match inputs.try_recv() {
+                    Ok(input) => self.handle(input),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => return,
+                }
+            }
+            self.draw_due = true;
+            let now = Instant::now();
+            if self.last_publish.is_none_or(|at| now >= at + FRAME) {
+                self.tick(now);
+                self.publish();
+                self.last_publish = Some(now);
+                self.draw_due = false;
+            }
+        }
+    }
+
+    fn handle(&mut self, input: Input) {
+        match input {
+            Input::Data { instance, payload } => match self.instances.get_mut(usize::from(instance)) {
+                Some(target) => target.on_data(&payload),
+                None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
+            },
+            Input::Resource { instance, name, data } => self.store_live(instance, &name, data),
+            Input::InstallProgress { what, fraction } => match &mut self.installing {
+                Some(installing) if installing.what == what => installing.fraction = fraction,
+                _ => self.installing = Some(Installing::new(what, fraction)),
+            },
+            Input::InstallEnded => self.end_install(),
         }
     }
 
     fn next_wake(&self) -> Option<Instant> {
         let timers = self.instances.iter().filter_map(Instance::next_timer).min();
         let frame = self.instances.iter().any(Instance::wants_frame).then(|| self.last_frame.map_or_else(Instant::now, |at| at + FRAME));
-        timers.into_iter().chain(frame).min()
+        let held_draw = self.draw_due.then(|| self.last_publish.map_or_else(Instant::now, |at| at + FRAME));
+        timers.into_iter().chain(frame).chain(held_draw).min()
     }
 
     fn tick(&mut self, now: Instant) {

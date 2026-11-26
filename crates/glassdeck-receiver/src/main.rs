@@ -45,7 +45,6 @@ use stats::{FrameTimes, LatencyStats};
 use widgets::{Input, Tiles};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
-const IDLE_POLL: Duration = Duration::from_millis(1);
 
 #[derive(Parser)]
 #[command(about = "Stand-in for the keyboard: decode streams and show them with key labels")]
@@ -93,13 +92,13 @@ fn main() -> Result<()> {
     let variant = Variant::from(cli.layout);
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
     let compositor = Compositor::open(labels)?;
-    let tiles = Arc::new(Tiles::new());
+    let tiles = Arc::new(Tiles::new(compositor.doorbell()));
     let folders = Folders { backgrounds: cli.backgrounds.clone(), modules: cli.modules.clone(), profile: cli.profile.clone() };
     let widgets = widgets::start(widgets::Config { modules: cli.modules, profile: cli.profile, font }, Arc::clone(&tiles))?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
-    let mailbox = Arc::new(Mailbox::new());
+    let mailbox = Arc::new(Mailbox::new(compositor.doorbell()));
     let director = Director::start(cli.backgrounds, compositor.registrar(), Arc::clone(&mailbox))?;
     let producer = Arc::clone(&mailbox);
     thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders))?;
@@ -266,8 +265,7 @@ fn compose_loop(mailbox: &Mailbox, tiles: &Tiles, mut compositor: Compositor) ->
             };
         }
         if idle {
-            compositor.idle();
-            thread::sleep(IDLE_POLL);
+            compositor.wait(STATS_INTERVAL.saturating_sub(stats_since.elapsed()))?;
         }
 
         if stats_since.elapsed() >= STATS_INTERVAL {

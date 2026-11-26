@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 
 use anyhow::{Context, Result, anyhow, bail};
-use fontdue::{Font, FontSettings};
+use fontdue::{Font, FontSettings, Metrics};
 use glassdeck_package::Resource;
 use glassdeck_luau::ResourceRef;
 use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
@@ -16,6 +16,8 @@ const SHADOW_ALPHA: u8 = 170;
 /// Bezier handle length for a quarter circle.
 const KAPPA: f32 = 0.552_284_8;
 const ARC_STEP_DEGREES: f32 = 3.0;
+/// Glyphs kept per module before the cache starts over; text fitted to a width can ask for many sizes.
+const MAX_CACHED_GLYPHS: usize = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color {
@@ -98,25 +100,28 @@ pub type ReadResource<'a> = &'a dyn Fn(&ResourceRef) -> Result<Option<Vec<u8>>>;
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// A module's images and fonts, decoded on first use.
+/// A module's images, fonts and rasterised glyphs, made on first use.
 pub struct ResourceCache {
     decoded: HashMap<ResourceRef, Image>,
     fonts: HashMap<Resource, Font>,
+    glyphs: GlyphCache,
 }
 
 impl ResourceCache {
     pub fn new() -> Self {
-        Self { decoded: HashMap::new(), fonts: HashMap::new() }
+        Self { decoded: HashMap::new(), fonts: HashMap::new(), glyphs: GlyphCache::default() }
     }
 
-    fn font(&mut self, resource: &Resource, read: ReadResource) -> Result<&Font> {
+    /// The font a text command draws with (its own, else `default`), and the glyph cache to draw from.
+    fn text_font<'a>(&'a mut self, chosen: Option<&Resource>, default: &'a Font, read: ReadResource) -> Result<(&'a Font, &'a mut GlyphCache)> {
+        let Some(resource) = chosen else { return Ok((default, &mut self.glyphs)) };
         if !self.fonts.contains_key(resource) {
             let packaged = ResourceRef::Packaged(resource.clone());
             let bytes = read(&packaged)?.with_context(|| format!("{resource} has no bytes"))?;
             let font = Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing {resource} as a font: {e}"))?;
             self.fonts.insert(resource.clone(), font);
         }
-        Ok(&self.fonts[resource])
+        Ok((&self.fonts[resource], &mut self.glyphs))
     }
 
     /// For a live resource that changed, so the next draw decodes the new bytes.
@@ -146,6 +151,22 @@ impl ResourceCache {
     }
 }
 
+/// Rasterised glyphs by font, character and pixel size, so unchanged text isn't rasterised again.
+#[derive(Default)]
+struct GlyphCache {
+    glyphs: HashMap<(Option<Resource>, char, u32), (Metrics, Vec<u8>)>,
+}
+
+impl GlyphCache {
+    fn glyph(&mut self, font: &Font, which: Option<&Resource>, c: char, px: f32) -> &(Metrics, Vec<u8>) {
+        let key = (which.cloned(), c, px.to_bits());
+        if !self.glyphs.contains_key(&key) && self.glyphs.len() >= MAX_CACHED_GLYPHS {
+            self.glyphs.clear();
+        }
+        self.glyphs.entry(key).or_insert_with(|| font.rasterize(c, px))
+    }
+}
+
 fn raster(bytes: &[u8], resource: &ResourceRef) -> Result<Image> {
     Ok(Image::Raster(Pixmap::decode_png(bytes).map_err(|e| anyhow!("decoding {resource}: {e}"))?))
 }
@@ -162,11 +183,9 @@ pub fn render(
     for command in commands {
         match command {
             Command::Text { text, x, y, size, color, align, width, font: chosen } => {
-                let font = match chosen {
-                    Some(resource) => images.font(resource, read_resource)?,
-                    None => font,
-                };
-                draw_text(&mut pixmap, font, text, (*x, *y), *size, *color, *align, *width)
+                let (font, glyphs) = images.text_font(chosen.as_ref(), font, read_resource)?;
+                let face = Face { font, which: chosen.as_ref(), glyphs };
+                draw_text(&mut pixmap, face, text, (*x, *y), *size, *color, *align, *width)
             }
             Command::Rect { area, fill, stroke, radius } => {
                 if let Some(path) = rounded_rect(*area, *radius) {
@@ -228,8 +247,17 @@ pub fn to_argb(pixmap: &Pixmap) -> Vec<u32> {
         .collect()
 }
 
+/// A font to draw text with, and where its glyphs are cached.
+struct Face<'a> {
+    font: &'a Font,
+    /// The module's own font, or `None` for the built-in one
+    which: Option<&'a Resource>,
+    glyphs: &'a mut GlyphCache,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn draw_text(pixmap: &mut Pixmap, font: &Font, text: &str, at: (f32, f32), size: f32, color: Color, align: Align, width: Option<f32>) {
+fn draw_text(pixmap: &mut Pixmap, face: Face, text: &str, at: (f32, f32), size: f32, color: Color, align: Align, width: Option<f32>) {
+    let Face { font, which, glyphs } = face;
     let natural: f32 = text.chars().map(|c| font.metrics(c, size).advance_width).sum();
     let px = match width {
         Some(width) if natural > width && natural > 0.0 => size * width / natural,
@@ -249,7 +277,7 @@ fn draw_text(pixmap: &mut Pixmap, font: &Font, text: &str, at: (f32, f32), size:
     for (offset, color) in [(SHADOW_OFFSET, shadow), (0.0, color)] {
         let mut pen = left + offset;
         for c in text.chars() {
-            let (metrics, coverage) = font.rasterize(c, px);
+            let (metrics, coverage) = glyphs.glyph(font, which, c, px);
             let gx = pen.round() as i32 + metrics.xmin;
             let gy = (baseline + offset).round() as i32 - metrics.ymin - metrics.height as i32;
             for row in 0..metrics.height {

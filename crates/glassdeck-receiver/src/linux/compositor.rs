@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,10 +19,13 @@ use drm::control::{
 use drm::{ClientCapability, Device};
 use glassdeck_proto::compositor::BufferLayout;
 use glassdeck_proto::unix_micros;
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::OFlags;
+use rustix::io::Errno;
+use rustix::mm::{MapFlags, ProtFlags, mmap, munmap};
 use rustix::time::{ClockId, clock_gettime};
 
-use super::Picture;
+use super::{Doorbell, Picture};
 use super::mpp::{Color, Encoding, Range};
 use super::scanout::{Effect, Event, Scanout, Update, step};
 use crate::overlay::{Labels, Overlay};
@@ -47,10 +51,49 @@ impl AsFd for Card {
 impl Device for Card {}
 impl ControlDevice for Card {}
 
-/// One of the key layer's two buffers.
+/// ARGB8888 is stored little-endian, so a premultiplied ARGB word copies into the buffer as it is.
+const _ARGB_WORDS_MATCH_THE_BUFFER: () = assert!(cfg!(target_endian = "little"));
+
+/// One of the key layer's two buffers, mapped for its whole life.
 struct Surface {
-    buffer: DumbBuffer,
+    _buffer: DumbBuffer,
     fb: framebuffer::Handle,
+    pixels: Mapped,
+    /// Words per row
+    stride: usize,
+}
+
+/// A dumb buffer's memory, mapped once and unmapped on drop.
+struct Mapped {
+    words: NonNull<u32>,
+    len: usize,
+}
+
+impl Mapped {
+    fn new(card: &Card, buffer: &DumbBuffer) -> Result<Self> {
+        let info = drm_ffi::mode::dumbbuffer::map(card.as_fd(), buffer.handle().into(), 0, 0).context("finding the key layer's memory")?;
+        let bytes = buffer.pitch() as usize * buffer.size().1 as usize;
+        let prot = ProtFlags::READ | ProtFlags::WRITE;
+        // SAFETY: a fresh shared mapping of the buffer, which nothing else maps; it's unmapped in Drop.
+        let map = unsafe { mmap(std::ptr::null_mut(), bytes, prot, MapFlags::SHARED, card.as_fd(), info.offset) }
+            .context("mapping the key layer")?;
+        let words = NonNull::new(map.cast::<u32>()).context("the key layer mapped at null")?;
+        Ok(Self { words, len: bytes / 4 })
+    }
+
+    fn words(&mut self) -> &mut [u32] {
+        // SAFETY: the mapping is page-aligned, `len` words long, and only reached through `&mut self`.
+        unsafe { std::slice::from_raw_parts_mut(self.words.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly what `new` mapped, once.
+        if let Err(e) = unsafe { munmap(self.words.as_ptr().cast(), self.len * 4) } {
+            eprintln!("error: unmapping the key layer: {e}");
+        }
+    }
 }
 
 /// A rectangle of the panel, in pixels.
@@ -96,23 +139,20 @@ impl KeyLayer {
     }
 
     /// Brings the back buffer up to date and returns its framebuffer, to be committed.
-    fn prepare_back(&mut self, card: &Card) -> Result<framebuffer::Handle> {
+    fn prepare_back(&mut self) -> framebuffer::Handle {
         let back = 1 - self.front;
         let regions = std::mem::take(&mut self.stale[back]);
         let surface = &mut self.buffers[back];
-        let pitch = surface.buffer.pitch() as usize;
-        let mut mapping = card.map_dumb_buffer(&mut surface.buffer).context("mapping the key layer")?;
+        let stride = surface.stride;
+        let words = surface.pixels.words();
         for region in regions {
-            for row in region.y..region.y + region.h {
-                let at = row as usize * self.width as usize + region.x as usize;
-                let pixels = &self.mirror[at..at + region.w as usize];
-                let dst = &mut mapping[row as usize * pitch + region.x as usize * 4..][..pixels.len() * 4];
-                for (bytes, pixel) in dst.chunks_exact_mut(4).zip(pixels) {
-                    bytes.copy_from_slice(&pixel.to_le_bytes());
-                }
+            for row in region.y as usize..(region.y + region.h) as usize {
+                let (x, w) = (region.x as usize, region.w as usize);
+                let from = row * self.width as usize + x;
+                words[row * stride + x..][..w].copy_from_slice(&self.mirror[from..from + w]);
             }
         }
-        Ok(surface.fb)
+        surface.fb
     }
 }
 
@@ -143,6 +183,7 @@ pub struct Compositor {
     framebuffers: HashMap<u64, framebuffer::Handle>,
     outcomes: Vec<Outcome>,
     keys: KeyLayer,
+    doorbell: Arc<Doorbell>,
 }
 
 impl Compositor {
@@ -219,6 +260,7 @@ impl Compositor {
             framebuffers: HashMap::new(),
             outcomes: Vec::new(),
             keys,
+            doorbell: Arc::new(Doorbell::new()?),
         })
     }
 
@@ -281,7 +323,7 @@ impl Compositor {
             None => AtomicModeReq::new(),
         };
         if update.keys() {
-            let fb = self.keys.prepare_back(&self.card)?;
+            let fb = self.keys.prepare_back();
             request.add_property(self.keys.plane, self.keys.fb_id, Value::Framebuffer(Some(fb)));
         }
         self.card
@@ -318,7 +360,22 @@ impl Compositor {
         Registrar { card: Arc::clone(&self.card), crtc: self.crtc, video: self.video.clone(), screen: self.size }
     }
 
-    pub fn idle(&mut self) {}
+    /// What rings to wake `wait`: a new picture or new tiles.
+    pub fn doorbell(&self) -> Arc<Doorbell> {
+        Arc::clone(&self.doorbell)
+    }
+
+    /// Sleeps until a page flip finishes, the doorbell rings, or `timeout` passes.
+    pub fn wait(&mut self, timeout: Duration) -> Result<()> {
+        let timeout = Timespec::try_from(timeout).context("the compose loop's wait is too long")?;
+        let mut fds = [PollFd::new(&*self.card, PollFlags::IN), PollFd::new(&*self.doorbell, PollFlags::IN)];
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(_) | Err(Errno::INTR) => {}
+            Err(e) => return Err(e).context("waiting for the display"),
+        }
+        self.doorbell.answer();
+        Ok(())
+    }
 
     pub fn is_open(&self) -> bool {
         true
@@ -421,19 +478,16 @@ impl PlanarBuffer for SinglePlane {
 
 impl Surface {
     fn new(card: &Card, size: (u32, u32), premultiplied_argb: &[u32]) -> Result<Self> {
-        let mut buffer = card.create_dumb_buffer(size, DrmFourcc::Argb8888, 32).context("allocating the label buffer")?;
-        let pitch = buffer.pitch() as usize;
-        {
-            let mut mapping = card.map_dumb_buffer(&mut buffer)?;
-            for (row, pixels) in premultiplied_argb.chunks_exact(size.0 as usize).enumerate() {
-                let dst = &mut mapping[row * pitch..][..pixels.len() * 4];
-                for (bytes, pixel) in dst.chunks_exact_mut(4).zip(pixels) {
-                    bytes.copy_from_slice(&pixel.to_le_bytes());
-                }
-            }
+        let buffer = card.create_dumb_buffer(size, DrmFourcc::Argb8888, 32).context("allocating the label buffer")?;
+        ensure!(buffer.pitch() % 4 == 0, "the label buffer's rows aren't whole pixels");
+        let stride = buffer.pitch() as usize / 4;
+        let mut pixels = Mapped::new(card, &buffer)?;
+        let words = pixels.words();
+        for (row, source) in premultiplied_argb.chunks_exact(size.0 as usize).enumerate() {
+            words[row * stride..][..source.len()].copy_from_slice(source);
         }
         let fb = card.add_framebuffer(&buffer, 32, 32).context("wrapping the label buffer in a framebuffer")?;
-        Ok(Self { buffer, fb })
+        Ok(Self { _buffer: buffer, fb, pixels, stride })
     }
 }
 

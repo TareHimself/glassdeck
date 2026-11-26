@@ -1,10 +1,12 @@
 mod compositor;
 mod decode;
+mod doorbell;
 mod canvas;
 mod web;
 mod yuv;
 
 pub use compositor::Compositor;
+pub use doorbell::Doorbell;
 pub use decode::{Decoder, Picture, init_decoder_thread};
 pub use canvas::{FallbackCanvas, CanvasBackground};
 pub use web::{Registrar, WebBackground};

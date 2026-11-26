@@ -1,4 +1,5 @@
 mod compositor;
+mod doorbell;
 mod mpp;
 mod renderer;
 mod scanout;
@@ -8,6 +9,7 @@ mod web;
 use anyhow::Result;
 
 pub use compositor::{Compositor, Registrar};
+pub use doorbell::Doorbell;
 pub use mpp::Decoder;
 pub use canvas::{FallbackCanvas, CanvasBackground};
 pub use web::WebBackground;
