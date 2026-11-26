@@ -1,0 +1,14 @@
+[Unit]
+Description=Glassdeck receiver: the keyboard display's side of the Link
+After=network.target
+# Keep retrying however often it fails: a board with no display is still reachable to fix.
+StartLimitIntervalSec=0
+
+[Service]
+WorkingDirectory=/opt/glassdeck/local
+ExecStart=/opt/glassdeck/local/target/release/glassdeck-receiver
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

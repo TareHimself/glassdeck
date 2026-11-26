@@ -44,6 +44,16 @@ sh device/keyboard-build.sh glassdeck-receiver
 - `--packages` (default `/var/lib/glassdeck/packages/`): every installed `.deck`, backgrounds and widgets.
 - `--state` (default `/var/lib/glassdeck/state/`): `background` (the chosen background) and `widgets.json` (the layout). Written only when they change, and restored at boot.
 
+## Running on a board
+
+On the Orange Pi stand-in (receiver built in `/opt/glassdeck/local`) it runs as the systemd service [`glassdeck-receiver`](../../device/systemd/glassdeck-receiver.service). The service starts at boot and restarts 2 s after any exit. Install it with `sh device/install-receiver-service.sh root@10.0.0.186`.
+
+- Restart: `systemctl restart glassdeck-receiver`
+- Stop: `systemctl stop glassdeck-receiver`
+- Logs: `journalctl -u glassdeck-receiver -f`
+
+The real keyboard's stock system still needs its own way to start it.
+
 ## Depends on, used by
 
 glassdeck-proto, glassdeck-package, glassdeck-layout, glassdeck-luau, and glassdeck-gpu on Windows. No crate depends on it.
