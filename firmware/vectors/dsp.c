@@ -4,8 +4,10 @@
 #include "fw_classic_keys.h"
 #include "fw_classic_neighbors.h"
 #include "fw_classic_row.h"
+#include "fw_depth.h"
 #include "fw_press_guard.h"
 #include "fw_rapid.h"
+#include "fw_refine.h"
 #include "fw_row_condition.h"
 
 #include <stdio.h>
@@ -49,9 +51,10 @@ typedef struct {
     int32_t drift;
 } sim_t;
 
-static void sim_step(sim_t *s, unsigned keys) {
+/* A frozen sim picks no new targets, so keys only travel toward the ones they have. */
+static void sim_step(sim_t *s, unsigned keys, bool frozen) {
     for (unsigned k = 0; k < keys; k++) {
-        if (pick(40) == 0) {
+        if (!frozen && pick(40) == 0) {
             s->target[k] = pick(4) == 0 ? 0 : pick(1400);
             s->speed[k] = 20 + pick(120);
         }
@@ -68,12 +71,12 @@ static void sim_step(sim_t *s, unsigned keys) {
 
 /* Sensor j sits between keys j-1 and j; a pressed key raises the sensor on its left and lowers
  * the one on its right. */
-static void sim_sensors(const sim_t *s, unsigned width, int32_t out[17]) {
+static void sim_sensors(const sim_t *s, unsigned width, int32_t noise, int32_t out[17]) {
     unsigned keys = width - 1;
     for (unsigned j = 0; j < width; j++) {
         int32_t left = j > 0 ? s->travel[j - 1] : 0;
         int32_t right = j < keys ? s->travel[j] : 0;
-        out[j] = (right - left) / 2 + pick(61) - 30 + s->drift;
+        out[j] = (right - left) / 2 + (noise ? pick((uint32_t)(2 * noise + 1)) - noise : 0) + s->drift;
     }
 }
 
@@ -105,9 +108,9 @@ static void classic_case(const char *name, uint32_t seed, unsigned layout, unsig
         if (scan == 600)
             for (unsigned c = 0; c < n; c += 3)
                 fw_classic_key_weight(&cfg, layout, row, c);
-        sim_step(&sim, n);
+        sim_step(&sim, n, false);
         int32_t field[17], travel[16];
-        sim_sensors(&sim, width, field);
+        sim_sensors(&sim, width, 30, field);
         fw_classic_row(row, width, field, field, travel);
         fw_classic_neighbors(&neighbors, layout, row, n, field, travel, keys.down, has_table ? cfg.actuation : NULL,
                              has_table ? cfg.hysteresis : NULL);
@@ -164,7 +167,7 @@ static void rapid_case(const char *name, uint32_t seed, unsigned n) {
         if (scan == 300)
             for (unsigned k = 0; k < n; k += 2)
                 fw_rapid_rearm(&state[k]);
-        sim_step(&sim, n);
+        sim_step(&sim, n, false);
         uint16_t flux[16];
         for (unsigned k = 0; k < n; k++) {
             int32_t noisy = sim.travel[k] + pick(41) - 20;
@@ -237,6 +240,114 @@ static void condition_case(uint32_t seed) {
     }
 }
 
+static uint8_t model_bytes[FW_REFINE_MODEL_BYTES];
+static size_t model_at;
+
+static void put16(int32_t v) {
+    model_bytes[model_at++] = (uint8_t)v;
+    model_bytes[model_at++] = (uint8_t)(v >> 8);
+}
+
+static void put32(int32_t v) {
+    for (int i = 0; i < 4; i++)
+        model_bytes[model_at++] = (uint8_t)(v >> (8 * i));
+}
+
+/* A model with random coefficients in file order (fw_refine_decode). */
+static void random_model(void) {
+    model_at = 0;
+    for (int i = 0; i < 6; i++)
+        put16(pick(6001) - 3000);
+    for (int i = 0; i < 18; i++)
+        put32(pick(200001) - 100000);
+    for (int i = 0; i < 18 * 6; i++)
+        put16(pick(4001) - 2000);
+    for (int i = 0; i < 18; i++)
+        put32(pick(200001) - 100000);
+    for (int i = 0; i < 18 * 30; i++)
+        put16(pick(4001) - 2000);
+    put32(pick(100001) - 50000);
+}
+
+/* The refined path for one row, as scan_refined runs it: line fit, depth, then refinement.
+ * From scan 650 every key returns to rest with no noise, so the row can settle. */
+static void refined_case(const char *name, uint32_t seed, unsigned width) {
+    rng = seed;
+    random_model();
+    static fw_refine_model_t model;
+    if (fw_refine_decode(&model, model_bytes, sizeof(model_bytes)) != 0)
+        return;
+    sim_t sim;
+    memset(&sim, 0, sizeof(sim));
+    static fw_depth_row_t depth;
+    static fw_refine_row_t refine;
+    memset(&depth, 0, sizeof(depth));
+    memset(&refine, 0, sizeof(refine));
+    unsigned n = width - 1;
+    for (unsigned scan = 0; scan < 800; scan++) {
+        if (scan == 500) {
+            fw_depth_row_reset(&depth);
+            memset(&refine, 0, sizeof(refine));
+        }
+        bool idle = scan >= 650;
+        if (idle)
+            for (unsigned k = 0; k < n; k++) {
+                sim.target[k] = 0;
+                sim.speed[k] = 200;
+            }
+        sim_step(&sim, n, idle);
+        int32_t row[17], travel[16];
+        sim_sensors(&sim, width, idle ? 0 : 30, row);
+        fw_condition_row_q4(row, (uint8_t)width);
+        fw_depth_row_update(&depth, n, row, travel);
+        for (unsigned c = 0; c < width; c++)
+            row[c] /= 16;
+        fw_refine_step(&model, &refine, row, travel, width, travel);
+
+        begin();
+        for (unsigned i = 0; i < width; i++)
+            mix_i32(row[i]);
+        const fw_depth_history_t *h = &depth.history;
+        for (unsigned i = 0; i <= n; i++)
+            mix_i32(h->prev_field[i]);
+        for (unsigned i = 0; i < n; i++) {
+            mix_i32(travel[i]);
+            mix_i32(depth.left[i]);
+            mix_i32(depth.right[i]);
+            mix_i32(h->skipped_for[i]);
+            for (int j = 0; j < 4; j++)
+                mix_i32(h->rest_window[i][j]);
+            mix_i32(h->stable_for[i]);
+            mix_i32(h->window_peak[i]);
+            mix_i32(h->previous_sum[i]);
+            mix_i32(h->last_drop[i]);
+            mix_i32(h->group_peak[i]);
+            mix_i32(h->extra_depth[i]);
+            const fw_refine_key_t *k = &refine.key[i];
+            for (int j = 0; j < 18; j++) {
+                mix_i32(k->input_sum[j]);
+                mix_i32(k->history_sum[j]);
+            }
+            mix_i32(k->score);
+            mix_i32(k->flux);
+            mix_i32(k->envelope);
+            for (int j = 0; j < 28; j++)
+                mix_i32(k->features[j]);
+            for (int j = 0; j < 6; j++) {
+                mix_i32(k->hidden[j]);
+                mix_i32(k->previous_hidden[j]);
+            }
+            mix_i32(k->active);
+            mix_i32(refine.previous_provisional[i]);
+        }
+        for (unsigned i = 0; i < width; i++)
+            mix_i32(refine.previous_residual[i]);
+        mix_i32(refine.width);
+        mix_i32(refine.settled);
+        printf("refined.%s %016llx\n", name, (unsigned long long)hash);
+    }
+}
+
 int main(void) {
     classic_case("ansi_top", 1, 1, 0, 17, true);
     classic_case("iso_row3", 2, 2, 3, 16, true);
@@ -246,5 +357,8 @@ int main(void) {
     rapid_case("full_row", 6, 16);
     rapid_case("short_row", 7, 5);
     condition_case(8);
+    refined_case("full_row", 9, 17);
+    refined_case("iso_row", 10, 16);
+    refined_case("short_row", 11, 6);
     return 0;
 }

@@ -2,8 +2,10 @@
 //! its cases against the vectors it printed.
 
 use crate::classic::{self, Keys, Neighbors, Settings, Thresholds};
+use crate::depth::DepthRow;
 use crate::guard::{fixed_candidate, guard_key_signal};
 use crate::rapid::{KeyMotion, RapidInput, RapidState, neighbor_delta, update_row_motion};
+use crate::refine::{MODEL_LEN, Model, RefineRow};
 use crate::{MAX_ROW_KEYS, MAX_ROW_SENSORS, condition_row_q4};
 
 const VECTORS: &str = include_str!("../../../firmware/vectors/dsp.txt");
@@ -51,9 +53,10 @@ struct Sim {
 }
 
 impl Sim {
-    fn step(&mut self, rng: &mut Rng, keys: usize) {
+    /// A frozen sim picks no new targets, so keys only travel toward the ones they have.
+    fn step(&mut self, rng: &mut Rng, keys: usize, frozen: bool) {
         for k in 0..keys {
-            if rng.pick(40) == 0 {
+            if !frozen && rng.pick(40) == 0 {
                 self.target[k] = if rng.pick(4) == 0 { 0 } else { rng.pick(1400) };
                 self.speed[k] = 20 + rng.pick(120);
             }
@@ -63,12 +66,17 @@ impl Sim {
         self.drift = (self.drift + rng.pick(3) - 1).clamp(-150, 150);
     }
 
-    fn sensors(&self, rng: &mut Rng, width: usize, out: &mut [i32]) {
+    fn sensors(&self, rng: &mut Rng, width: usize, noise: i32, out: &mut [i32]) {
         let keys = width - 1;
         for (j, o) in out[..width].iter_mut().enumerate() {
             let left = if j > 0 { self.travel[j - 1] } else { 0 };
             let right = if j < keys { self.travel[j] } else { 0 };
-            *o = (right - left) / 2 + rng.pick(61) - 30 + self.drift;
+            let jitter = if noise != 0 {
+                rng.pick((2 * noise + 1) as u32) - noise
+            } else {
+                0
+            };
+            *o = (right - left) / 2 + jitter + self.drift;
         }
     }
 }
@@ -126,9 +134,9 @@ fn classic_case(
                 cfg.weight(layout, row, c);
             }
         }
-        sim.step(&mut rng, n);
+        sim.step(&mut rng, n, false);
         let (mut field, mut travel) = ([0i32; MAX_ROW_SENSORS], [0i32; MAX_ROW_KEYS]);
-        sim.sensors(&mut rng, width, &mut field);
+        sim.sensors(&mut rng, width, 30, &mut field);
         classic::condition_row(row, &mut field[..width], &mut travel[..n]);
         let thresholds = has_table.then_some(Thresholds {
             actuation: &cfg.actuation,
@@ -199,7 +207,7 @@ fn rapid_case(seed: u32, n: usize) -> (Vec<String>, usize) {
                 s.rearm();
             }
         }
-        sim.step(&mut rng, n);
+        sim.step(&mut rng, n, false);
         let mut flux = [0u16; MAX_ROW_KEYS];
         for k in 0..n {
             let noisy = sim.travel[k] + rng.pick(41) - 20;
@@ -326,4 +334,122 @@ fn row_conditioning_matches_the_firmware() {
         got.push(h.hex());
     }
     assert_scans("condition", &got);
+}
+
+/// A model with random coefficients, in the payload's file order.
+fn random_model(rng: &mut Rng) -> Model {
+    let mut bytes = Vec::with_capacity(MODEL_LEN);
+    let put16 = |bytes: &mut Vec<u8>, v: i32| bytes.extend_from_slice(&(v as i16).to_le_bytes());
+    let put32 = |bytes: &mut Vec<u8>, v: i32| bytes.extend_from_slice(&v.to_le_bytes());
+    for _ in 0..6 {
+        put16(&mut bytes, rng.pick(6001) - 3000);
+    }
+    for _ in 0..18 {
+        put32(&mut bytes, rng.pick(200_001) - 100_000);
+    }
+    for _ in 0..18 * 6 {
+        put16(&mut bytes, rng.pick(4001) - 2000);
+    }
+    for _ in 0..18 {
+        put32(&mut bytes, rng.pick(200_001) - 100_000);
+    }
+    for _ in 0..18 * 30 {
+        put16(&mut bytes, rng.pick(4001) - 2000);
+    }
+    put32(&mut bytes, rng.pick(100_001) - 50_000);
+    Model::decode(bytes.as_slice().try_into().unwrap())
+}
+
+/// Returns the scan hashes, the key-depth scans above 300 counts, and the settled scans.
+fn refined_case(seed: u32, width: usize) -> (Vec<String>, usize, usize) {
+    let mut rng = Rng(seed);
+    let model = random_model(&mut rng);
+    let mut sim = Sim::default();
+    let (mut depth, mut refine) = (DepthRow::default(), RefineRow::default());
+    let n = width - 1;
+    let (mut hashes, mut deep, mut settled) = (Vec::new(), 0, 0);
+    for scan in 0..800 {
+        if scan == 500 {
+            depth.reset();
+            refine = RefineRow::default();
+        }
+        let idle = scan >= 650;
+        if idle {
+            sim.target[..n].fill(0);
+            sim.speed[..n].fill(200);
+        }
+        sim.step(&mut rng, n, idle);
+        let (mut row, mut travel) = ([0i32; MAX_ROW_SENSORS], [0i32; MAX_ROW_KEYS]);
+        sim.sensors(&mut rng, width, if idle { 0 } else { 30 }, &mut row);
+        condition_row_q4(&mut row[..width]);
+        depth.update(&row[..width], &mut travel[..n]);
+        deep += travel[..n].iter().filter(|&&t| t > 300).count();
+        for v in &mut row[..width] {
+            *v /= 16;
+        }
+        refine.step(&model, &row[..width], &mut travel[..n]);
+        settled += refine.settled as usize;
+
+        let mut h = Hash::new();
+        row[..width].iter().for_each(|&v| h.mix(v));
+        let hist = &depth.history;
+        hist.prev_field[..=n].iter().for_each(|&v| h.mix(v as i32));
+        for i in 0..n {
+            for v in [
+                travel[i],
+                depth.left[i],
+                depth.right[i],
+                hist.skipped_for[i] as i32,
+            ] {
+                h.mix(v);
+            }
+            hist.rest_window[i].iter().for_each(|&v| h.mix(v as i32));
+            for v in [
+                hist.stable_for[i] as i32,
+                hist.window_peak[i],
+                hist.previous_sum[i],
+                hist.last_drop[i],
+                hist.group_peak[i],
+                hist.extra_depth[i],
+            ] {
+                h.mix(v);
+            }
+            let k = &refine.key[i];
+            for j in 0..18 {
+                h.mix(k.input_sum[j]);
+                h.mix(k.history_sum[j]);
+            }
+            for v in [k.score, k.flux, k.envelope] {
+                h.mix(v);
+            }
+            k.features.iter().for_each(|&v| h.mix(v as i32));
+            for j in 0..6 {
+                h.mix(k.hidden[j] as i32);
+                h.mix(k.previous_hidden[j] as i32);
+            }
+            h.mix(k.active as i32);
+            h.mix(refine.previous_provisional[i]);
+        }
+        refine.previous_residual[..width]
+            .iter()
+            .for_each(|&v| h.mix(v));
+        h.mix(refine.width as i32);
+        h.mix(refine.settled as i32);
+        hashes.push(h.hex());
+    }
+    (hashes, deep, settled)
+}
+
+#[test]
+fn depth_and_refinement_match_the_firmware_every_scan() {
+    for (name, seed, width) in [
+        ("refined.full_row", 9, 17),
+        ("refined.iso_row", 10, 16),
+        ("refined.short_row", 11, 6),
+    ] {
+        let (hashes, deep, settled) = refined_case(seed, width);
+        assert!(deep > 100, "{name}: too few deep keys ({deep})");
+        eprintln!("{name}: {deep} deep key-scans, {settled} settled scans");
+        assert_scans(name, &hashes);
+    }
 }

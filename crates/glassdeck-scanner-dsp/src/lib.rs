@@ -8,8 +8,11 @@
 //! - refined: [`condition_row_q4`], then per key [`rapid::RapidState`] or [`guard::fixed_candidate`]
 
 pub mod classic;
+pub mod depth;
 pub mod guard;
 pub mod rapid;
+pub mod refine;
+mod refine_lut;
 mod row_condition;
 
 pub use row_condition::condition_row_q4;
