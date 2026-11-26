@@ -1,6 +1,8 @@
-//! Talks to the key scanner (the keyboard's RP2040) over its USB command interface: read what
-//! it runs, back up its settings, and flash a new firmware through the RP2040's boot ROM.
+//! Talks to the key scanner (the keyboard's RP2040) over USB: read what it runs, back it up
+//! (settings over its command interface, then the whole flash through the boot ROM), and flash
+//! a new firmware, which it only does with a verified backup of this keyboard.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,36 +22,59 @@ use glassdeck_scanner_proto::usb_descriptors::{
 use nusb::MaybeFuture;
 use nusb::transfer::{Buffer, Bulk, In, Out};
 
+use crate::flash_image::{
+    self, CALIBRATION_FACTORS, CALIBRATION_INFO, FactoryCalibration, PARTITION_LEN,
+    PARTITION_OFFSET,
+};
+use crate::picoboot::{self, BootRom, FLASH_SIZE};
+
 const TIMEOUT: Duration = Duration::from_secs(2);
-const BOOT_ROM_VID: u16 = 0x2E8A;
-const BOOT_ROM_PID: u16 = 0x0003;
-/// How long the boot ROM's drive may take to appear after the reboot.
-const DRIVE_WAIT: Duration = Duration::from_secs(20);
+/// How long the boot ROM may take to appear after the reboot, and its drive to mount.
+const BOOT_ROM_WAIT: Duration = Duration::from_secs(20);
 /// The RP2040 boot ROM's drive holds this file.
 const DRIVE_MARKER: &str = "INFO_UF2.TXT";
+const FLASH_DUMP: &str = "flash.bin";
+/// Written last, so a folder without it is an unfinished backup.
+const MANIFEST: &str = "manifest.txt";
+const SETTINGS: &str = "settings";
 
 #[derive(Subcommand)]
 pub enum ScannerCommand {
     /// The firmware the key scanner reports, and its active profile, mode and platform
     Version,
-    /// Save the keymap, profile settings and press-refinement model to a new folder
+    /// Back up this keyboard to a new folder: its settings, all 16 MiB of flash (stock firmware
+    /// included) and the factory calibration, checked. Ends by rebooting into the firmware.
     Backup {
         /// Created; must not exist yet
         dir: PathBuf,
     },
+    /// Check that a backup folder is complete and its calibration loads
+    CheckBackup { dir: PathBuf },
     /// Reboot the key scanner into its USB boot ROM (the RPI-RP2 drive)
     Bootloader,
-    /// Reboot into the boot ROM and copy a .uf2 firmware onto its drive
+    /// Flash a .uf2 firmware; refuses unless --backup is a complete backup of this keyboard
     Flash {
         /// For example firmware/target/thumbv6m-none-eabi/release/glassdeck-scanner.uf2
         uf2: PathBuf,
+        /// A folder made by `glassdeck scanner backup` from this keyboard
+        #[arg(long)]
+        backup: PathBuf,
     },
 }
 
 pub fn run(command: ScannerCommand) -> Result<()> {
     match command {
         ScannerCommand::Version => version(&mut UsbPipe::open()?),
-        ScannerCommand::Backup { dir } => backup(&mut UsbPipe::open()?, &dir),
+        ScannerCommand::Backup { dir } => backup(&dir),
+        ScannerCommand::CheckBackup { dir } => {
+            let backup = Backup::load(&dir)?;
+            println!(
+                "{} is a complete backup: {}",
+                dir.display(),
+                backup.manifest.describe()
+            );
+            Ok(())
+        }
         ScannerCommand::Bootloader => {
             enter_bootloader(&mut UsbPipe::open()?)?;
             let drive = wait_for_drive()?;
@@ -59,7 +84,7 @@ pub fn run(command: ScannerCommand) -> Result<()> {
             );
             Ok(())
         }
-        ScannerCommand::Flash { uf2 } => flash(&uf2),
+        ScannerCommand::Flash { uf2, backup } => flash(&uf2, &backup),
     }
 }
 
@@ -73,6 +98,8 @@ trait Pipe {
 struct UsbPipe {
     out: nusb::Endpoint<Bulk, Out>,
     input: nusb::Endpoint<Bulk, In>,
+    /// The USB serial number, if the firmware reports one.
+    serial: Option<String>,
 }
 
 impl UsbPipe {
@@ -89,6 +116,7 @@ impl UsbPipe {
             1 => found.remove(0),
             n => bail!("{n} key scanners are plugged in; unplug all but one"),
         };
+        let serial = info.serial_number().map(str::to_owned);
         let device = info.open().wait().context("opening the key scanner")?;
         let interface = device.claim_interface(INTERFACE_COMMANDS).wait().context(
             "claiming the command interface; on Windows it must be bound to WinUSB (the firmware asks for that itself)",
@@ -96,6 +124,7 @@ impl UsbPipe {
         Ok(Self {
             out: interface.endpoint::<Bulk, Out>(EP_COMMANDS_OUT)?,
             input: interface.endpoint::<Bulk, In>(EP_COMMANDS_IN)?,
+            serial,
         })
     }
 }
@@ -212,26 +241,128 @@ fn version(pipe: &mut impl Pipe) -> Result<()> {
     Ok(())
 }
 
-fn backup(pipe: &mut impl Pipe, dir: &Path) -> Result<()> {
-    fs::create_dir(dir)
-        .with_context(|| format!("creating {} (it must not exist yet)", dir.display()))?;
+/// What a finished backup records about the keyboard it came from.
+#[derive(Debug, PartialEq, Eq)]
+struct Manifest {
+    firmware: String,
+    usb_serial: Option<String>,
+    flash_fingerprint: u64,
+    calibration_version: u32,
+}
+
+impl Manifest {
+    fn encode(&self) -> String {
+        format!(
+            "firmware {}\nusb_serial {}\nflash_fnv1a64 {:016x}\ncalibration_version {}\n",
+            self.firmware,
+            self.usb_serial.as_deref().unwrap_or("none"),
+            self.flash_fingerprint,
+            self.calibration_version
+        )
+    }
+
+    fn parse(text: &str) -> Result<Self> {
+        let field = |key: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix(' '))
+                .with_context(|| format!("the manifest has no {key}"))
+        };
+        Ok(Self {
+            firmware: field("firmware")?.to_owned(),
+            usb_serial: Some(field("usb_serial")?)
+                .filter(|s| *s != "none")
+                .map(str::to_owned),
+            flash_fingerprint: u64::from_str_radix(field("flash_fnv1a64")?, 16)
+                .context("the manifest's flash_fnv1a64")?,
+            calibration_version: field("calibration_version")?
+                .parse()
+                .context("the manifest's calibration_version")?,
+        })
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "firmware {}, USB serial {}, calibration version {}",
+            self.firmware,
+            self.usb_serial.as_deref().unwrap_or("none"),
+            self.calibration_version
+        )
+    }
+}
+
+/// A backup folder that checked out: the manifest, a whole flash dump matching it, and a
+/// factory calibration that loads and matches the copy inside the dump.
+struct Backup {
+    manifest: Manifest,
+    calibration: FactoryCalibration,
+}
+
+impl Backup {
+    fn load(dir: &Path) -> Result<Self> {
+        let manifest_path = dir.join(MANIFEST);
+        let manifest =
+            Manifest::parse(&fs::read_to_string(&manifest_path).with_context(|| {
+                format!(
+                    "reading {} (a folder without it is an unfinished backup)",
+                    manifest_path.display()
+                )
+            })?)?;
+        let flash = fs::read(dir.join(FLASH_DUMP)).context("reading the flash dump")?;
+        if flash.len() != FLASH_SIZE as usize {
+            bail!("the flash dump is {} bytes, not {FLASH_SIZE}", flash.len());
+        }
+        if fingerprint(&flash) != manifest.flash_fingerprint {
+            bail!("the flash dump doesn't match its manifest; it's damaged or from another backup");
+        }
+        let calibration = flash_image::factory_calibration(partition(&flash))
+            .context("the flash dump's factory calibration")?;
+        for (name, stored) in [
+            (CALIBRATION_INFO, &calibration.info),
+            (CALIBRATION_FACTORS, &calibration.factors),
+        ] {
+            let copy = fs::read(dir.join(name)).with_context(|| format!("reading {name}"))?;
+            if &copy != stored {
+                bail!("{name} differs from the calibration inside the flash dump");
+            }
+        }
+        if calibration.calibration.version != manifest.calibration_version {
+            bail!("the calibration version doesn't match the manifest");
+        }
+        Ok(Self {
+            manifest,
+            calibration,
+        })
+    }
+}
+
+fn partition(flash: &[u8]) -> &[u8] {
+    &flash[PARTITION_OFFSET..PARTITION_OFFSET + PARTITION_LEN]
+}
+
+/// FNV-1a over the dump, so a damaged or swapped `flash.bin` is caught.
+fn fingerprint(data: &[u8]) -> u64 {
+    data.iter().fold(0xCBF2_9CE4_8422_2325u64, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01B3)
+    })
+}
+
+fn write_new(path: &Path, data: &[u8]) -> Result<()> {
+    fs::File::create_new(path)
+        .and_then(|mut f| f.write_all(data))
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("saved {} ({} bytes)", path.display(), data.len());
+    Ok(())
+}
+
+/// Saves what the firmware answers for into the new folder `dir`, returning a line per file.
+fn save_settings(pipe: &mut impl Pipe, dir: &Path) -> Result<String> {
+    fs::create_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut summary = String::new();
     let mut save = |name: &str, data: &[u8], what: &str| -> Result<()> {
-        let path = dir.join(name);
-        fs::File::create_new(&path)
-            .and_then(|mut f| f.write_all(data))
-            .with_context(|| format!("writing {}", path.display()))?;
-        summary.push_str(&format!("{name}: {what}\n"));
-        println!("saved {} ({} bytes)", path.display(), data.len());
+        write_new(&dir.join(name), data)?;
+        writeln!(summary, "{SETTINGS}/{name}: {what}").expect("writing to a String");
         Ok(())
     };
-
-    let firmware = firmware_version(pipe)?;
-    save(
-        "firmware.txt",
-        format!("{firmware}\n").as_bytes(),
-        "the VERSION answer",
-    )?;
     if let Some(state) = runtime_state(pipe)? {
         let text = format!(
             "active_profile {}\nactuation_mode {}\nplatform_code {}\n",
@@ -269,10 +400,63 @@ fn backup(pipe: &mut impl Pipe, dir: &Path) -> Result<()> {
         Some(state) => println!("press refinement: {state:?}"),
         None => println!("press refinement: this firmware doesn't support it"),
     }
-    summary.push_str(
-        "\nThe factory calibration isn't reachable over USB; back it up with a full flash dump.\n",
-    );
+    Ok(summary)
+}
+
+fn read_flash(rom: &mut BootRom, offset: u32, len: u32) -> Result<Vec<u8>> {
+    let mib = |n: u32| n as f32 / (1024.0 * 1024.0);
+    let mut shown = 0;
+    let data = rom.read_flash(offset, len, |done| {
+        if done - shown >= 256 * 1024 || done == len {
+            shown = done;
+            print!("\rreading flash: {:.2} / {:.2} MiB", mib(done), mib(len));
+            let _ = std::io::stdout().flush();
+        }
+    })?;
+    println!();
+    Ok(data)
+}
+
+fn backup(dir: &Path) -> Result<()> {
+    let mut pipe = UsbPipe::open()?;
+    if picoboot::count() > 0 {
+        bail!(
+            "an RP2040 is already in its boot ROM; unplug it so the backup can't read the wrong board"
+        );
+    }
+    let firmware = firmware_version(&mut pipe)?;
+    let usb_serial = pipe.serial.clone();
+    fs::create_dir(dir)
+        .with_context(|| format!("creating {} (it must not exist yet)", dir.display()))?;
+    let mut summary = save_settings(&mut pipe, &dir.join(SETTINGS))?;
+
+    enter_bootloader(&mut pipe)?;
+    drop(pipe);
+    let mut rom = wait_for_boot_rom()?;
+    let flash = read_flash(&mut rom, 0, FLASH_SIZE)?;
+    let cal = flash_image::factory_calibration(partition(&flash))
+        .context("the flash dump's factory calibration")?;
+    write_new(&dir.join(FLASH_DUMP), &flash)?;
+    write_new(&dir.join(CALIBRATION_INFO), &cal.info)?;
+    write_new(&dir.join(CALIBRATION_FACTORS), &cal.factors)?;
+    summary.push_str(&format!(
+        "{FLASH_DUMP}: all 16 MiB of flash, the stock firmware first and the littlefs partition at {PARTITION_OFFSET:#x}\n\
+         {CALIBRATION_INFO}, {CALIBRATION_FACTORS}: the factory calibration, copied out of that partition\n"
+    ));
     fs::write(dir.join("README.txt"), summary).context("writing README.txt")?;
+    let manifest = Manifest {
+        firmware,
+        usb_serial,
+        flash_fingerprint: fingerprint(&flash),
+        calibration_version: cal.calibration.version,
+    };
+    write_new(&dir.join(MANIFEST), manifest.encode().as_bytes())?;
+    Backup::load(dir).context("checking the backup just written")?;
+    rom.reboot().context("rebooting into the firmware")?;
+    println!(
+        "backup complete ({}); the key scanner is rebooting into its firmware",
+        manifest.describe()
+    );
     Ok(())
 }
 
@@ -285,6 +469,33 @@ fn enter_bootloader(pipe: &mut impl Pipe) -> Result<()> {
     }
 }
 
+fn wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> Result<T> {
+    let start = Instant::now();
+    while start.elapsed() < BOOT_ROM_WAIT {
+        if let Some(t) = ready() {
+            return Ok(t);
+        }
+        sleep(Duration::from_millis(250));
+    }
+    bail!("{what} didn't appear within {BOOT_ROM_WAIT:?}")
+}
+
+fn wait_for_boot_rom() -> Result<BootRom> {
+    wait_for("the RP2040 boot ROM", || {
+        (picoboot::count() > 0).then_some(())
+    })?;
+    // Windows can take a moment to make a new device openable.
+    let mut last = None;
+    for _ in 0..8 {
+        match BootRom::open() {
+            Ok(rom) => return Ok(rom),
+            Err(e) => last = Some(e),
+        }
+        sleep(Duration::from_millis(500));
+    }
+    Err(last.expect("at least one attempt"))
+}
+
 /// A drive letter whose root holds the boot ROM's INFO_UF2.TXT.
 fn find_drive() -> Option<PathBuf> {
     (b'D'..=b'Z')
@@ -292,53 +503,53 @@ fn find_drive() -> Option<PathBuf> {
         .find(|root| root.join(DRIVE_MARKER).is_file())
 }
 
-fn boot_rom_present() -> bool {
-    nusb::list_devices().wait().is_ok_and(|mut d| {
-        d.any(|d| d.vendor_id() == BOOT_ROM_VID && d.product_id() == BOOT_ROM_PID)
-    })
-}
-
 fn wait_for_drive() -> Result<PathBuf> {
-    let start = Instant::now();
-    while start.elapsed() < DRIVE_WAIT {
-        if let Some(drive) = find_drive() {
-            return Ok(drive);
-        }
-        sleep(Duration::from_millis(250));
-    }
-    if boot_rom_present() {
-        bail!("the RP2040 boot ROM is on USB but its drive didn't mount within {DRIVE_WAIT:?}");
-    }
-    bail!("the boot ROM didn't appear within {DRIVE_WAIT:?}");
+    wait_for("the boot ROM's drive", find_drive)
 }
 
-fn flash(uf2: &Path) -> Result<()> {
+fn flash(uf2: &Path, backup_dir: &Path) -> Result<()> {
+    let backup = Backup::load(backup_dir).with_context(|| {
+        format!(
+            "{} isn't a usable backup, so nothing was flashed",
+            backup_dir.display()
+        )
+    })?;
+    println!("backup checked: {}", backup.manifest.describe());
     let image = fs::read(uf2).with_context(|| format!("reading {}", uf2.display()))?;
-    if image.len() % 512 != 0 || image.get(..8) != Some(b"UF2\nWQ]\x9e".as_slice()) {
+    if !image.len().is_multiple_of(512) || image.get(..8) != Some(b"UF2\nWQ]\x9e".as_slice()) {
         bail!("{} isn't a UF2 file", uf2.display());
     }
-    // A boot drive that's already mounted could belong to another RP2040 board, so it's only
-    // used when the key scanner itself isn't on USB.
-    let drive = match (UsbPipe::open(), find_drive()) {
-        (Ok(_), Some(other)) => {
-            bail!(
-                "{} is already an RP2040 boot drive; unplug that board first",
-                other.display()
-            )
-        }
-        (Ok(mut pipe), None) => {
-            enter_bootloader(&mut pipe)?;
-            wait_for_drive()?
-        }
-        (Err(_), Some(drive)) => {
-            println!(
-                "the key scanner isn't on USB; using the boot drive already at {}",
-                drive.display()
-            );
-            drive
-        }
-        (Err(e), None) => return Err(e),
-    };
+    if find_drive().is_some() || picoboot::count() > 0 {
+        bail!(
+            "an RP2040 is already in its boot ROM; unplug it (or, if it's this keyboard, replug it \
+             so it starts its firmware) so this can't flash the wrong board"
+        );
+    }
+
+    let mut pipe = UsbPipe::open()?;
+    if let (Some(now), Some(then)) = (&pipe.serial, &backup.manifest.usb_serial)
+        && now != then
+    {
+        bail!(
+            "this keyboard's USB serial is {now}, the backup's is {then}; back up this keyboard first"
+        );
+    }
+    enter_bootloader(&mut pipe)?;
+    drop(pipe);
+
+    let mut rom = wait_for_boot_rom()?;
+    let live = read_flash(&mut rom, PARTITION_OFFSET as u32, PARTITION_LEN as u32)?;
+    let live =
+        flash_image::factory_calibration(&live).context("this keyboard's factory calibration")?;
+    if live.info != backup.calibration.info || live.factors != backup.calibration.factors {
+        rom.reboot().context("rebooting back into the firmware")?;
+        bail!(
+            "this keyboard's factory calibration isn't the one in the backup, so it's another keyboard; nothing was flashed"
+        );
+    }
+    drop(rom);
+
+    let drive = wait_for_drive()?;
     let target = drive.join(uf2.file_name().context("the .uf2 path has no file name")?);
     println!("copying {} to {}", uf2.display(), target.display());
     // The boot ROM reboots into the new image as soon as the last block lands, so the copy
@@ -441,5 +652,81 @@ mod tests {
             firmware_version(&mut pipe).unwrap(),
             "glassdeck-scanner 0.0.1"
         );
+    }
+
+    fn backup_folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "glassdeck-backup-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let (info, factors) = flash_image::tests::calibration_files();
+        let part = flash_image::build_partition(&[
+            (CALIBRATION_INFO, &info),
+            (CALIBRATION_FACTORS, &factors),
+        ]);
+        let mut flash = vec![0xFFu8; FLASH_SIZE as usize];
+        flash[PARTITION_OFFSET..PARTITION_OFFSET + PARTITION_LEN].copy_from_slice(&part);
+        fs::write(dir.join(FLASH_DUMP), &flash).unwrap();
+        fs::write(dir.join(CALIBRATION_INFO), &info).unwrap();
+        fs::write(dir.join(CALIBRATION_FACTORS), &factors).unwrap();
+        let manifest = Manifest {
+            firmware: "openflux-firmware 1.0.1".into(),
+            usb_serial: Some("E6614103E7452D2F".into()),
+            flash_fingerprint: fingerprint(&flash),
+            calibration_version: 1,
+        };
+        fs::write(dir.join(MANIFEST), manifest.encode()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_manifest_round_trips() {
+        let m = Manifest {
+            firmware: "openflux-firmware 1.0.1".into(),
+            usb_serial: None,
+            flash_fingerprint: 0x0123_4567_89AB_CDEF,
+            calibration_version: 2,
+        };
+        assert_eq!(Manifest::parse(&m.encode()).unwrap(), m);
+    }
+
+    #[test]
+    fn a_complete_backup_loads() {
+        let dir = backup_folder("complete");
+        let backup = Backup::load(&dir).unwrap();
+        assert_eq!(
+            backup.manifest.usb_serial.as_deref(),
+            Some("E6614103E7452D2F")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_incomplete_or_altered_backup_is_refused() {
+        let dir = backup_folder("missing-manifest");
+        fs::remove_file(dir.join(MANIFEST)).unwrap();
+        assert!(Backup::load(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
+
+        let dir = backup_folder("altered-dump");
+        let mut flash = fs::read(dir.join(FLASH_DUMP)).unwrap();
+        flash[0] = 0;
+        fs::write(dir.join(FLASH_DUMP), &flash).unwrap();
+        assert!(Backup::load(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
+
+        let dir = backup_folder("altered-calibration");
+        let mut factors = fs::read(dir.join(CALIBRATION_FACTORS)).unwrap();
+        factors[0] ^= 1;
+        fs::write(dir.join(CALIBRATION_FACTORS), &factors).unwrap();
+        assert!(Backup::load(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
+
+        let dir = backup_folder("missing-calibration-copy");
+        fs::remove_file(dir.join(CALIBRATION_INFO)).unwrap();
+        assert!(Backup::load(&dir).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

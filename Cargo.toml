@@ -18,6 +18,7 @@ glassdeck-luau = { path = "crates/glassdeck-luau" }
 glassdeck-luau-check = { path = "crates/glassdeck-luau-check" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
 glassdeck-scanner-proto = { path = "crates/glassdeck-scanner-proto" }
+glassdeck-scanner-dsp = { path = "crates/glassdeck-scanner-dsp" }
 glassdeck-gpu = { path = "crates/glassdeck-gpu" }
 glassdeck-slang = { path = "crates/glassdeck-slang" }
 glassdeck-wallpaper-engine = { path = "crates/glassdeck-wallpaper-engine" }

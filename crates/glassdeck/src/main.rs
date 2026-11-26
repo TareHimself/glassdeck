@@ -2,6 +2,8 @@
 //! the rest (monitors, recording, converting, packing modules) runs here.
 
 mod client;
+mod flash_image;
+mod picoboot;
 mod scanner;
 mod theme;
 

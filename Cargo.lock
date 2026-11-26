@@ -710,6 +710,7 @@ name = "glassdeck"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cc",
  "clap",
  "glassdeck-api",
  "glassdeck-capture",
@@ -718,6 +719,7 @@ dependencies = [
  "glassdeck-luau-check",
  "glassdeck-package",
  "glassdeck-proto",
+ "glassdeck-scanner-dsp",
  "glassdeck-scanner-proto",
  "glassdeck-slang",
  "nusb",
