@@ -8,6 +8,9 @@ mod resource;
 
 pub use resource::{LiveName, MAX_LIVE_RESOURCE_BYTES, ResourceReader, ResourceRef, resource_of};
 
+/// Where a script's `print` goes, when not to the process's own output.
+pub type Print = std::rc::Rc<dyn Fn(String)>;
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -47,6 +50,21 @@ impl Vm {
 
     pub fn lua(&self) -> &Lua {
         &self.lua
+    }
+
+    /// Sends what `print` gets to `print_to`, as Luau would print it: each value through `tostring`,
+    /// separated by tabs. Call before `seal`.
+    pub fn install_print(&self, print_to: Print) -> Result<()> {
+        let print = self
+            .lua
+            .create_function(move |lua, values: mlua::Variadic<Value>| {
+                let tostring: Function = lua.globals().get("tostring")?;
+                let parts = values.into_iter().map(|v| tostring.call::<String>(v)).collect::<mlua::Result<Vec<_>>>()?;
+                print_to(parts.join("\t"));
+                Ok(())
+            })
+            .lua_context("creating print")?;
+        self.lua.globals().set("print", print).lua_context("installing print")
     }
 
     /// `every(seconds, fn)`: calls `fn` every `seconds`, for the host to expose under its own name.

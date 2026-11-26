@@ -4,7 +4,6 @@
 //! options but no `host.luau` gets an implicit one that forwards them as they are. Picks up new themes
 //! and package installs while running, and restarts only what changed.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,18 +13,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, bail};
-use glassdeck_luau::color::color_api;
-use glassdeck_luau::options::{OptionsScript, Panel, Values, any_function, changed_table, options_table, read_values};
-use glassdeck_luau::{LuaResultExt, ResourceReader, Vm, encode};
-use glassdeck_package::{Package, PackageId, ResourceKind, is_package};
+use anyhow::Result;
+use glassdeck_luau::options::read_values;
+use glassdeck_luau::ResourceReader;
+use glassdeck_package::{Package, PackageId, is_package};
 use glassdeck_proto::compositor::MAX_DATA_LEN;
-use mlua::{Function, Lua, Table, Value};
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
-use crate::host_api::{LiveOutbox, image_api, live_api, media_api};
+use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
 use crate::link::Uplink;
-use crate::media::SharedNowPlaying;
 use crate::theme::{self, ActiveTheme, Chosen};
 
 /// How often the profile and module folder are checked for changes.
@@ -49,7 +44,7 @@ struct Host {
     packages: PathBuf,
     theme: ActiveTheme,
     uplink: Arc<Uplink>,
-    system: Rc<RefCell<System>>,
+    system: SharedSystem,
     now_playing: SharedNowPlaying,
     background: Option<Running>,
     widgets: BTreeMap<u16, Running>,
@@ -114,52 +109,10 @@ enum Target {
     Widget(u16),
 }
 
-/// The latest unsent value of one host side.
-type Slot = Rc<RefCell<Option<Vec<u8>>>>;
-
-/// A running `host.luau`.
-struct HostVm {
-    vm: Vm,
-    slot: Slot,
-    live: LiveOutbox,
-    on_options: Rc<RefCell<Option<Function>>>,
-}
-
-/// A package's host side: what it declares the user can set, and who turns that into data.
-struct HostSide {
-    label: String,
-    options: Option<Declared>,
-    run: Run,
-}
-
-struct Declared {
-    script: OptionsScript,
-    first: Panel,
-}
-
-enum Run {
-    Script(HostVm),
-    /// No `host.luau`: the options go as they are, encoded in this VM.
-    Forward {
-        vm: Vm,
-        slot: Slot,
-    },
-}
-
-/// What a host side is made from.
-struct Sources {
-    label: String,
-    options: Option<String>,
-    host: Option<String>,
-    reader: Option<ResourceReader>,
-    send_limit: Option<usize>,
-}
 
 impl Host {
     fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Self {
-        let refresh =
-            RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_usage()).with_memory(MemoryRefreshKind::nothing().with_ram());
-        let system = Rc::new(RefCell::new(System::new_with_specifics(refresh).expect("system stats are readable")));
+        let system = glassdeck_host::system();
         Self { packages, theme, uplink, system, now_playing, background: None, widgets: BTreeMap::new(), seen: None }
     }
 
@@ -171,8 +124,8 @@ impl Host {
                 self.rescan();
                 next_scan = now + RESCAN;
             }
-            self.widgets.retain(|_, widget| widget.side.run_timers(now));
-            if self.background.as_ref().is_some_and(|b| !b.side.run_timers(now)) {
+            self.widgets.retain(|_, widget| keeps_running(&widget.side, now));
+            if self.background.as_ref().is_some_and(|b| !keeps_running(&b.side, now)) {
                 self.background = None;
             }
             self.flush();
@@ -191,7 +144,7 @@ impl Host {
 
     fn flush(&self) {
         for (&number, widget) in &self.widgets {
-            if let Some(payload) = widget.side.slot().borrow_mut().take() {
+            if let Some(payload) = widget.side.take_sent() {
                 self.uplink.put_module_data(number, payload);
             }
             for (name, data) in widget.side.take_live() {
@@ -202,7 +155,7 @@ impl Host {
             if !side.take_live().is_empty() {
                 eprintln!("error: {}: backgrounds can't use live resources", side.label);
             }
-            if let Some(payload) = side.slot().borrow_mut().take() {
+            if let Some(payload) = side.take_sent() {
                 self.uplink.put_background_data(payload);
             }
         }
@@ -289,7 +242,7 @@ impl Host {
                 Target::Background => (None, Some(MAX_DATA_LEN)),
                 Target::Widget(_) => (Some(Rc::new(move |resource| readable.resource(resource))), None),
             };
-            let sources = Sources { label: label.clone(), options: package.options_script()?, host: package.host_script()?, reader, send_limit };
+            let sources = Sources { label: label.clone(), options: package.options_script()?, host: package.host_script()?, reader, send_limit, print: None };
             let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
             Ok(Some(side))
@@ -307,188 +260,15 @@ impl Host {
     }
 }
 
-static NO_OPTIONS: Panel = Panel { items: Vec::new() };
-
-impl HostSide {
-    /// `None` when there's nothing to run: no options and no `host.luau`.
-    fn start(sources: Sources, system: &Rc<RefCell<System>>, now_playing: &SharedNowPlaying) -> Result<Option<Self>> {
-        let Sources { label, options, host, reader, send_limit } = sources;
-        if options.is_none() && host.is_none() {
-            return Ok(None);
-        }
-        let options = match options {
-            Some(source) => {
-                let script = OptionsScript::new(&source);
-                let first = script.first_pass().context("options.luau")?;
-                Some(Declared { script, first })
-            }
-            None => None,
-        };
-        let run = match host {
-            Some(script) => Run::Script(HostVm::start(&script, reader, send_limit, system, now_playing)?),
-            None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
-        };
-        Ok(Some(Self { label, options, run }))
-    }
-
-    fn first(&self) -> &Panel {
-        self.options.as_ref().map_or(&NO_OPTIONS, |o| &o.first)
-    }
-
-    /// `host.on_options(options, changed)`, or the options sent as they are.
-    fn apply_options(&self, chosen: &Values, changed: Option<&BTreeSet<String>>) -> Result<()> {
-        let first = self.first();
-        let resolved = first.resolve(chosen);
-        for why in &resolved.dropped {
-            eprintln!("Options: {}: {why}; the default applies", self.label);
-        }
-        if let Some(options) = &self.options {
-            options.script.run(first, &resolved.values)?;
-        }
-        match &self.run {
-            Run::Script(host) => {
-                let Some(on_options) = host.on_options.borrow().clone() else { return Ok(()) };
-                let lua = host.vm.lua();
-                let args = (options_table(lua, first, &resolved.values)?, changed_table(lua, first, changed)?);
-                host.vm.call::<()>(&on_options, args).context("in host.on_options")
-            }
-            Run::Forward { vm, slot } => {
-                if self.options.is_none() {
-                    return Ok(());
-                }
-                *slot.borrow_mut() = Some(encode(Value::Table(options_table(vm.lua(), first, &resolved.values)?))?);
-                Ok(())
-            }
+/// Runs a side's due timers; a failed one is reported and stops, and the others keep running.
+fn keeps_running(side: &HostSide, now: Instant) -> bool {
+    match side.run_timers(now) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("error: {}: {e:#}; it stops, the others keep running", side.label);
+            false
         }
     }
-
-    fn slot(&self) -> &Slot {
-        match &self.run {
-            Run::Script(host) => &host.slot,
-            Run::Forward { slot, .. } => slot,
-        }
-    }
-
-    fn take_live(&self) -> BTreeMap<String, Vec<u8>> {
-        match &self.run {
-            Run::Script(host) => std::mem::take(&mut *host.live.borrow_mut()),
-            Run::Forward { .. } => BTreeMap::new(),
-        }
-    }
-
-    /// Runs due timers; `false` means the script failed and stopped.
-    fn run_timers(&self, now: Instant) -> bool {
-        let Run::Script(host) = &self.run else { return true };
-        match host.vm.run_due_timers(now) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("error: {}: {e:#}; it stops, the others keep running", self.label);
-                false
-            }
-        }
-    }
-
-    fn next_timer(&self) -> Option<Instant> {
-        match &self.run {
-            Run::Script(host) => host.vm.next_timer(),
-            Run::Forward { .. } => None,
-        }
-    }
-}
-
-fn check_size(len: usize, limit: Option<usize>) -> Result<()> {
-    if let Some(limit) = limit
-        && len > limit
-    {
-        bail!("{len} bytes is more than the {limit} one send may be");
-    }
-    Ok(())
-}
-
-impl HostVm {
-    /// `reader` serves `host.resource` and `keyboard.resource`; `send_limit` caps one `send()`.
-    fn start(
-        script: &str,
-        reader: Option<ResourceReader>,
-        send_limit: Option<usize>,
-        system: &Rc<RefCell<System>>,
-        now_playing: &SharedNowPlaying,
-    ) -> Result<Self> {
-        let vm = Vm::new()?;
-        let slot: Slot = Rc::new(RefCell::new(None));
-        let lua = vm.lua();
-        let globals = lua.globals();
-        globals.set("every", vm.every_function()?).lua_context("installing every")?;
-        let outgoing = Rc::clone(&slot);
-        let send = lua
-            .create_function(move |_, data: Value| {
-                let bytes = encode(data).map_err(|e| mlua::Error::runtime(format!("send: {e:#}")))?;
-                check_size(bytes.len(), send_limit).map_err(|e| mlua::Error::runtime(format!("send: {e:#}")))?;
-                *outgoing.borrow_mut() = Some(bytes);
-                Ok(())
-            })
-            .lua_context("creating send")?;
-        globals.set("send", send).lua_context("installing send")?;
-        globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
-        let live: LiveOutbox = Rc::default();
-        globals.set("live", live_api(lua, &live)?).lua_context("installing live")?;
-        globals.set("image", image_api(lua)?).lua_context("installing image")?;
-        globals.set("media", media_api(lua, now_playing)?).lua_context("installing media")?;
-        globals.set("color", color_api(lua)?).lua_context("installing color")?;
-        globals.set("any", any_function(lua)?).lua_context("installing any")?;
-        if let Some(reader) = reader {
-            vm.install_resources(&ResourceKind::ALL, reader)?;
-        }
-        let on_options = Rc::new(RefCell::new(None));
-        install_on_options(lua, &on_options)?;
-        vm.seal()?;
-        vm.load::<()>(script, "host.luau")?;
-        Ok(Self { vm, slot, live, on_options })
-    }
-}
-
-/// `host.on_options(fn)`, beside `host.resource` when the package has resources.
-fn install_on_options(lua: &Lua, slot: &Rc<RefCell<Option<Function>>>) -> Result<()> {
-    let globals = lua.globals();
-    let host: Table = match globals.get::<Value>("host").lua_context("reading host")? {
-        Value::Table(table) => table,
-        _ => {
-            let table = lua.create_table().lua_context("creating host")?;
-            globals.set("host", &table).lua_context("installing host")?;
-            table
-        }
-    };
-    let registered = Rc::clone(slot);
-    let register = lua
-        .create_function(move |_, callback: Function| {
-            let mut slot = registered.borrow_mut();
-            if slot.is_some() {
-                return Err(mlua::Error::runtime("host.on_options was already called; register one function"));
-            }
-            *slot = Some(callback);
-            Ok(())
-        })
-        .lua_context("creating host.on_options")?;
-    host.set("on_options", register).lua_context("installing host.on_options")
-}
-
-fn system_api(lua: &Lua, system: &Rc<RefCell<System>>) -> Result<Table> {
-    let api = lua.create_table().lua_context("creating system")?;
-    let cpu = Rc::clone(system);
-    let cpu_percent = lua.create_function(move |_, ()| {
-        let mut system = cpu.borrow_mut();
-        system.refresh_cpu_usage();
-        Ok(system.global_cpu_usage() as f64)
-    });
-    api.set("cpu_percent", cpu_percent.lua_context("creating cpu_percent")?).lua_context("installing cpu_percent")?;
-    let memory = Rc::clone(system);
-    let memory_percent = lua.create_function(move |_, ()| {
-        let mut system = memory.borrow_mut();
-        system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-        Ok(system.used_memory() as f64 * 100.0 / system.total_memory().max(1) as f64)
-    });
-    api.set("memory_percent", memory_percent.lua_context("creating memory_percent")?).lua_context("installing memory_percent")?;
-    Ok(api)
 }
 
 fn snapshot(packages: &Path) -> Vec<(PathBuf, SystemTime)> {

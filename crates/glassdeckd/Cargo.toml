@@ -9,6 +9,7 @@ anyhow.workspace = true
 clap.workspace = true
 getrandom = "0.4.3"
 glassdeck-capture.workspace = true
+glassdeck-host.workspace = true
 glassdeck-luau.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true

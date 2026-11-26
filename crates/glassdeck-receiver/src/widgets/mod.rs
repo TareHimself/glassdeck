@@ -1,11 +1,6 @@
 //! The widget area's modules: a thread that runs each placed module's `keyboard.luau` and hands the
 //! compositor tiles to put on the key layer. Profile and module changes are picked up while running.
 
-mod draw;
-mod installing;
-mod instance;
-mod live;
-mod ui;
 
 use std::collections::HashMap;
 use std::fs;
@@ -23,9 +18,7 @@ use glassdeck_package::{Package, PackageId, is_package};
 use serde::{Deserialize, Serialize};
 
 use glassdeck_luau::LiveName;
-use installing::Installing;
-use instance::Instance;
-use live::LiveCache;
+use glassdeck_widget::{Installed, Installing, Instance, LiveCache};
 
 use crate::platform::Doorbell;
 
@@ -68,19 +61,6 @@ impl Tiles {
 
 /// The keyboard's own record of the widget layout, in its state folder
 const LAYOUT_FILE: &str = "widgets.json";
-
-/// A widget package, and when the file was written, so a rewrite counts as a new version.
-#[derive(Clone)]
-pub struct Installed {
-    pub package: Rc<Package>,
-    pub modified: SystemTime,
-}
-
-impl Installed {
-    fn same_version(&self, other: &Installed) -> bool {
-        self.package.path() == other.package.path() && self.modified == other.modified
-    }
-}
 
 pub enum Input {
     Data {
@@ -376,9 +356,9 @@ impl Host {
                     self.clear(replaced.placement);
                     let same_module = replaced.package == widget.package.as_str();
                     let saved = replaced.unload();
-                    Instance::start(index, widget, installed, if same_module { saved } else { None })
+                    Instance::start(index, widget, installed, if same_module { saved } else { None }, None)
                 }
-                None => Instance::start(index, widget, installed, None),
+                None => Instance::start(index, widget, installed, None, None),
             };
             self.instances.push(instance);
         }

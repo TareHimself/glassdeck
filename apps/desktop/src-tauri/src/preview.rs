@@ -1,0 +1,373 @@
+//! The widget editor's preview: both halves of the widget, run by the same runtimes the keyboard and
+//! glassdeckd use, on one thread (Luau VMs can't move between threads). What `host.luau` sends goes
+//! straight to `keyboard.luau`, as the Link would carry it. Each new frame is sent as a PNG, and what
+//! the scripts print, and the errors that stop them, as log lines.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use anyhow::{Context, Result};
+use base64::Engine;
+use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
+use glassdeck_luau::options::read_values;
+use glassdeck_luau::placement::{PlacedWidget, Placement};
+use glassdeck_luau::{LiveName, Print};
+use glassdeck_package::{Package, PackageId, pack_folder};
+use glassdeck_widget::{Installed, Instance, LiveCache};
+use serde::Serialize;
+use specta::Type;
+use tauri::AppHandle;
+use tauri_specta::Event as _;
+
+use crate::library::{Dims, SourceFile};
+
+const FRAME: Duration = Duration::from_millis(16);
+const IDLE: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LogSource {
+    /// Packing the editor's files, before anything runs
+    Pack,
+    Keyboard,
+    Host,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Print,
+    Error,
+}
+
+#[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PreviewUpdate {
+    Frame { width: u32, height: u32, png: String },
+    /// Nothing to show: the widget didn't start, or stopped on an error
+    Cleared,
+    Log { source: LogSource, level: LogLevel, text: String },
+}
+
+pub enum Command {
+    Show { folder: PathBuf, files: Vec<SourceFile>, size: Dims, values: serde_json::Map<String, serde_json::Value> },
+    Resize(Dims),
+    Options(serde_json::Map<String, serde_json::Value>),
+    Stop,
+}
+
+pub struct Preview(Mutex<Sender<Command>>);
+
+impl Preview {
+    pub fn start(app: AppHandle) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("widget preview".into())
+            .spawn(move || run(app, rx))
+            .expect("starting the preview thread");
+        Self(Mutex::new(tx))
+    }
+
+    pub fn send(&self, command: Command) {
+        let sent = self.0.lock().expect("the preview sender isn't poisoned").send(command);
+        if sent.is_err() {
+            eprintln!("the preview thread has stopped");
+        }
+    }
+}
+
+/// Where the preview's frames and log lines go.
+type Out = Rc<dyn Fn(PreviewUpdate)>;
+
+/// What the preview thread holds for the whole session.
+struct Session {
+    out: Out,
+    font: fontdue::Font,
+    system: SharedSystem,
+    now_playing: SharedNowPlaying,
+    scratch: PathBuf,
+}
+
+struct Running {
+    instance: Instance,
+    host: Option<HostSide>,
+    live: LiveCache,
+    /// The keyboard half's error, once logged, so it's logged once
+    reported: Option<String>,
+    last_frame: Option<Instant>,
+}
+
+fn run(app: AppHandle, rx: Receiver<Command>) {
+    let out: Out = Rc::new(move |update| {
+        if let Err(e) = update.emit(&app) {
+            eprintln!("emitting a preview update: {e}");
+        }
+    });
+    let cx = match Session::new(out) {
+        Ok(cx) => cx,
+        Err(e) => return eprintln!("preview: {e:#}"),
+    };
+    let mut running: Option<Running> = None;
+    loop {
+        let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, Instant::now()));
+        match rx.recv_timeout(wait) {
+            Ok(Command::Show { folder, files, size, values }) => {
+                running = match show(&cx, &folder, &files, size, &values) {
+                    Ok(started) => Some(started),
+                    Err(e) => {
+                        cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
+                        (cx.out)(PreviewUpdate::Cleared);
+                        None
+                    }
+                }
+            }
+            Ok(Command::Resize(size)) => {
+                if let Some(r) = &mut running {
+                    r.instance.resize(Placement { x: 0, y: 0, w: size.w, h: size.h });
+                }
+            }
+            Ok(Command::Options(values)) => {
+                if let Some(r) = &mut running {
+                    apply_options(&cx, r, &values);
+                }
+            }
+            Ok(Command::Stop) => running = None,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if let Some(r) = &mut running {
+            step(&cx, r);
+        }
+    }
+}
+
+impl Session {
+    fn new(out: Out) -> Result<Self> {
+        let font = glassdeck_widget::load_font(None)?;
+        let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
+            out(PreviewUpdate::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
+            Arc::new(Mutex::new(None))
+        });
+        static SESSIONS: AtomicU32 = AtomicU32::new(0);
+        let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
+        let scratch = std::env::temp_dir().join(format!("glassdeck-preview-{}-{session}", std::process::id()));
+        Ok(Self { out, font, system: glassdeck_host::system(), now_playing, scratch })
+    }
+
+    fn log(&self, source: LogSource, level: LogLevel, text: String) {
+        (self.out)(PreviewUpdate::Log { source, level, text });
+    }
+
+    fn printer(&self, source: LogSource) -> Print {
+        let out = Rc::clone(&self.out);
+        Rc::new(move |text| out(PreviewUpdate::Log { source, level: LogLevel::Print, text }))
+    }
+}
+
+fn wait_for(running: &Running, now: Instant) -> Duration {
+    let until = |at: Instant| at.saturating_duration_since(now);
+    let keyboard = running.instance.next_timer().map(until);
+    let host = running.host.as_ref().and_then(HostSide::next_timer).map(until);
+    let frame = running.instance.wants_frame().then_some(FRAME);
+    [keyboard, host, frame].into_iter().flatten().min().unwrap_or(IDLE)
+}
+
+/// Runs what's due on both halves, hands the host half's output to the keyboard half, and sends a frame
+/// if one was drawn.
+fn step(cx: &Session, r: &mut Running) {
+    let now = Instant::now();
+    if let Some(host) = &r.host
+        && let Err(e) = host.run_timers(now)
+    {
+        cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; host.luau stopped"));
+        r.host = None;
+    }
+    deliver(cx, r);
+    let frame_dt = r.instance.wants_frame().then(|| r.last_frame.map_or(FRAME, |at| now - at));
+    r.last_frame = frame_dt.map(|_| now);
+    r.instance.tick(now, frame_dt);
+    let tile = r.instance.draw(&cx.font, &r.live);
+    if let Some(error) = r.instance.error() {
+        if r.reported.as_deref() != Some(error) {
+            r.reported = Some(error.to_owned());
+            cx.log(LogSource::Keyboard, LogLevel::Error, error.to_owned());
+            (cx.out)(PreviewUpdate::Cleared);
+        }
+        return;
+    }
+    if let Some(tile) = tile {
+        let Placement { w, h, .. } = r.instance.placement;
+        match png_of(&tile.pixels, w, h) {
+            Ok(png) => (cx.out)(PreviewUpdate::Frame { width: w, height: h, png }),
+            Err(e) => eprintln!("preview: encoding a frame: {e:#}"),
+        }
+    }
+}
+
+/// What the host half sent and the live images it made, to the keyboard half.
+fn deliver(cx: &Session, r: &mut Running) {
+    let Some(host) = &r.host else { return };
+    if let Some(payload) = host.take_sent() {
+        r.instance.on_data(&payload);
+    }
+    for (name, bytes) in host.take_live() {
+        let stored = LiveName::parse(&name).and_then(|name| r.live.put(name.clone(), bytes).map(|dropped| (name, dropped)));
+        match stored {
+            Ok((name, dropped)) => {
+                let mut changed = dropped;
+                changed.push(name);
+                r.instance.live_changed(&changed);
+            }
+            Err(e) => cx.log(LogSource::Host, LogLevel::Error, format!("live.put {name}: {e:#}")),
+        }
+    }
+}
+
+fn apply_options(cx: &Session, r: &mut Running, values: &serde_json::Map<String, serde_json::Value>) {
+    let Some(host) = &r.host else { return };
+    let chosen = read_values("preview", host.first(), values.iter());
+    if let Err(e) = host.apply_options(&chosen, None) {
+        cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
+    }
+}
+
+/// Packs the widget folder with the editor's unsaved files over it, and starts both halves at `size`.
+fn show(cx: &Session, folder: &Path, files: &[SourceFile], size: Dims, values: &serde_json::Map<String, serde_json::Value>) -> Result<Running> {
+    let source = cx.scratch.join("source");
+    if source.exists() {
+        fs::remove_dir_all(&source).with_context(|| format!("clearing {}", source.display()))?;
+    }
+    copy_folder(folder, &source)?;
+    for file in files {
+        fs::write(source.join(&file.name), &file.text).with_context(|| format!("writing {}", file.name))?;
+    }
+    let deck = cx.scratch.join("preview.deck");
+    pack_folder(&source, &deck)?;
+    let package = Rc::new(Package::open(&deck)?);
+    let id: PackageId = package.id().clone();
+    let readable = Rc::clone(&package);
+    let sources = Sources {
+        label: "host.luau".into(),
+        options: package.options_script()?,
+        host: package.host_script()?,
+        reader: Some(Rc::new(move |resource| readable.resource(resource))),
+        send_limit: None,
+        print: Some(cx.printer(LogSource::Host)),
+    };
+    let host = match HostSide::start(sources, &cx.system, &cx.now_playing) {
+        Ok(host) => host,
+        Err(e) => {
+            cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
+            None
+        }
+    };
+    let installed = Installed { package, modified: SystemTime::now() };
+    let widget = PlacedWidget { package: id, placement: Placement { x: 0, y: 0, w: size.w, h: size.h } };
+    let instance = Instance::start(0, &widget, installed, None, Some(cx.printer(LogSource::Keyboard)));
+    let mut running = Running { instance, host, live: LiveCache::default(), reported: None, last_frame: None };
+    apply_options(cx, &mut running, values);
+    Ok(running)
+}
+
+fn copy_folder(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
+    for entry in fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_folder(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).with_context(|| format!("copying {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Premultiplied ARGB words to a base64 PNG with straight alpha.
+fn png_of(pixels: &[u32], width: u32, height: u32) -> Result<String> {
+    let unpremultiply = |c: u32, a: u32| (c * 255).checked_div(a).map_or(0, |v| v.min(255) as u8);
+    let rgba: Vec<u8> = pixels
+        .iter()
+        .flat_map(|p| {
+            let a = p >> 24;
+            [unpremultiply((p >> 16) & 0xff, a), unpremultiply((p >> 8) & 0xff, a), unpremultiply(p & 0xff, a), a as u8]
+        })
+        .collect();
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header()?.write_image_data(&rgba)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+    use crate::library::{NewWidget, Sizing, create_widget};
+
+    fn session() -> (Session, Rc<RefCell<Vec<PreviewUpdate>>>) {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&seen);
+        let cx = Session::new(Rc::new(move |update| sink.borrow_mut().push(update))).unwrap();
+        (cx, seen)
+    }
+
+    fn new_widget(root: &Path, options: bool, host: bool) -> PathBuf {
+        let size = Dims { w: 320, h: 160 };
+        let new = NewWidget { title: "Sky".into(), id: "local.sky".into(), options, runs_on_host: host, sizing: Sizing::Fixed { size } };
+        create_widget(root, new).unwrap();
+        root.join("local.sky")
+    }
+
+    #[test]
+    fn both_halves_run_and_print_reaches_the_log() {
+        let root = std::env::temp_dir().join(format!("glassdeck-preview-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = new_widget(&root, true, true);
+        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nwidget.on_data(function(data) text = data.label end)\nwidget.on_draw(function(ui) ui:text(text) end)\n".into() };
+        let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nhost.on_options(function(options) send({ label = options.label }) end)\n".into() };
+        let (cx, seen) = session();
+        let values = serde_json::json!({ "label": "Hi" });
+        let mut running = show(&cx, &folder, &[keyboard, host], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
+        step(&cx, &mut running);
+        let seen = seen.borrow();
+        let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewUpdate::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(prints, ["host up", "drawn by\tkeyboard"]);
+        assert!(seen.iter().any(|u| matches!(u, PreviewUpdate::Frame { width: 320, .. })), "a frame was drawn");
+        assert!(running.host.is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_draw_is_logged_once_and_clears_the_preview() {
+        let root = std::env::temp_dir().join(format!("glassdeck-preview-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = new_widget(&root, false, false);
+        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "widget.on_draw(function() error('boom') end)\n".into() };
+        let (cx, seen) = session();
+        let mut running = show(&cx, &folder, &[keyboard], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();
+        step(&cx, &mut running);
+        step(&cx, &mut running);
+        let seen = seen.borrow();
+        let errors = seen.iter().filter(|u| matches!(u, PreviewUpdate::Log { level: LogLevel::Error, text, .. } if text.contains("boom"))).count();
+        assert_eq!(errors, 1);
+        assert!(seen.iter().any(|u| matches!(u, PreviewUpdate::Cleared)));
+        assert!(!seen.iter().any(|u| matches!(u, PreviewUpdate::Frame { .. })), "no error tile in the preview");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn premultiplied_pixels_become_straight_alpha() {
+        let half_red = 0x80_80_00_00;
+        let png = png_of(&[half_red, 0], 2, 1).unwrap();
+        assert!(!png.is_empty());
+    }
+}

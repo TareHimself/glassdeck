@@ -56,6 +56,8 @@ flowchart LR
 | [glassdeck-luau](crates/glassdeck-luau) | both | Shared Luau VM core, options, widget placement and resource handles. |
 | [glassdeck-layout](crates/glassdeck-layout) | both | Key and widget area geometry on the 1920x1080 panel. |
 | [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas renderer process, and its core shared with the host preview. |
+| [glassdeck-widget](crates/glassdeck-widget) | keyboard, host | A widget's keyboard half: `keyboard.luau` in its own VM, drawn on the CPU. The receiver runs it on the keyboard; the desktop app runs it for the editor's preview. |
+| [glassdeck-host](crates/glassdeck-host) | host | A widget's or background's host half: `options.luau` and `host.luau` with the host-only `live`, `image` and `media` APIs. glassdeckd runs it for the active theme; the desktop app runs it for the editor's preview. |
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
 | [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's (RP2040) serial-link framing and messages, byte for byte as the stock firmware sends them. Tested against vectors printed by Keyglass's C firmware ([firmware/vectors](firmware/vectors)). |
 | [glassdeck-scanner-dsp](crates/glassdeck-scanner-dsp) | key scanner | `no_std`: the key scanner's signal processing, from sensor readings to key decisions, ported from Keyglass's C firmware and checked against it scan by scan. |

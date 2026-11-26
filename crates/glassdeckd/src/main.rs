@@ -5,9 +5,7 @@ mod active;
 mod api;
 mod config;
 mod error;
-mod host_api;
 mod link;
-mod media;
 mod module_host;
 mod runner;
 mod streams;
@@ -117,7 +115,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     let held = ActivePackages::open(paths.active.clone())?;
     let (kept, active) = restored_theme(&paths)?;
-    let module_host = module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), media::start()?)?;
+    let module_host = module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), glassdeck_host::start_media()?)?;
     let api = Arc::new(Api {
         token,
         runner,

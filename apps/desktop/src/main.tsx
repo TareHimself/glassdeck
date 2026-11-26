@@ -10,6 +10,7 @@ import { WidgetEditor } from "./screens/WidgetEditor";
 import { Widgets } from "./screens/Widgets";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
+import "./monaco";
 import "./theme.css";
 
 const router = createBrowserRouter([

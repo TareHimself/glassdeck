@@ -5,6 +5,8 @@ export function describeLibraryError(error: LibraryError): string {
     case "invalid_title":
     case "invalid_id":
     case "invalid_size":
+    case "invalid_version":
+    case "checker_unavailable":
     case "io":
       return error.reason;
     case "already_exists":

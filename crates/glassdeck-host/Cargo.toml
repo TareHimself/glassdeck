@@ -1,0 +1,14 @@
+[package]
+name = "glassdeck-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+glassdeck-luau.workspace = true
+glassdeck-package.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+mlua = { version = "0.12.3", features = ["luau", "serde"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
+windows.workspace = true

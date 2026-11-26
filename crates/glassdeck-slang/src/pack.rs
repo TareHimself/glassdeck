@@ -121,9 +121,19 @@ fn check_scripts(luau: &LuauChecker, types: &Types, keyboard: Option<&str>, opti
     Ok(())
 }
 
-/// A widget's `options.luau` and `host.luau`: run the first pass, write their types into
-/// `.glassdeck/`, and type-check both. `keyboard.luau` keeps the widget API's own rules.
+/// Fails with every problem `widget_problems` finds.
 pub fn check_widget(luau: &LuauChecker, folder: &Path) -> Result<()> {
+    let problems = widget_problems(luau, folder)?;
+    if !problems.is_empty() {
+        bail!("the widget's scripts don't type-check:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
+/// A widget's `options.luau` and `host.luau`: run the first pass, write their types into
+/// `.glassdeck/`, and type-check both, as "name:line:column: message". `keyboard.luau` keeps the
+/// widget API's own rules.
+pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<Vec<String>> {
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
     let panel = match &options {
@@ -149,8 +159,5 @@ pub fn check_widget(luau: &LuauChecker, folder: &Path) -> Result<()> {
     if let Some(host) = &host {
         problems.extend(luau.check_host(host, &generated)?);
     }
-    if !problems.is_empty() {
-        bail!("the widget's scripts don't type-check:\n  {}", problems.join("\n  "));
-    }
-    Ok(())
+    Ok(problems)
 }

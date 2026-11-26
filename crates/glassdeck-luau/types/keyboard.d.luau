@@ -1,5 +1,7 @@
--- keyboard.luau: runs on the keyboard, draws in the module's own rectangle.
--- Colors are "#rrggbb" or "#rrggbbaa". Coordinates are local: (0, 0) is the module's top-left.
+-- keyboard.luau: runs on the keyboard, draws in the widget's own rectangle.
+-- Callbacks are registered on the injected `widget` table, widget.on_draw(function(ui) ... end), and the
+-- script keeps its state in its own locals.
+-- Colors are "#rrggbb" or "#rrggbbaa". Coordinates are local: (0, 0) is the widget's top-left.
 
 export type TextOptions = {
     x: number?,
@@ -29,7 +31,7 @@ declare extern type Ui with
     width: number
     height: number
 
-    -- Drawing, only inside draw
+    -- Drawing, only inside widget.on_draw
     function text(self, text: string, options: TextOptions?): ()
     function rect(self, x: number, y: number, w: number, h: number, options: RectOptions?): ()
     function bar(self, fraction: number, options: BarOptions?): ()
@@ -38,26 +40,27 @@ declare extern type Ui with
     function image(self, image: Resource, options: AreaOptions?): ()
     -- degrees, clockwise from 12 o'clock
     function arc(self, cx: number, cy: number, r: number, from: number, to: number, options: ArcOptions?): ()
-
-    -- Redraw triggers, usable anywhere
-    function every(self, seconds: number, callback: () -> ()): ()
-    function redraw(self): ()
-    -- runs once at the next screen refresh, then draw runs; ask again to keep animating
-    function request_frame(self, callback: (dt: number) -> ()): ()
 end
 
-declare ui: Ui
-
--- What keyboard.luau returns. Every hook is optional except draw.
-export type Module<State> = {
-    init: ((saved: Data?) -> State)?,
-    -- the return value goes to the next init after a hot reload
-    unload: ((state: State) -> Data?)?,
-    resize: ((state: State, w: number, h: number) -> ())?,
-    -- what the host half sent, or the options as they are with no host.luau; return true to redraw
-    on_data: ((state: State, data: Data) -> boolean)?,
-    draw: (state: State, ui: Ui) -> (),
+-- Each callback is registered once; a second call is an error.
+export type Widget = {
+    -- Draws the widget, with the only Ui there is; required
+    on_draw: (callback: (ui: Ui) -> ()) -> (),
+    -- What the host half sent, or the options as they are with no host.luau; the widget redraws after
+    on_data: (callback: (data: any) -> ()) -> (),
+    -- The widget was resized; it redraws after
+    on_resize: (callback: (w: number, h: number) -> ()) -> (),
+    -- Before a hot reload; what it returns is widget.saved in the next run
+    on_unload: (callback: () -> any) -> (),
+    -- What on_unload returned before a hot reload; nil on a fresh start
+    saved: any,
+    every: (seconds: number, callback: () -> ()) -> (),
+    redraw: () -> (),
+    -- runs once at the next screen refresh, then on_draw runs; ask again to keep animating
+    request_frame: (callback: (dt: number) -> ()) -> (),
 }
+
+declare widget: Widget
 
 -- What the host half sent with live.put; draws nothing until it arrives. Names are one word.
 declare live: { resource: (name: string) -> Resource }

@@ -9,10 +9,19 @@ tauri-build = { version = "2.7.6", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+fontdue.workspace = true
 futures-util = "0.3.31"
 glassdeck-api.workspace = true
+glassdeck-host.workspace = true
 glassdeck-layout.workspace = true
+glassdeck-luau.workspace = true
+glassdeck-luau-check.workspace = true
 glassdeck-package.workspace = true
+glassdeck-slang.workspace = true
+glassdeck-widget.workspace = true
+base64 = "0.23.1"
+mlua = { version = "0.12.3", features = ["luau", "serde"] }
+png = "0.18.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true

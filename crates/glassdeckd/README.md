@@ -21,8 +21,7 @@ flowchart LR
 | `link` | The Link to the keyboard: a reconnecting state machine (`step`), plus `Uplink`, which queues streams, uploads, widget data, the background choice and the widget layout |
 | `runner` | Runs at most one source at a time, each in a worker process (`step` is the state table). `StatusBoard` holds its status for waiters and publishes every change |
 | `worker` | The worker side, run as `glassdeckd source`, because CEF can start only once per process |
-| `module_host` | Runs the host side of the theme's background and of each widget: options, plus `host.luau` or an implicit forwarder. Restarts only what changed |
-| `host_api` | The host-only Luau APIs: `live`, `image` and `media` |
+| `module_host` | Runs the host side of the theme's background and of each widget through [glassdeck-host](../glassdeck-host). Restarts only what changed |
 | `theme` | The active theme: checked against the installed packages, kept in `theme.json`, and turned into the keyboard's widget layout |
 | `api` | The axum server. Its routes and types live in [glassdeck-api](../glassdeck-api) |
 | `error` | Maps failures to API error codes. A failure is marked where it happens (`bad_request`, `conflict`); unmarked ones are internal |

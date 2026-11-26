@@ -18,8 +18,8 @@ flowchart LR
 - `screen`: which source owns the screen. A host stream first, then the chosen local background, then the built-in canvas. `Screen`, `Event` and `Effect` form one table, and `director::Director` carries out the effects.
 - `local`: backgrounds played with no host. Video through its own decoder (`mp4` parses the MP4), web through glassdeck-local-web, canvases through glassdeck-gpu.
 - `put`: installs the `.deck` packages the host sends through `<name>.tmp` and a rename. An upload must open as the package its file name says before it replaces anything.
-- `widgets`: runs each placed widget's `keyboard.luau` in its own glassdeck-luau VM and draws its tiles into the key layer. Takes the layout from `SetWidgets` and picks up package changes while running. On each connect the receiver tells the host what it holds (`Inventory`), and deletes what `RemovePackages` names.
-- `overlay` and `keymap`: key labels from the keymap's base layer, in Noto Sans JP Bold (`fonts/`, OFL).
+- `widgets`: runs each placed widget's `keyboard.luau` through glassdeck-widget (its own VM, drawn on the CPU) and puts its tiles into the key layer. Takes the layout from `SetWidgets` and picks up package changes while running. On each connect the receiver tells the host what it holds (`Inventory`), and deletes what `RemovePackages` names.
+- `overlay` and `keymap`: key labels from the keymap's base layer, in Noto Sans JP Bold (glassdeck-widget's `fonts/`, OFL).
 
 ## Platforms
 

@@ -1,23 +1,18 @@
-type State = { seconds: boolean }
 -- options.luau's options, forwarded as they are (no host.luau)
 type Options = { seconds: boolean }
 
-local module = {}
+local seconds = false
 
-function module.init(): State
-    ui:every(1, function()
-        ui:redraw()
-    end)
-    return { seconds = false }
-end
+widget.every(1, function()
+    widget.redraw()
+end)
 
-function module.on_data(state: State, options: Options): boolean
-    state.seconds = options.seconds
-    return true
-end
+widget.on_data(function(options: Options)
+    seconds = options.seconds
+end)
 
-function module.draw(state: State, ui: Ui)
-    local time = os.date(if state.seconds then "%H:%M:%S" else "%H:%M")
+widget.on_draw(function(ui: Ui)
+    local time = os.date(if seconds then "%H:%M:%S" else "%H:%M")
     ui:text(time, { x = 0, y = ui.height * 0.12, w = ui.width, size = ui.height * 0.5, align = "center" })
     ui:text(os.date("%A %d %B"), {
         x = 0,
@@ -27,6 +22,4 @@ function module.draw(state: State, ui: Ui)
         align = "center",
         color = "#ffffffc0",
     })
-end
-
-return module
+end)

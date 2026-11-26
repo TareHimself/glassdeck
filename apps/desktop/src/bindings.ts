@@ -18,11 +18,22 @@ export const commands = {
 	exportWidget: (id: string, options?: InvokeOptions) => typedError<string | null, LibraryError>(__TAURI_INVOKE("export_widget", { id }, options)),
 	/**  Asks for a `.deck`, then unpacks it into the library. `None` when the dialog is cancelled. */
 	importWidget: (options?: InvokeOptions) => typedError<WidgetSummary | null, LibraryError>(__TAURI_INVOKE("import_widget", undefined, options)),
+	readWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSource, LibraryError>(__TAURI_INVOKE("read_widget", { id }, options)),
+	saveWidget: (id: string, edit: WidgetEdit, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("save_widget", { id, edit }, options)),
+	/**  Type-checks the widget's `options.luau` and `host.luau` as saved; each problem is "name:line:column: message". */
+	checkWidget: (id: string, options?: InvokeOptions) => typedError<string[], LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
+	widgetOptions: (source: string, values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<OptionsPanel>("widget_options", { source, values }, options),
+	/**  Starts the preview of a widget with the editor's unsaved scripts; frames arrive as `PreviewUpdate`s. */
+	previewWidget: (id: string, files: SourceFile[], size: Dims, values: { [key in string]: Value }, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_widget", { id, files, size, values }, options)),
+	previewResize: (size: Dims, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_resize", { size }, options),
+	previewOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_options", { values }, options),
+	stopPreview: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_preview", undefined, options),
 };
 
 /** Events */
 export const events = {
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
+	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
 };
 
 /* Constants */
@@ -87,7 +98,9 @@ export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; even
 
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
 /**  A `.deck` to import that isn't a widget package this build reads */
-{ kind: "not_a_widget"; reason: string } | 
+{ kind: "not_a_widget"; reason: string } | { kind: "invalid_version"; reason: string } | 
+/**  The type checker couldn't run, such as its native library missing */
+{ kind: "checker_unavailable"; reason: string } | 
 /**  A widget folder in the library that can't be read as one */
 { kind: "unreadable"; folder: string; reason: string } | { kind: "io"; reason: string };
 
@@ -97,6 +110,12 @@ export type LinkStatus = {
 	connected: boolean,
 };
 
+export type LogLevel = "print" | "error";
+
+export type LogSource = 
+/**  Packing the editor's files, before anything runs */
+"pack" | "keyboard" | "host";
+
 export type NewWidget = {
 	title: string,
 	id: string,
@@ -105,10 +124,41 @@ export type NewWidget = {
 	sizing: Sizing,
 };
 
+export type OptionKind = { type: "color"; default: string; alpha: boolean } | { type: "range"; default: number | null; min: number | null; max: number | null; step: number | null; unit: string | null } | { type: "number"; default: number | null; min: number | null; max: number | null; step: number | null; unit: string | null } | { type: "toggle"; default: boolean } | { type: "text"; default: string; placeholder: string | null; max_length: number | null } | { type: "choice"; default: string; values: string[] };
+
+export type OptionView = {
+	/**  Its key with its sections', such as `motion.rings.speed` */
+	path: string,
+	label: string,
+	kind: OptionKind,
+	/**  A number, boolean or string; colours are `#rrggbbaa` */
+	value: Value,
+	/**  Hidden options still hold values; the panel just doesn't draw them */
+	visible: boolean,
+	hint: string | null,
+};
+
+export type OptionsPanel = { state: "ready"; items: PanelItem[] } | 
+/**  `options.luau` didn't run; the message says why, for showing as it is */
+{ state: "failed"; reason: string };
+
+export type PanelItem = ({ item: "section"; path: string; label: string; items: PanelItem[] }) & { text?: never } | ({ item: "heading"; text: string }) & { items?: never; label?: never; path?: never } | {
+	item: "option",
+} & OptionView;
+
+export type PreviewUpdate = { state: "frame"; width: number; height: number; png: string } | 
+/**  Nothing to show: the widget didn't start, or stopped on an error */
+{ state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+
 /**  How a widget may be sized when placed. */
 export type Sizing = { kind: "fixed"; size: Dims } | { kind: "range"; size: Dims; min: Dims; max: Dims } | 
 /**  Any size in the widget area; stored as the grid's smallest step up to the whole area */
 { kind: "any"; size: Dims };
+
+export type SourceFile = {
+	name: string,
+	text: string,
+};
 
 export type Status = {
 	link: LinkStatus,
@@ -161,6 +211,22 @@ export type ThemeWidget = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WidgetEdit = {
+	title: string,
+	version: string,
+	files: SourceFile[],
+};
+
+/**
+ *  A widget as the editor opens it: its summary, the scripts it has, and the `host.luau` to start
+ *  from if it adds one.
+ */
+export type WidgetSource = {
+	widget: WidgetSummary,
+	files: SourceFile[],
+	host_template: string,
+};
 
 export type WidgetSummary = {
 	id: string,

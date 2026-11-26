@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use glassdeck_layout::{Layout, Variant};
-use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, SourceType, check_name};
+use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, SourceType, Version, check_name};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use specta::Type;
@@ -55,6 +55,9 @@ pub enum LibraryError {
     NotFound { id: String },
     /// A `.deck` to import that isn't a widget package this build reads
     NotAWidget { reason: String },
+    InvalidVersion { reason: String },
+    /// The type checker couldn't run, such as its native library missing
+    CheckerUnavailable { reason: String },
     /// A widget folder in the library that can't be read as one
     Unreadable { folder: String, reason: String },
     Io { reason: String },
@@ -171,21 +174,13 @@ fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
 
 fn keyboard_script(new: &ValidNewWidget) -> String {
     let title = luau_string(&new.title);
-    let (data_type, init, on_data) = match (new.runs_on_host, new.options) {
-        (true, _) => (
-            "type Data = { label: string, seconds: number }\n",
-            format!("{{ text = {title} }}"),
-            "function module.on_data(state: State, data: Data): boolean\n    state.text = `{data.label} {data.seconds}`\n    return true\nend\n\n",
-        ),
-        (false, true) => (
-            "type Options = { label: string }\n",
-            format!("{{ text = {title} }}"),
-            "function module.on_data(state: State, options: Options): boolean\n    state.text = options.label\n    return true\nend\n\n",
-        ),
-        (false, false) => ("", format!("{{ text = {title} }}"), ""),
+    let on_data = match (new.runs_on_host, new.options) {
+        (true, _) => "type Data = { label: string, seconds: number }\n\nwidget.on_data(function(data: Data)\n    text = `{data.label} {data.seconds}`\nend)\n\n",
+        (false, true) => "type Options = { label: string }\n\nwidget.on_data(function(options: Options)\n    text = options.label\nend)\n\n",
+        (false, false) => "",
     };
     format!(
-        "type State = {{ text: string }}\n{data_type}\nlocal module = {{}}\n\nfunction module.init(): State\n    return {init}\nend\n\n{on_data}function module.draw(state: State, ui: Ui)\n    ui:text(state.text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend\n\nreturn module\n"
+        "local text = {title}\n\n{on_data}widget.on_draw(function(ui: Ui)\n    ui:text(text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend)\n"
     )
 }
 
@@ -374,6 +369,75 @@ pub fn import_widget(root: &Path, deck: &Path) -> Result<WidgetSummary, LibraryE
     summarize(&folder)?.ok_or(LibraryError::NotFound { id: manifest.id.to_string() })
 }
 
+/// The scripts the widget editor shows, in tab order.
+pub const SCRIPTS: [&str; 3] = [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT];
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct SourceFile {
+    pub name: String,
+    pub text: String,
+}
+
+/// A widget as the editor opens it: its summary, the scripts it has, and the `host.luau` to start
+/// from if it adds one.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct WidgetSource {
+    pub widget: WidgetSummary,
+    pub files: Vec<SourceFile>,
+    pub host_template: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Type)]
+pub struct WidgetEdit {
+    pub title: String,
+    pub version: String,
+    pub files: Vec<SourceFile>,
+}
+
+fn check_script_name(name: &str) -> Result<(), LibraryError> {
+    if SCRIPTS.contains(&name) {
+        Ok(())
+    } else {
+        Err(LibraryError::Io { reason: format!("{name} isn't a script the editor writes") })
+    }
+}
+
+pub fn read_widget(root: &Path, id: &str) -> Result<WidgetSource, LibraryError> {
+    let folder = widget_folder(root, id)?;
+    let widget = summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })?;
+    let mut files = Vec::new();
+    for name in SCRIPTS {
+        let path = folder.join(name);
+        if path.is_file() {
+            let text = fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))?;
+            files.push(SourceFile { name: name.to_owned(), text });
+        }
+    }
+    Ok(WidgetSource { host_template: host_script(widget.has_options), widget, files })
+}
+
+/// Writes the editor's scripts and the title and version into `deck.json`.
+pub fn save_widget(root: &Path, id: &str, edit: WidgetEdit) -> Result<WidgetSummary, LibraryError> {
+    let title = edit.title.trim();
+    if title.is_empty() {
+        return Err(LibraryError::InvalidTitle { reason: "Give the widget a title".into() });
+    }
+    let version = Version::parse(edit.version.trim()).map_err(|e| LibraryError::InvalidVersion { reason: e.to_string() })?;
+    for file in &edit.files {
+        check_script_name(&file.name)?;
+    }
+    let folder = widget_folder(root, id)?;
+    for file in &edit.files {
+        let path = folder.join(&file.name);
+        fs::write(&path, &file.text).map_err(io(format!("writing {}", path.display())))?;
+    }
+    let mut deck = read_deck_json(&folder)?;
+    deck.insert("title".into(), json!(title));
+    deck.insert("version".into(), json!(version.to_string()));
+    write_deck_json(&folder, &deck)?;
+    summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +519,25 @@ mod tests {
         assert_eq!(imported.sizing, Sizing::Any { size: SIZE });
         assert!(imported.has_options);
         assert!(matches!(widget_folder(&root, "local.nope"), Err(LibraryError::NotFound { .. })));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_editor_reads_and_saves_scripts_title_and_version() {
+        let root = std::env::temp_dir().join(format!("glassdeck-library-editor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, false)).unwrap();
+        let source = read_widget(&root, "local.weather").unwrap();
+        let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT]);
+        assert!(source.host_template.contains("host.on_options"));
+        let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
+        let saved = save_widget(&root, "local.weather", WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
+        assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));
+        let bad_version = WidgetEdit { title: "Sky".into(), version: "1.1".into(), files: vec![] };
+        assert!(matches!(save_widget(&root, "local.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
+        let stray = WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "../x.luau".into(), text: String::new() }] };
+        assert!(save_widget(&root, "local.weather", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

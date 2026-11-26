@@ -2,12 +2,16 @@
 
 mod glassdeckd;
 mod library;
+mod options;
+mod preview;
 
 use glassdeck_api::{Status, Theme};
 use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
-use library::{LibraryError, NewWidget, WidgetSummary};
+use library::{Dims, LibraryError, NewWidget, SourceFile, WidgetEdit, WidgetSource, WidgetSummary};
+use options::OptionsPanel;
+use preview::{Preview, PreviewUpdate};
 use specta_typescript::Typescript;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -78,6 +82,83 @@ async fn reveal_widget(id: String) -> Result<(), LibraryError> {
     .await
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn read_widget(id: String) -> Result<WidgetSource, LibraryError> {
+    in_library(move |root| library::read_widget(root, &id)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn save_widget(id: String, edit: WidgetEdit) -> Result<WidgetSummary, LibraryError> {
+    in_library(move |root| library::save_widget(root, &id, edit)).await
+}
+
+/// Where the native libraries are: `GLASSDECK_NATIVE`, else beside this program, else (a dev build in
+/// `target/debug`) `target/native`.
+fn native_libraries() -> Result<PathBuf, LibraryError> {
+    if let Some(dir) = std::env::var_os("GLASSDECK_NATIVE") {
+        return Ok(PathBuf::from(dir));
+    }
+    let unavailable = |reason: String| LibraryError::CheckerUnavailable { reason };
+    let exe = std::env::current_exe().map_err(|e| unavailable(format!("finding this program: {e}")))?;
+    let beside = exe.parent().ok_or_else(|| unavailable("this program has no folder".into()))?.to_path_buf();
+    let dev = beside.join("..").join("native");
+    Ok(if dev.is_dir() { dev } else { beside })
+}
+
+/// Type-checks the widget's `options.luau` and `host.luau` as saved; each problem is "name:line:column: message".
+#[tauri::command]
+#[specta::specta]
+async fn check_widget(id: String) -> Result<Vec<String>, LibraryError> {
+    in_library(move |root| {
+        let folder = library::widget_folder(root, &id)?;
+        let unavailable = |reason: String| LibraryError::CheckerUnavailable { reason };
+        let luau = glassdeck_luau_check::LuauChecker::load(&native_libraries()?).map_err(|e| unavailable(format!("{e:#}")))?;
+        glassdeck_slang::pack::widget_problems(&luau, &folder).map_err(|e| unavailable(format!("{e:#}")))
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+fn widget_options(source: String, values: serde_json::Map<String, serde_json::Value>) -> OptionsPanel {
+    options::options_panel(&source, &values)
+}
+
+/// Starts the preview of a widget with the editor's unsaved scripts; frames arrive as `PreviewUpdate`s.
+#[tauri::command]
+#[specta::specta]
+async fn preview_widget(
+    preview: State<'_, Preview>,
+    id: String,
+    files: Vec<SourceFile>,
+    size: Dims,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), LibraryError> {
+    let folder = in_library(move |root| library::widget_folder(root, &id)).await?;
+    preview.send(preview::Command::Show { folder, files, size, values });
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn preview_resize(preview: State<'_, Preview>, size: Dims) {
+    preview.send(preview::Command::Resize(size));
+}
+
+#[tauri::command]
+#[specta::specta]
+fn preview_options(preview: State<'_, Preview>, values: serde_json::Map<String, serde_json::Value>) {
+    preview.send(preview::Command::Options(values));
+}
+
+#[tauri::command]
+#[specta::specta]
+fn stop_preview(preview: State<'_, Preview>) {
+    preview.send(preview::Command::Stop);
+}
+
 /// Asks where to save, then packs the widget there. `None` when the dialog is cancelled.
 #[tauri::command]
 #[specta::specta]
@@ -125,8 +206,16 @@ fn bindings() -> Builder<tauri::Wry> {
             reveal_widget,
             export_widget,
             import_widget,
+            read_widget,
+            save_widget,
+            check_widget,
+            widget_options,
+            preview_widget,
+            preview_resize,
+            preview_options,
+            stop_preview,
         ])
-        .events(collect_events![GlassdeckdUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .error_handling(ErrorHandlingMode::Result)
@@ -155,6 +244,7 @@ fn main() {
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             bindings.mount_events(app);
+            app.manage(Preview::start(app.handle().clone()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<Glassdeckd>().relay_events(handle.clone()).await;

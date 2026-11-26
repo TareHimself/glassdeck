@@ -21,15 +21,14 @@ mod platform;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::Parser;
-use fontdue::{Font, FontSettings};
 use glassdeck_luau::placement::{Placement, PlacedWidget};
 use glassdeck_package::PackageId;
 use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
@@ -105,17 +104,7 @@ fn main() -> Result<()> {
     compose_loop(&mailbox, &tiles, compositor)
 }
 
-/// Noto Sans JP Bold (SIL Open Font License, `fonts/OFL.txt`): Latin, Cyrillic and Japanese, so labels
-/// and widgets look the same on the keyboard and in the Windows preview.
-const BUILT_IN_FONT: &[u8] = include_bytes!("../fonts/NotoSansJP-Bold.otf");
-
-pub(crate) fn load_font(path: Option<&Path>) -> Result<Font> {
-    let bytes = match path {
-        Some(path) => std::fs::read(path).with_context(|| format!("reading font {}", path.display()))?,
-        None => BUILT_IN_FONT.to_vec(),
-    };
-    Font::from_bytes(bytes, FontSettings::default()).map_err(|e| anyhow!("parsing the font: {e}"))
-}
+pub(crate) use glassdeck_widget::load_font;
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
 fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector, widgets: &Sender<Input>, folders: &Folders) {

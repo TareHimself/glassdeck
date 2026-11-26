@@ -20,8 +20,10 @@ glassdeck-proto = { path = "crates/glassdeck-proto" }
 glassdeck-scanner-proto = { path = "crates/glassdeck-scanner-proto" }
 glassdeck-scanner-dsp = { path = "crates/glassdeck-scanner-dsp" }
 glassdeck-gpu = { path = "crates/glassdeck-gpu" }
+glassdeck-host = { path = "crates/glassdeck-host" }
 glassdeck-slang = { path = "crates/glassdeck-slang" }
 glassdeck-wallpaper-engine = { path = "crates/glassdeck-wallpaper-engine" }
+glassdeck-widget = { path = "crates/glassdeck-widget" }
 fontdue = "0.9.5"
 minifb = "0.29.0"
 openh264 = "0.9.10"
