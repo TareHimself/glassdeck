@@ -1,7 +1,7 @@
 #!/bin/sh
 # Reads the system and writes what it finds to /home/root/glassdeck-probe.txt. Changes nothing else, and
 # always exits 0 so opkg never records a failed install. Pull the report back with the bridge's GET_FILE.
-REPORT=/home/root/glassdeck-probe.txt
+REPORT=${GLASSDECK_PROBE_REPORT:-/home/root/glassdeck-probe.txt}
 LIMIT=${GLASSDECK_PROBE_LINES:-200}
 
 section() {
@@ -28,13 +28,27 @@ probe() {
     section "libc and tools"
     run 'ls -l /lib/libc.so* /lib/ld-linux* /usr/lib/libc.so* /lib64/libc.so* 2>/dev/null'
     run 'for l in $(find /lib /usr/lib -maxdepth 2 -name "libc.so.6" 2>/dev/null); do echo "$l"; "$l" 2>&1 | head -1; done; ldd --version 2>&1 | head -1'
-    run 'for c in busybox opkg dropbear sshd python3 modetest weston timeout fuser strings; do printf "%s: " $c; command -v $c || echo missing; done'
+    run 'for c in busybox opkg dropbear sshd python3 modetest weston timeout fuser strings runuser su setpriv adduser addgroup useradd groupadd sha256sum gzip dd nohup setsid pidof pkill; do printf "%s: " $c; command -v $c || echo missing; done'
+    run 'busybox --list 2>/dev/null | tr "\n" " "'
 
     section "storage and memory"
     run 'df -h; mount'
     run 'cat /proc/partitions; ls -l /dev/block/by-name /dev/disk/by-partlabel 2>/dev/null'
     run 'cat /proc/cmdline'
     run 'head -5 /proc/meminfo'
+
+    section "where the receiver can keep files"
+    # Each check writes and removes one empty file, then reports the filesystem type behind the path.
+    run 'for d in /var/lib /home/root /usr/lib /etc/init.d /opt; do t=$(df -T "$d" 2>/dev/null | awk "NR==2{print \$2}"); f="$d/.glassdeck-probe-write"; if touch "$f" 2>/dev/null; then rm -f "$f"; w=writable; else w=read-only; fi; echo "$d: $w, ${t:-type unknown}"; done'
+    run 'grep -E " (/|/var|/var/lib|/home|/tmp|/run) " /proc/mounts'
+    run 'ls -ld /var/lib /var/volatile 2>/dev/null; readlink -f /var/lib'
+
+    section "users and groups"
+    run 'cat /etc/passwd; cat /etc/group'
+    run 'ls -l /dev/dri /dev/mpp_service /dev/dma_heap 2>/dev/null'
+
+    section "init"
+    run 'tr "\0" " " < /proc/1/cmdline; echo; readlink /proc/1/exe; cat /etc/inittab 2>/dev/null'
 
     section "processes"
     run 'ps -o pid,user,args 2>/dev/null || ps'
@@ -45,6 +59,10 @@ probe() {
     run 'grep -l -i weston /etc/init.d/* /usr/bin/*.sh 2>/dev/null'
     run 'for f in $(grep -l -i weston /etc/init.d/* 2>/dev/null); do echo "--- $f"; cat "$f"; done'
     run 'cat /usr/bin/flux-ipk-monitor.sh'
+    run 'ls -l /usr/lib/garfield /usr/lib/garfield/scripts /usr/lib/garfunkel 2>/dev/null'
+    run 'cmp /usr/bin/flux-weston-autolaunch.sh /usr/lib/garfield/scripts/flux-weston-autolaunch.sh && echo "the launcher is the one garfield ships"'
+    run 'for n in garfield garfunkel weston; do for p in $(pidof $n 2>/dev/null); do echo "--- $n $p: $(tr "\0" " " < /proc/$p/cmdline)"; echo "parent: $(tr "\0" " " < /proc/$(awk "{print \$4}" /proc/$p/stat)/cmdline)"; tr "\0" "\n" < /proc/$p/environ | grep -E "^(XDG|WAYLAND|HOME|LD_)"; done; done'
+    run 'opkg list-installed 2>/dev/null'
 
     section "gpu libraries"
     run 'ls -l /usr/lib | grep -i -E "mali|gbm|egl|gles|wayland|mpp|rga|stdc|drm"'
@@ -68,6 +86,8 @@ probe() {
     run 'for f in /sys/kernel/config/usb_gadget/*/idVendor /sys/kernel/config/usb_gadget/*/idProduct /sys/kernel/config/usb_gadget/*/UDC; do echo "$f: $(cat $f)"; done'
     run 'grep -r -l usb_gadget /etc/init.d /usr/bin 2>/dev/null'
     run 'ls /sys/kernel/config/usb_gadget/*/functions 2>/dev/null; zcat /proc/config.gz 2>/dev/null | grep -E "USB_CONFIGFS|USB_F_NCM|USB_F_ECM|USB_F_RNDIS|USB_F_FS"'
+    run 'ls -l /sys/kernel/config/usb_gadget/*/configs/*/ 2>/dev/null; grep functionfs /proc/mounts'
+    run 'ls /lib/modules/$(uname -r)/kernel/drivers/usb/gadget/function 2>/dev/null'
 
     section "key scanner uart"
     run 'ls -l /dev/ttyS*'
@@ -75,6 +95,10 @@ probe() {
 
     section "network"
     run 'ip addr 2>/dev/null || ifconfig -a'
+
+    section "backup sizing"
+    run 'cat /proc/partitions; for b in /sys/class/block/mmcblk*p*; do n=$(basename $b); echo "$n: $(cat $b/size) sectors, label $(grep -s PARTNAME $b/uevent | cut -d= -f2)"; done'
+    run 'df -k /home/root'
 
     section "kernel modules"
     run 'lsmod 2>/dev/null | head -60'

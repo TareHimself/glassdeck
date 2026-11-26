@@ -1,0 +1,7 @@
+Package: glassdeck-restore-stock
+Version: 0.1.0
+Architecture: aarch64
+Maintainer: Glassdeck
+Description: Puts the stock launcher back from Glassdeck's rescue copy and disarms the boot counter; the next boot is stock
+Section: utils
+Priority: optional

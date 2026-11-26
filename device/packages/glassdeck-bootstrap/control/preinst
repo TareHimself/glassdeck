@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuses to install without a finished glassdeck-backup and the commands the boot counter and
+# launcher rely on, before anything is changed.
+BACKUP=/home/root/glassdeck-backup
+fail() {
+    echo "glassdeck-bootstrap: $*" >&2
+    echo "$(date '+%Y-%m-%d %H:%M:%S') preinst refused: $*" >> /home/root/glassdeck-bootstrap.log
+    exit 1
+}
+
+[ -f "$BACKUP/DONE" ] || fail "no finished backup in $BACKUP; install glassdeck-backup first"
+grep -q " ok " "$BACKUP/RESULTS" 2>/dev/null || fail "the backup holds no partition"
+[ -s "$BACKUP/files.tar.gz" ] || fail "the backup holds no system files"
+[ -x /usr/bin/flux-weston-autolaunch.sh ] || fail "no stock launcher at /usr/bin/flux-weston-autolaunch.sh"
+for c in pidof df awk sync cp mv; do
+    command -v "$c" >/dev/null 2>&1 || fail "$c is missing"
+done
+exit 0

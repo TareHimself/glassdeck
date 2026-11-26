@@ -15,6 +15,19 @@ from pathlib import Path
 SCRIPTS = {"preinst", "postinst", "prerm", "postrm"}
 
 
+def is_script(path: Path) -> bool:
+    """opkg scripts, .sh files and anything starting with #!, which need Unix line endings."""
+    if path.name in SCRIPTS or path.suffix == ".sh":
+        return True
+    with path.open("rb") as f:
+        return f.read(2) == b"#!"
+
+
+def is_elf(path: Path) -> bool:
+    with path.open("rb") as f:
+        return f.read(4) == b"ELF"
+
+
 def ar_member(name: str, payload: bytes, mtime: int) -> bytes:
     header = f"{name:<16}{mtime:<12}{0:<6}{0:<6}{0o100644:<8o}{len(payload):<10}`\n".encode("ascii")
     assert len(header) == 60, f"ar header for {name} is {len(header)} bytes"
@@ -31,10 +44,11 @@ def tar_gz(folder: Path | None, mtime: int) -> bytes:
             info.uname = info.gname = "root"
             info.mtime = mtime
             # Windows checkouts carry no executable bit; scripts and anything under a bin folder need one.
-            if path.is_file() and (path.name in SCRIPTS or path.parent.name in {"bin", "init.d"} or path.suffix == ".sh"):
+            script = path.is_file() and is_script(path)
+            if path.is_file() and (script or is_elf(path) or path.parent.name in {"bin", "init.d"}):
                 info.mode = 0o755
             if path.is_file():
-                data = path.read_bytes().replace(b"\r\n", b"\n") if path.name in SCRIPTS or path.suffix == ".sh" else path.read_bytes()
+                data = path.read_bytes().replace(b"\r\n", b"\n") if script else path.read_bytes()
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
             else:

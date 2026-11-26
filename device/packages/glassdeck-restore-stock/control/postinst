@@ -1,0 +1,21 @@
+#!/bin/sh
+# Undoes glassdeck-bootstrap: the stock launcher comes back from the rescue copy, and the boot
+# counter goes. Glassdeck's files in /usr/lib/glassdeck and /home/root/glassdeck stay, unused.
+# Reboot afterwards to run stock.
+GLASSDECK=/home/root/glassdeck
+RESCUE=$GLASSDECK/rescue/flux-weston-autolaunch.sh
+LAUNCHER=/usr/bin/flux-weston-autolaunch.sh
+LOG=/home/root/glassdeck-bootstrap.log
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') restore-stock: $*" >> "$LOG"
+}
+
+if [ ! -x "$RESCUE" ]; then
+    log "no rescue copy at $RESCUE; nothing changed. Reinstall the factory garfield package instead."
+    exit 1
+fi
+cp -p "$RESCUE" "$LAUNCHER.tmp" && chmod +x "$LAUNCHER.tmp" && mv -f "$LAUNCHER.tmp" "$LAUNCHER"
+rm -f "$GLASSDECK/armed" /etc/init.d/S04glassdeck-guard
+sync
+log "stock launcher restored; reboot to run stock"
+exit 0

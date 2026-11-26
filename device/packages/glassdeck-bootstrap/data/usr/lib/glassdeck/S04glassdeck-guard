@@ -1,0 +1,29 @@
+#!/bin/sh
+# Boot counter, installed as /etc/init.d/S04glassdeck-guard. While Glassdeck is armed, each boot
+# counts up; the launcher resets the count once the receiver has stayed up. After two boots
+# that never got there, this puts the stock launcher back, so unplugging and replugging the
+# keyboard twice always returns it to stock.
+[ "${1:-start}" = start ] || exit 0
+GLASSDECK=/home/root/glassdeck
+ARMED=$GLASSDECK/armed
+RESCUE=$GLASSDECK/rescue/flux-weston-autolaunch.sh
+LAUNCHER=/usr/bin/flux-weston-autolaunch.sh
+MAX_UNCONFIRMED_BOOTS=2
+
+[ -f "$ARMED" ] || exit 0
+boots=$(cat "$ARMED" 2>/dev/null)
+case "$boots" in ''|*[!0-9]*) boots=0 ;; esac
+boots=$((boots + 1))
+if [ "$boots" -le "$MAX_UNCONFIRMED_BOOTS" ]; then
+    echo "$boots" > "$ARMED"
+    sync
+    exit 0
+fi
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') $boots boots without a confirmed receiver; restoring the stock launcher" >> "$GLASSDECK/launch.log"
+if [ -x "$RESCUE" ]; then
+    cp -p "$RESCUE" "$LAUNCHER.tmp" && chmod +x "$LAUNCHER.tmp" && mv -f "$LAUNCHER.tmp" "$LAUNCHER"
+fi
+rm -f "$ARMED" /etc/init.d/S04glassdeck-guard
+sync
+exit 0

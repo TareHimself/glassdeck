@@ -1,0 +1,45 @@
+#!/bin/sh
+# Keeps a rescue copy of the stock launcher, arms the boot counter, then puts Glassdeck's
+# launcher in its place. Takes effect at the next boot; the running system is left alone.
+GLASSDECK=/home/root/glassdeck
+RESCUE_DIR=$GLASSDECK/rescue
+LAUNCHER=/usr/bin/flux-weston-autolaunch.sh
+OURS=/usr/lib/glassdeck/flux-weston-autolaunch.sh
+LOG=/home/root/glassdeck-bootstrap.log
+RENDERER_USER=glassdeck-local-web
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
+}
+
+mkdir -p "$RESCUE_DIR"
+# Only a stock launcher goes in the rescue copy, never ours from an earlier install.
+if ! cmp -s "$LAUNCHER" "$OURS"; then
+    cp -p "$LAUNCHER" "$RESCUE_DIR/flux-weston-autolaunch.sh.tmp" \
+        && mv -f "$RESCUE_DIR/flux-weston-autolaunch.sh.tmp" "$RESCUE_DIR/flux-weston-autolaunch.sh"
+fi
+if [ ! -x "$RESCUE_DIR/flux-weston-autolaunch.sh" ]; then
+    log "no rescue copy of the stock launcher; nothing was changed"
+    exit 1
+fi
+sync
+
+chmod +x /usr/lib/glassdeck/*
+cp -p /usr/lib/glassdeck/S04glassdeck-guard /etc/init.d/S04glassdeck-guard.tmp \
+    && mv -f /etc/init.d/S04glassdeck-guard.tmp /etc/init.d/S04glassdeck-guard
+echo 0 > "$GLASSDECK/armed"
+sync
+
+# glassdeck-gpu runs as its own user, in group video for the GPU, display and decoder.
+if ! grep -q "^$RENDERER_USER:" /etc/passwd; then
+    if command -v adduser >/dev/null 2>&1; then
+        adduser -S -D -H -G video "$RENDERER_USER" 2>>"$LOG" || adduser --system --no-create-home --ingroup video "$RENDERER_USER" 2>>"$LOG"
+    elif command -v useradd >/dev/null 2>&1; then
+        useradd --system --no-create-home --gid video "$RENDERER_USER" 2>>"$LOG"
+    fi
+    grep -q "^$RENDERER_USER:" /etc/passwd || log "couldn't create $RENDERER_USER; canvas backgrounds won't draw"
+fi
+
+cp -p "$OURS" "$LAUNCHER.tmp" && chmod +x "$LAUNCHER.tmp" && mv -f "$LAUNCHER.tmp" "$LAUNCHER"
+sync
+log "installed; Glassdeck starts at the next boot (two boots without a receiver go back to stock)"
+exit 0

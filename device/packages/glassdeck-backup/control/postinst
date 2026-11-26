@@ -1,0 +1,110 @@
+#!/bin/sh
+# Backs up the stock keyboard into /home/root/glassdeck-backup: every eMMC partition that fits,
+# gzipped, with its SHA-256, and a tarball of the system files the bootstrap touches. Reads the
+# eMMC and writes only that folder. The copy runs detached, so the package installs at once;
+# DONE appears when it's finished. Pull the folder back with the bridge's GET_FILE.
+OUT=${GLASSDECK_BACKUP_DIR:-/home/root/glassdeck-backup}
+# Space left for the stock system after the backup.
+RESERVE_KB=${GLASSDECK_BACKUP_RESERVE_KB:-262144}
+# Tests point these at loop devices instead of the eMMC.
+BLOCKS=${GLASSDECK_BACKUP_BLOCKS:-mmcblk*p*}
+ONLY=${GLASSDECK_BACKUP_ONLY:-}
+WORKER=/tmp/glassdeck-backup-worker.sh
+
+if [ "${1:-}" != "--worker" ]; then
+    cp "$0" "$WORKER" && chmod +x "$WORKER"
+    detach=""
+    command -v setsid >/dev/null 2>&1 && detach=setsid
+    $detach nohup "$WORKER" --worker </dev/null >/dev/null 2>&1 &
+    exit 0
+fi
+
+mkdir -p "$OUT"
+rm -f "$OUT/DONE"
+LOG="$OUT/log.txt"
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"
+}
+
+free_kb() {
+    df -k "$OUT" | awk 'NR==2{print $4}'
+}
+
+# The partition holding the backup folder can't be copied into itself.
+own_device() {
+    dev=$(df "$OUT" | awk 'NR==2{print $1}')
+    basename "$(readlink -f "$dev")"
+}
+
+partitions_by_size() {
+    for b in /sys/class/block/$BLOCKS; do
+        [ -e "$b" ] || continue
+        n=$(basename "$b")
+        case "$n" in *boot*|*rpmb*) continue ;; esac
+        if [ -n "$ONLY" ]; then
+            case " $ONLY " in *" $n "*) ;; *) continue ;; esac
+        fi
+        echo "$(cat "$b/size") $n"
+    done | sort -n
+}
+
+backup_partition() {
+    n=$1
+    sectors=$2
+    kb=$((sectors / 2))
+    label=$(grep -s PARTNAME "/sys/class/block/$n/uevent" | cut -d= -f2)
+    if [ "$n" = "$OWN" ]; then
+        log "$n ($label, $kb KiB): skipped, it holds the backup folder"
+        echo "$n skipped holds-the-backup-folder" >> "$OUT/RESULTS"
+        return
+    fi
+    # Compressed size isn't known up front; half the partition is a conservative guess for
+    # deciding whether to try at all.
+    if [ $(( $(free_kb) - RESERVE_KB )) -lt $((kb / 2)) ]; then
+        log "$n ($label, $kb KiB): skipped, $(free_kb) KiB free"
+        echo "$n skipped no-space" >> "$OUT/RESULTS"
+        return
+    fi
+    # The copy stops one byte past what fits, so it can never eat into the reserve.
+    limit=$(( ($(free_kb) - RESERVE_KB) * 1024 ))
+    log "$n ($label, $kb KiB): copying, at most $limit bytes"
+    dd if="/dev/$n" bs=1M 2>/dev/null | gzip -c | head -c $((limit + 1)) > "$OUT/$n.img.gz"
+    if [ "$(wc -c < "$OUT/$n.img.gz")" -gt "$limit" ]; then
+        rm -f "$OUT/$n.img.gz"
+        log "$n: removed, compressed it doesn't fit"
+        echo "$n skipped too-big" >> "$OUT/RESULTS"
+        return
+    fi
+    if ! gzip -t "$OUT/$n.img.gz" 2>/dev/null; then
+        rm -f "$OUT/$n.img.gz"
+        log "$n: removed, the compressed copy doesn't verify"
+        echo "$n skipped bad-gzip" >> "$OUT/RESULTS"
+        return
+    fi
+    raw=$(dd if="/dev/$n" bs=1M 2>/dev/null | sha256sum | cut -d' ' -f1)
+    unpacked=$(gzip -dc "$OUT/$n.img.gz" | sha256sum | cut -d' ' -f1)
+    if [ "$raw" != "$unpacked" ]; then
+        rm -f "$OUT/$n.img.gz"
+        log "$n: removed, the copy doesn't match the partition (it changed while copying?)"
+        echo "$n skipped changed-while-copying" >> "$OUT/RESULTS"
+        return
+    fi
+    echo "$raw  $n.img" >> "$OUT/SHA256SUMS"
+    echo "$n ok $label $((sectors * 512)) $(wc -c < "$OUT/$n.img.gz")" >> "$OUT/RESULTS"
+    log "$n: done, $(wc -c < "$OUT/$n.img.gz") bytes compressed"
+}
+
+log "backup started"
+rm -f "$OUT/RESULTS" "$OUT/SHA256SUMS"
+cat /proc/partitions > "$OUT/partitions.txt"
+OWN=$(own_device)
+tar -czf "$OUT/files.tar.gz" /etc /usr/bin/flux-*.sh /usr/lib/garfield/scripts 2>>"$LOG"
+log "system files: $(wc -c < "$OUT/files.tar.gz") bytes"
+partitions_by_size | while read -r sectors n; do
+    backup_partition "$n" "$sectors"
+done
+sync
+log "backup finished"
+date > "$OUT/DONE"
+sync
+exit 0

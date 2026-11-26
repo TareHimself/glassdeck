@@ -1,0 +1,7 @@
+Package: glassdeck-backup
+Version: 0.1.0
+Architecture: aarch64
+Maintainer: Glassdeck
+Description: Copies the keyboard's partitions and system files to /home/root/glassdeck-backup and changes nothing else
+Section: utils
+Priority: optional

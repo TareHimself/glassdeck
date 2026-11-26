@@ -1,0 +1,7 @@
+Package: glassdeck-bootstrap
+Version: 0.1.0
+Architecture: aarch64
+Maintainer: Glassdeck
+Description: Runs the Glassdeck receiver on the keyboard's display at boot instead of Weston and the stock UI, keeping the stock bridge; falls back to stock after two boots that don't come up
+Section: utils
+Priority: optional
