@@ -13,7 +13,7 @@ head=$(git -C "$keyglass" rev-parse --short=7 HEAD)
 export MSYS_NO_PATHCONV=1
 mount_kg=$(cd "$keyglass" && (pwd -W 2>/dev/null || pwd))
 mount_here=$(cd "$here" && (pwd -W 2>/dev/null || pwd))
-for program in serial_link usb_commands keymap dsp; do
+for program in serial_link usb_commands keymap dsp lifecycle; do
   docker run --rm -v "$mount_kg:/kg:ro" -v "$mount_here:/vectors:ro" openflux-firmware-build \
     sh /vectors/run-in-container.sh "$program" > "$here/$program.txt"
   echo "$here/$program.txt"

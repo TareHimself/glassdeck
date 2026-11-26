@@ -10,36 +10,36 @@ use crate::{MAX_ROW_KEYS, MAX_ROW_SENSORS, condition_row_q4};
 
 const VECTORS: &str = include_str!("../../../firmware/vectors/dsp.txt");
 
-struct Rng(u32);
+pub(crate) struct Rng(pub(crate) u32);
 
 impl Rng {
-    fn next(&mut self) -> u32 {
+    pub(crate) fn next(&mut self) -> u32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 17;
         self.0 ^= self.0 << 5;
         self.0
     }
 
-    fn pick(&mut self, n: u32) -> i32 {
+    pub(crate) fn pick(&mut self, n: u32) -> i32 {
         (self.next() % n) as i32
     }
 }
 
-struct Hash(u64);
+pub(crate) struct Hash(u64);
 
 impl Hash {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 
-    fn mix(&mut self, value: i32) {
+    pub(crate) fn mix(&mut self, value: i32) {
         for byte in value.to_le_bytes() {
             self.0 ^= byte as u64;
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
         }
     }
 
-    fn hex(&self) -> String {
+    pub(crate) fn hex(&self) -> String {
         format!("{:016x}", self.0)
     }
 }
@@ -88,20 +88,20 @@ fn random_word(rng: &mut Rng) -> u32 {
     (kind << 30) | (release << 12) | actuation
 }
 
-fn expected(name: &str) -> Vec<&'static str> {
-    VECTORS
+/// Compares scan by scan, so a mismatch names the first scan that differs.
+pub(crate) fn assert_scans_in(vectors: &str, name: &str, got: &[String]) {
+    let want: Vec<&str> = vectors
         .lines()
         .filter_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
-        .collect()
-}
-
-/// Compares scan by scan, so a mismatch names the first scan that differs.
-fn assert_scans(name: &str, got: &[String]) {
-    let want = expected(name);
+        .collect();
     assert_eq!(got.len(), want.len(), "{name}: scan count");
     if let Some(scan) = got.iter().zip(&want).position(|(g, w)| g != w) {
         panic!("{name}: first differs at scan {scan}");
     }
+}
+
+fn assert_scans(name: &str, got: &[String]) {
+    assert_scans_in(VECTORS, name, got);
 }
 
 /// Returns the scan hashes and how many key-down scans there were.
