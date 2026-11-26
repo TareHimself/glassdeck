@@ -835,6 +835,9 @@ dependencies = [
 [[package]]
 name = "glassdeck-scanner-dsp"
 version = "0.1.0"
+dependencies = [
+ "glassdeck-scanner-proto",
+]
 
 [[package]]
 name = "glassdeck-scanner-proto"

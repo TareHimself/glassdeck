@@ -1,6 +1,9 @@
 //! The generator of `firmware/vectors/lifecycle.c`, step for step, and the tests that replay its
 //! cases: keyframe detection, thermal drift, rest references and rest recovery.
-#![allow(clippy::explicit_counter_loop, reason = "the clock steps like the C generator's")]
+#![allow(
+    clippy::explicit_counter_loop,
+    reason = "the clock steps like the C generator's"
+)]
 
 use crate::keyframe::Detector;
 use crate::layout::{KEY_SENSORS, ROW_LEN, ROWS, SENSOR_MAP, SENSORS};

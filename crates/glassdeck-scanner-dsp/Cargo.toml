@@ -6,3 +6,4 @@ license.workspace = true
 description = "The key scanner's signal processing: from Hall-effect readings to key decisions"
 
 [dependencies]
+glassdeck-scanner-proto.workspace = true

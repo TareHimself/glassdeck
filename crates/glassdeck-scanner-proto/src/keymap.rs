@@ -83,7 +83,7 @@ impl<'a> Keymap<'a> {
                 return Err(KeymapError::SectionOffset(layout));
             }
             let start = (HEADER_WORDS + offset as usize) * 4;
-            let (section, words) = Section::parse(layout, &blob[start..])?;
+            let (section, words) = Section::parse(layout, &blob[start..], (start / 4) as u32)?;
             sections[i] = Some(section);
             present += 1;
             next += words;
@@ -105,6 +105,7 @@ impl<'a> Keymap<'a> {
 /// One layout's layers, actuation modes and macros.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Section<'a> {
+    start_word: u32,
     layers: u32,
     keys: u32,
     modes: u32,
@@ -115,8 +116,13 @@ pub struct Section<'a> {
 }
 
 impl<'a> Section<'a> {
-    /// Parses the section at the start of `rest`; returns it and its length in words.
-    fn parse(layout: KeyframeLayout, rest: &'a [u8]) -> Result<(Self, u32), KeymapError> {
+    /// Parses the section at the start of `rest`, which is word `start_word` of the blob; returns
+    /// it and its length in words.
+    fn parse(
+        layout: KeyframeLayout,
+        rest: &'a [u8],
+        start_word: u32,
+    ) -> Result<(Self, u32), KeymapError> {
         let total = (rest.len() / 4) as u64;
         if total < SECTION_WORDS as u64 {
             return Err(KeymapError::Truncated(layout));
@@ -157,6 +163,7 @@ impl<'a> Section<'a> {
         let actuations = &after_keycodes[..act_words as usize * 4];
         check_macros(layout, pool, macros)?;
         let section = Self {
+            start_word,
             layers,
             keys,
             modes,
@@ -169,6 +176,12 @@ impl<'a> Section<'a> {
             section,
             (SECTION_WORDS as u64 + act as u64 + act_words) as u32,
         ))
+    }
+
+    /// Where the section starts in the blob, in words. Its key codes start at word
+    /// `start_word + 7 + pool_words`, layer by layer; its actuation table follows them.
+    pub fn start_word(&self) -> u32 {
+        self.start_word
     }
 
     pub fn layers(&self) -> u32 {
