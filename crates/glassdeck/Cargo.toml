@@ -14,7 +14,9 @@ glassdeck-luau.workspace = true
 glassdeck-luau-check.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true
+glassdeck-scanner-proto.workspace = true
 glassdeck-slang.workspace = true
+nusb = "0.2.9"
 serde.workspace = true
 serde_json.workspace = true
 ureq = { version = "3.5.2", features = ["json"] }

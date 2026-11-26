@@ -2,6 +2,7 @@
 //! the rest (monitors, recording, converting, packing modules) runs here.
 
 mod client;
+mod scanner;
 mod theme;
 
 use std::path::{Path, PathBuf};
@@ -92,6 +93,9 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         fps: u32,
     },
+    /// The key scanner (the keyboard's RP2040), straight over USB
+    #[command(subcommand)]
+    Scanner(scanner::ScannerCommand),
 }
 
 fn main() -> ExitCode {
@@ -107,6 +111,7 @@ fn main() -> ExitCode {
 fn run(command: Command) -> Result<()> {
     match command {
         Command::Status => status(),
+        Command::Scanner(command) => scanner::run(command),
         Command::Streams => streams(),
         Command::Background { choice: None } => theme::show_background(),
         Command::Background { choice: Some(choice) } => theme::set_background(&choice),
