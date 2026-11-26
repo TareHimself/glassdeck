@@ -6,6 +6,7 @@ pub mod hdlc;
 pub mod keymap;
 pub mod serial;
 pub mod usb;
+pub mod usb_descriptors;
 
 #[cfg(test)]
 mod testing {
