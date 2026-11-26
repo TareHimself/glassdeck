@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
 
 [workspace.package]
 edition = "2024"
@@ -27,6 +27,7 @@ minifb = "0.29.0"
 openh264 = "0.9.10"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+specta = { version = "=2.0.0-rc.28", features = ["derive", "serde_json"] }
 windows-capture = "2.0.1"
 windows-core = "0.62.2"
 windows = { version = "0.62.2", features = [

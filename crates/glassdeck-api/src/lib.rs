@@ -1,5 +1,5 @@
 //! What glassdeckd's local API sends and takes, shared by glassdeckd, the CLI and the desktop app.
-//! `cargo test -p glassdeck-api` writes the TypeScript twins of these types to `bindings/`.
+//! They derive `specta::Type`; the desktop app exports their TypeScript twins with its commands.
 //!
 //! | Route | Takes | Answers |
 //! |---|---|---|
@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use ts_rs::TS;
+use specta::Type;
 
 pub const API_FORMAT_VERSION: u32 = 4;
 pub const THEME_FORMAT_VERSION: u32 = 1;
@@ -44,18 +44,16 @@ pub fn active_packages() -> Result<PathBuf> {
 }
 
 /// How to reach the running glassdeckd: `http://127.0.0.1:<port>` with the bearer token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ApiFile {
     pub format: u32,
     pub port: u16,
     pub token: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum ErrorCode {
     /// 401: no token, or the wrong one
     Unauthorized,
@@ -87,23 +85,20 @@ impl ErrorCode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ApiError {
     pub code: ErrorCode,
     /// Says what went wrong, for showing to the user as is
     pub error: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Status {
     pub link: LinkStatus,
     pub stream: StreamStatus,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct LinkStatus {
     /// The keyboard's address, such as `10.0.0.186:7878`
     pub keyboard: String,
@@ -112,9 +107,8 @@ pub struct LinkStatus {
 
 /// One whole setup: the background, the stream to show when it's available, and the widgets. Each
 /// entry names a package by id and carries its own chosen options.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct Theme {
     pub format: u32,
     pub background: ThemeBackground,
@@ -125,9 +119,8 @@ pub struct Theme {
     pub widgets: Vec<ThemeWidget>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ThemeBackground {
     /// A background package's id, such as `dev.glassdeck.gradient`
     pub package: String,
@@ -136,9 +129,8 @@ pub struct ThemeBackground {
     pub options: serde_json::Map<String, Json>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ThemeWidget {
     /// A widget package's id, such as `dev.glassdeck.clock`
     pub package: String,
@@ -165,9 +157,8 @@ impl Theme {
 
 /// A theme to make active, with where each of its packages is in the app's library. A package
 /// glassdeckd already holds the same copy of may be left out; one it doesn't hold must be given.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ThemePush {
     pub theme: Theme,
     /// Package id to the path of its `.deck`, readable by glassdeckd
@@ -176,17 +167,15 @@ pub struct ThemePush {
 }
 
 /// What `PUT /theme` did.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ThemeApplied {
     /// Where the theme's stream got to, when it has one
     pub stream: Option<ShowState>,
 }
 
 /// Where a theme's stream got to by the time `PUT /theme` answered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum ShowState {
     Shown,
     /// A stream starts once the keyboard connects
@@ -199,14 +188,12 @@ pub enum ShowState {
     Unavailable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Streams {
     pub streams: Vec<StreamEntry>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct StreamEntry {
     pub name: String,
     pub mode: StreamMode,
@@ -215,31 +202,28 @@ pub struct StreamEntry {
     pub shown: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum StreamMode {
     /// Shown on arrival, as with mirroring
     Live,
 }
 
 /// The source runner, which plays at most one stream at a time.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct StreamStatus {
     pub state: StreamState,
     /// The stream it's playing, or will play once it can
     pub playing: Option<String>,
-    #[ts(type = "number | null")]
+    #[specta(type = Option<f64>)]
     pub worker: Option<u64>,
     /// The current worker's stream has started
     pub streaming: bool,
     pub last_ended: Option<Ended>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum StreamState {
     #[default]
     Idle,
@@ -260,19 +244,17 @@ impl StreamState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Ended {
-    #[ts(type = "number")]
+    #[specta(type = f64)]
     pub worker: u64,
     /// How it ended, such as `finished` or `failed: ...`
     pub said: String,
 }
 
 /// Whose options a view or change is about.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[ts(export)]
 pub enum OptionsOwner {
     /// The theme's background
     Background { package: String },
@@ -290,8 +272,7 @@ impl std::fmt::Display for OptionsOwner {
 }
 
 /// An options panel as the user would see it now, with each option's current value.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 pub struct OptionsView {
     pub owner: OptionsOwner,
     pub items: Vec<PanelItem>,
@@ -299,17 +280,15 @@ pub struct OptionsView {
     pub dropped: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "item", rename_all = "snake_case")]
-#[ts(export)]
 pub enum PanelItem {
     Section { path: String, label: String, items: Vec<PanelItem> },
     Heading { text: String },
     Option(OptionView),
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 pub struct OptionView {
     /// Its key with its sections', such as `motion.rings.speed`
     pub path: String,
@@ -322,9 +301,8 @@ pub struct OptionView {
     pub hint: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum OptionKind {
     Color { default: String, alpha: bool },
     Range { default: f64, min: f64, max: f64, step: Option<f64>, unit: Option<String> },
@@ -335,9 +313,8 @@ pub enum OptionKind {
 }
 
 /// What `GET /events` sends, each as one server-sent event's JSON data.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum Event {
     /// Everything at once: first on connecting, and again if this client fell behind
     Status { status: Status },

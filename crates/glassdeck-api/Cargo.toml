@@ -8,4 +8,4 @@ license.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+specta.workspace = true

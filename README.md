@@ -44,7 +44,8 @@ flowchart LR
 |---|---|---|
 | [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of the theme's background and widgets, and serves the local HTTP API. |
 | [glassdeck](crates/glassdeck) | host | The CLI. |
-| [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types, with generated TypeScript types. |
+| [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types. They derive `specta::Type` for the app's TypeScript bindings. |
+| [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, Linaria). A client of glassdeckd. |
 | [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds, Wallpaper Engine scenes. |
 | [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a background `.deck`. |
 | [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder. |
@@ -109,6 +110,7 @@ cargo test --workspace -- --ignored
 | Path | Contents |
 |---|---|
 | `crates/` | Rust crates, one workspace |
+| `apps/desktop/` | The desktop app: `src-tauri/` is in the workspace, `src/` is its React frontend |
 | `native/` | C++ wrappers over Slang and Luau's Analysis library, and their silo recipes |
 | `device/` | Keyboard build scripts, `.ipk` packaging, and glassdeck-local-web |
 | `canvases/` | Canvas sources, each with a `deck.json`. `gradient` is the built-in canvas |

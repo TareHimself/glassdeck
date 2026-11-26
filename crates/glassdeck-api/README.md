@@ -38,10 +38,4 @@ A refusal answers with `ApiError { code, error }` and the HTTP status its `Error
 
 ## TypeScript
 
-The types derive `ts_rs::TS`, so the frontend gets matching TypeScript types. Regenerate them with:
-
-```sh
-cargo test -p glassdeck-api
-```
-
-They're written to `bindings/`, which is committed so the app can import them.
+The types derive `specta::Type`. The desktop app ([apps/desktop](../../apps/desktop)) exports them, with its own commands and events, to `apps/desktop/src/bindings.ts` through tauri-specta.
