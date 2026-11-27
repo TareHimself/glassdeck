@@ -2,12 +2,10 @@
 //! the rest (monitors, recording, converting, packing modules) runs here.
 
 mod client;
-mod flash_image;
 mod keyboard;
-mod picoboot;
+mod printer;
 mod scanner;
 mod theme;
-mod usb_command;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

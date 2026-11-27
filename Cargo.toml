@@ -20,6 +20,7 @@ glassdeck-messages = { path = "crates/glassdeck-messages" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
 glassdeck-scanner-proto = { path = "crates/glassdeck-scanner-proto" }
 glassdeck-scanner-dsp = { path = "crates/glassdeck-scanner-dsp" }
+glassdeck-setup = { path = "crates/glassdeck-setup" }
 glassdeck-gpu = { path = "crates/glassdeck-gpu" }
 glassdeck-host = { path = "crates/glassdeck-host" }
 glassdeck-slang = { path = "crates/glassdeck-slang" }

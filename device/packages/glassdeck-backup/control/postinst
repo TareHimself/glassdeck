@@ -1,6 +1,8 @@
 #!/bin/sh
 # Backs up the stock keyboard into /home/root/glassdeck-backup: every eMMC partition that fits,
-# gzipped in 64 MiB pieces (<name>.img.gz.000, ...; cat them to get one gzip), with its SHA-256, and a tarball of the system files the bootstrap touches. Reads the
+# gzipped in 64 MiB pieces (<name>.img.gz.000, ...; cat them to get one gzip), with its SHA-256,
+# a tarball of the system files the bootstrap touches and Flux's settings, and a list of every
+# path on the root filesystem. Reads the
 # eMMC and writes only that folder. The copy runs detached, so the package installs at once;
 # DONE appears when it's finished. Pull the folder back with the bridge's GET_FILE.
 OUT=${GLASSDECK_BACKUP_DIR:-/home/root/glassdeck-backup}
@@ -13,10 +15,14 @@ WORKER=/tmp/glassdeck-backup-worker.sh
 CHUNK_KB=65536
 
 if [ "${1:-}" != "--worker" ]; then
+    # A copy still running from an earlier install keeps going; a second would share its folder.
+    if pgrep -f "sh $WORKER --worker" >/dev/null 2>&1; then
+        exit 0
+    fi
     cp "$0" "$WORKER" && chmod +x "$WORKER"
     detach=""
     command -v setsid >/dev/null 2>&1 && detach=setsid
-    $detach nohup "$WORKER" --worker </dev/null >/dev/null 2>&1 &
+    $detach nohup nice -n 19 "$WORKER" --worker </dev/null >/dev/null 2>&1 &
     exit 0
 fi
 
@@ -31,10 +37,13 @@ free_kb() {
     df -k "$OUT" | awk 'NR==2{print $4}'
 }
 
-# The partition holding the backup folder can't be copied into itself.
+# The partition holding the backup folder can't be copied into itself. It's found by device
+# number, since df names the root filesystem /dev/root, which isn't a link to the partition.
 own_device() {
-    dev=$(df "$OUT" | awk 'NR==2{print $1}')
-    basename "$(readlink -f "$dev")"
+    want=$(mountpoint -d "$(df "$OUT" | awk 'NR==2{print $6}')")
+    for b in /sys/class/block/*; do
+        [ "$(cat "$b/dev" 2>/dev/null)" = "$want" ] && basename "$b"
+    done
 }
 
 partitions_by_size() {
@@ -105,11 +114,16 @@ backup_partition() {
     log "$n: done, $size bytes compressed"
 }
 
+
 log "backup started"
-rm -f "$OUT/RESULTS" "$OUT/SHA256SUMS"
+rm -f "$OUT/RESULTS" "$OUT/SHA256SUMS" "$OUT/"*.img.gz.* "$OUT/"rootfs-files*
 cat /proc/partitions > "$OUT/partitions.txt"
 OWN=$(own_device)
-tar -czf "$OUT/files.tar.gz" /etc /usr/bin/flux-*.sh /usr/lib/garfield/scripts 2>>"$LOG"
+# The root filesystem holds the backup folder, so it can't be imaged here; what Glassdeck changes
+# on it, and Flux's settings, go in files.tar.gz, and every path on it is listed.
+tar -czf "$OUT/files.tar.gz" /etc /usr/bin/flux-*.sh /usr/lib/garfield /usr/lib/garfunkel /home/root/flux 2>>"$LOG"
+find / -xdev \( -path "$OUT" -prune \) -o -print 2>>"$LOG" | sort > "$OUT/rootfs-paths.txt"
+log "root filesystem: $(wc -l < "$OUT/rootfs-paths.txt") paths listed"
 log "system files: $(wc -c < "$OUT/files.tar.gz") bytes"
 partitions_by_size | while read -r sectors n; do
     backup_partition "$n" "$sectors"

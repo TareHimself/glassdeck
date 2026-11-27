@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-flate2 = "1"
 glassdeck-api.workspace = true
 glassdeck-capture.workspace = true
 glassdeck-convert.workspace = true
@@ -15,14 +14,8 @@ glassdeck-luau.workspace = true
 glassdeck-luau-check.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true
-glassdeck-scanner-dsp.workspace = true
-glassdeck-scanner-proto.workspace = true
+glassdeck-setup.workspace = true
 glassdeck-slang.workspace = true
-nusb = "0.2.9"
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.11.2"
 ureq = { version = "3.5.2", features = ["json"] }
-
-[build-dependencies]
-cc = "1.2"

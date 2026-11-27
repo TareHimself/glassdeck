@@ -1,0 +1,16 @@
+[package]
+name = "glassdeck-setup"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+flate2 = "1"
+glassdeck-scanner-dsp.workspace = true
+glassdeck-scanner-proto.workspace = true
+nusb = "0.2.9"
+sha2 = "0.11.2"
+
+[build-dependencies]
+cc = "1.2"
