@@ -256,7 +256,7 @@ pub fn check_canvas(root: &Path, id: &str, native: &Path) -> Result<CanvasCheck,
     Ok(CanvasCheck { shader_error: None, problems: check.problems, checked: check.checked.len() as u32 })
 }
 
-/// Packs a canvas with Slang, or a converted video with its preview image, to `out`. `native`: where Slang and the
+/// Packs a canvas with Slang, or a converted video, to `out`. `native`: where Slang and the
 /// Luau checker are.
 pub fn export_background(root: &Path, id: &str, out: &Path, native: &Path) -> Result<(), LibraryError> {
     let folder = typed_folder(root, id, PackageType::Background)?;

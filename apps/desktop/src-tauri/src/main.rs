@@ -617,7 +617,7 @@ fn main() {
             app.manage(stills::Stills::start(app.handle().clone(), native_libraries().ok()));
             if let Ok(root) = library::root() {
                 let scope = app.asset_protocol_scope();
-                for folder in [root.clone(), root.parent().unwrap_or(&root).join("stills")] {
+                for folder in [root.clone(), stills::thumbnails(&root)] {
                     if let Err(e) = scope.allow_directory(&folder, true) {
                         eprintln!("allowing stills in {}: {e}", folder.display());
                     }

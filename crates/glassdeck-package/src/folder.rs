@@ -30,7 +30,7 @@ pub struct DeckSource {
     /// A widget's sizes; packing works out a canvas's details from its shader
     #[serde(default)]
     pub details: Option<serde_json::Value>,
-    /// Seconds into a canvas at which its still is drawn; 0 when left out
+    /// Seconds into a canvas or video at which the app draws its still; 0 when left out
     #[serde(default)]
     pub preview_at: Option<f32>,
 }
@@ -45,27 +45,10 @@ impl DeckSource {
         Ok((source, text))
     }
 
-    /// The manifest, with `preview` naming the folder's still when it has one (see [`folder_preview`]).
-    pub fn manifest(&self, origin: Origin, kind: Kind, preview: Option<&FolderPreview>) -> Manifest {
-        let preview = preview.map(|p| p.entry.clone());
-        Manifest { format: FORMAT_VERSION, id: self.id.clone(), title: self.title.clone(), version: self.version.clone(), origin, preview, kind }
+    /// The manifest. Packed folders carry no `preview`: the app draws stills itself and keeps them apart.
+    pub fn manifest(&self, origin: Origin, kind: Kind) -> Manifest {
+        Manifest { format: FORMAT_VERSION, id: self.id.clone(), title: self.title.clone(), version: self.version.clone(), origin, preview: None, kind }
     }
-}
-
-/// A source folder's still image, packed as the manifest's `preview`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FolderPreview {
-    /// Its entry name in the package, such as `preview.png`
-    pub entry: String,
-    pub path: PathBuf,
-}
-
-/// The still names a source folder can hold, in the order they're looked for.
-pub const PREVIEW_FILES: [&str; 2] = ["preview.png", "preview.jpg"];
-
-/// The folder's still, if it has one.
-pub fn folder_preview(folder: &Path) -> Option<FolderPreview> {
-    PREVIEW_FILES.iter().map(|name| (name, folder.join(name))).find(|(_, path)| path.is_file()).map(|(name, path)| FolderPreview { entry: (*name).to_owned(), path })
 }
 
 /// A script in a source folder; one that is missing or blank (only whitespace and comments) is `None`,
@@ -116,11 +99,7 @@ pub fn pack_folder(folder: &Path, out: &Path) -> Result<Package> {
     }
     let sources = source_digest(std::iter::once(deck_text.as_str()).chain(scripts.iter().map(|(_, _, source)| source.as_str())));
     let from = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let preview = folder_preview(folder);
-    let mut writer = PackageWriter::create(out, deck.manifest(Origin::Packed { from, sources }, Kind::Widget(size), preview.as_ref()))?;
-    if let Some(preview) = &preview {
-        writer.add_file(&preview.entry, &preview.path)?;
-    }
+    let mut writer = PackageWriter::create(out, deck.manifest(Origin::Packed { from, sources }, Kind::Widget(size)))?;
     for (script, path, _) in &scripts {
         writer.add_file(script, path)?;
     }

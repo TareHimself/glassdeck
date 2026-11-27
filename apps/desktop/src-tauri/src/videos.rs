@@ -1,6 +1,6 @@
 //! Video backgrounds: a video is cropped, trimmed and converted once, when it's made or replaced, and
 //! only the result is kept. A folder holds `video.json` (where it came from and how it was cut),
-//! `video.mp4` in the keyboard's spec once converted, and `preview.jpg`.
+//! `video.mp4` in the keyboard's spec once converted; its still is in the app's cache (see `stills`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -22,7 +22,6 @@ use crate::backgrounds::{BackgroundSummary, VIDEO_RECORD, background_summary, ty
 use crate::library::{LibraryError, io, read_deck_json};
 
 pub const VIDEO_FILE: &str = "video.mp4";
-pub const PREVIEW_FILE: &str = "preview.jpg";
 /// The re-encode bitrate, as `glassdeck convert` uses by default.
 const BITRATE: u32 = 12_000_000;
 const FRAME_WIDTH: u32 = 960;
@@ -184,7 +183,7 @@ impl Conversions {
         }
     }
 
-    /// Converts on its own thread into `video.mp4`, with a first-frame `preview.jpg`.
+    /// Converts on its own thread into `video.mp4`, and draws its still.
     pub fn start(&self, app: AppHandle, conversion: Conversion) {
         let jobs = self.clone();
         jobs.set(&app, &conversion.id, Some(ConversionState::Converting { fraction: 0.0 }));
@@ -212,8 +211,13 @@ fn convert(conversion: &Conversion, progress: &dyn Fn(f32)) -> Result<()> {
     glassdeck_convert::spec_video(source, &partial, EncodeSettings { bitrate: BITRATE }, *cut, progress)?;
     let done = folder.join(VIDEO_FILE);
     fs::rename(&partial, &done).with_context(|| format!("moving {} into place", done.display()))?;
-    let (w, h, rgb) = video::frame_at(&done, 0.0)?;
-    fs::write(folder.join(PREVIEW_FILE), jpeg(w, h, rgb, PREVIEW_WIDTH)?).context("writing the preview image")
+    crate::stills::draw_video(folder).map(drop)
+}
+
+/// The converted video's frame at `seconds`, as a JPEG still.
+pub fn frame_jpeg(folder: &Path, seconds: f64) -> Result<Vec<u8>> {
+    let (w, h, rgb) = video::frame_at(&folder.join(VIDEO_FILE), seconds)?;
+    jpeg(w, h, rgb, PREVIEW_WIDTH)
 }
 
 /// A video background as its page shows it.
@@ -241,10 +245,10 @@ pub fn read_video(root: &Path, id: &str, conversions: &Conversions) -> Result<Vi
     let conversion = conversions.state(&background.id);
     let file = folder.join(VIDEO_FILE);
     let video = if file.is_file() && conversion.is_none() {
-        let preview = match fs::read(folder.join(PREVIEW_FILE)) {
-            Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(io(format!("reading {PREVIEW_FILE}"))(e)),
+        let preview = match background.preview.as_ref().map(|still| fs::read(&still.path)) {
+            Some(Ok(bytes)) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+            Some(Err(e)) => return Err(io("reading the video's still".into())(e)),
+            None => None,
         };
         Some(ConvertedVideo { path: file.display().to_string(), facts: facts(&file)?, preview })
     } else {
@@ -253,15 +257,19 @@ pub fn read_video(root: &Path, id: &str, conversions: &Conversions) -> Result<Vi
     Ok(VideoBackground { background, record, video, conversion })
 }
 
-/// Sets the preview image to the converted video's frame at `seconds`; the new image.
+/// Makes the converted video's frame at `seconds` its still, keeping the time in `deck.json`; the new image.
 pub fn set_preview(root: &Path, id: &str, seconds: f64) -> Result<String, LibraryError> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(LibraryError::InvalidTime { reason: format!("{seconds} isn't a time from 0 seconds on") });
+    }
     let folder = typed_background(root, id, crate::backgrounds::BackgroundKind::Video)?;
     let bad = |e: anyhow::Error| LibraryError::BadVideo { reason: format!("{e:#}") };
     video::start_media_foundation().map_err(bad)?;
-    let (w, h, rgb) = video::frame_at(&folder.join(VIDEO_FILE), seconds).map_err(bad)?;
-    let bytes = jpeg(w, h, rgb, PREVIEW_WIDTH).map_err(bad)?;
-    let path = folder.join(PREVIEW_FILE);
-    fs::write(&path, &bytes).map_err(io(format!("writing {}", path.display())))?;
+    let mut deck = read_deck_json(&folder)?;
+    deck.insert("preview_at".into(), serde_json::json!(seconds));
+    crate::library::write_deck_json(&folder, &deck)?;
+    let still = crate::stills::draw_video(&folder).map_err(bad)?;
+    let bytes = fs::read(&still.path).map_err(io("reading the video's still".into()))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
@@ -275,7 +283,7 @@ pub fn replace(root: &Path, id: &str, source: &Path, cut: VideoCut) -> Result<Co
     Ok(conversion)
 }
 
-/// Packs the converted video and its preview image into a `.deck` at `out`.
+/// Packs the converted video into a `.deck` at `out`.
 pub fn export(folder: &Path, out: &Path) -> Result<(), LibraryError> {
     let file = folder.join(VIDEO_FILE);
     if !file.is_file() {
@@ -285,13 +293,7 @@ pub fn export(folder: &Path, out: &Path) -> Result<(), LibraryError> {
     let text = |key: &str| deck.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
     let id = glassdeck_package::PackageId::parse(&text("id")).map_err(|e| LibraryError::InvalidId { reason: e.to_string() })?;
     let record = read_record(folder)?;
-    let preview = folder.join(PREVIEW_FILE);
-    let details = glassdeck_convert::Details {
-        id,
-        title: text("title"),
-        origin: Origin::Converted { from: record.from },
-        preview: preview.is_file().then_some(preview),
-    };
+    let details = glassdeck_convert::Details { id, title: text("title"), origin: Origin::Converted { from: record.from }, preview: None };
     glassdeck_convert::video(&file, out, details, EncodeSettings { bitrate: BITRATE }).map(drop).map_err(|e| LibraryError::Io { reason: format!("{e:#}") })
 }
 
