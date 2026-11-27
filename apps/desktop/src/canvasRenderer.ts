@@ -19,10 +19,17 @@ const PANEL = [1920, 1080] as const;
 
 export type CanvasFrame = { time: number; delta: number; index: number; inputs: InputUpdate[] };
 
-/** `gd_inputs_0.roseAt_0` to `gd_inputs.roseAt`, and `gd_inputs_0.bands_0[0]` to `gd_inputs.bands`, as Slang names them. */
+/** The member Slang's std140 wrapper struct keeps an array in. */
+const STD140_ARRAY_MEMBER = ".data_0";
+
+/**
+ * `gd_inputs_0.roseAt_0` to `gd_inputs.roseAt`, and an array, `gd_inputs_0.bands_0[0]` or as Slang wraps
+ * it for std140, `gd_inputs_0.bands_0.data_0[0]`, to `gd_inputs.bands`.
+ */
 export function slangName(glsl: string): string {
-  return glsl
-    .replace(/\[0\]$/, "")
+  const array = glsl.endsWith("[0]") ? glsl.slice(0, -"[0]".length) : null;
+  const unwrapped = array?.endsWith(STD140_ARRAY_MEMBER) ? array.slice(0, -STD140_ARRAY_MEMBER.length) : array;
+  return (unwrapped ?? glsl)
     .split(".")
     .map((part) => part.replace(/_\d+$/, ""))
     .join(".");

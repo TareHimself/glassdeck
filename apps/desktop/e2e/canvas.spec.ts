@@ -40,3 +40,30 @@ test("the gradient's real Slang shader draws in WebGL2 with its inputs", async (
   expect(a).toBe(255);
   expect(r + g + b, `the colours the inputs set, not black: ${center}`).toBeGreaterThan(60);
 });
+
+/** The audio spectrum's real shader (e2e/fixtures/spectrum.essl), whose levels are an array input. */
+test("an array input reaches the shader", async ({ page }) => {
+  await page.goto("/");
+  const [low, high] = await page.evaluate(async () => {
+    const { CanvasRenderer } = await import("/src/canvasRenderer.ts");
+    const fragment: string = (await import("/e2e/fixtures/spectrum.essl?raw")).default;
+    const canvas = document.createElement("canvas");
+    document.body.append(canvas);
+    const renderer = new CanvasRenderer(canvas);
+    renderer.useProgram(fragment, 960, 540);
+    const levels = Array.from({ length: 24 }, (_, i) => (i < 12 ? 0.9 : 0));
+    renderer.frame({ time: 1, delta: 0, index: 0, inputs: [{ name: "levels", value: { kind: "array", values: levels } }] });
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+    const gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("no WebGL2");
+    const brightness = (x: number) => {
+      const pixel = new Uint8Array(4);
+      gl.readPixels(x, 135, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return pixel[0]! + pixel[1]! + pixel[2]!;
+    };
+    return [brightness(100), brightness(860)];
+  });
+  expect(low, "a band set to 0.9 draws a bar").toBeGreaterThan(200);
+  expect(high, "a silent band draws none").toBeLessThan(80);
+});

@@ -89,10 +89,22 @@ function startCanvas(id: string, run: number) {
   let last = 0;
   const timer = window.setInterval(() => {
     const time = (performance.now() - started) / 1000;
-    send(run, { state: "frame", time, delta: time - last, index: index++, inputs: [] });
+    const inputs = mockInputs(time);
+    send(run, { state: "frame", time, delta: time - last, index: index++, inputs });
+    if (index % 10 === 0) send(run, { state: "inputs", inputs: inputs.map(({ name, value }) => ({ name, values: value.values })) });
     last = time;
   }, 33);
   state.canvas = { id, run, started, timer };
+}
+
+/** A colour, a vector and an array, as a canvas's keyboard.luau might write them. */
+function mockInputs(time: number) {
+  const levels = Array.from({ length: 24 }, (_, i) => Math.abs(Math.sin(time + i * 0.45)) * (1 - i / 30));
+  return [
+    { name: "night", value: { kind: "float", values: [0.06, 0.04, 0.16] } },
+    { name: "roseAt", value: { kind: "float", values: [0.5 + 0.2 * Math.sin(time), 0.3] } },
+    { name: "levels", value: { kind: "array", values: levels } },
+  ];
 }
 
 function stopCanvas() {

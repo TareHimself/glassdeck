@@ -148,6 +148,22 @@
   min-height: 30px;
 }
 
+.input[data-wide] {
+  grid-column: 1 / -1;
+  align-items: flex-start;
+}
+
+.input[data-wide] .inputName {
+  flex: none;
+}
+
+.input[data-wide] .number {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .swatch {
   flex: none;
   width: 20px;

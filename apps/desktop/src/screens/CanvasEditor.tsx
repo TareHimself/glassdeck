@@ -66,6 +66,9 @@ function numbersOf(values: Floats): string {
   return shown.length === 1 ? (shown[0] ?? "") : `(${shown.join(", ")})`;
 }
 
+/** The widest a vector input gets; an input with more values is an array, given its own row. */
+const VECTOR_WIDTH = 4;
+
 /** Three or four components read as a color, as the canvases write them with `color.hex`; anything else as numbers. */
 function isColor(input: InputReading): boolean {
   return input.values.length === 3 || input.values.length === 4;
@@ -314,7 +317,7 @@ export function CanvasEditor({ id }: { id: string }) {
                 </div>
               ))}
               {numbers.map((input) => (
-                <div key={input.name} className={styles.input}>
+                <div key={input.name} className={styles.input} data-wide={input.values.length > VECTOR_WIDTH || undefined}>
                   <span className={styles.inputName}>{input.name}</span>
                   <span className={styles.number}>{numbersOf(input.values)}</span>
                 </div>
