@@ -38,6 +38,10 @@ pub fn conflict(message: impl fmt::Display) -> anyhow::Error {
     refused(ErrorCode::Conflict, message)
 }
 
+pub fn not_found(message: impl fmt::Display) -> anyhow::Error {
+    refused(ErrorCode::NotFound, message)
+}
+
 /// What a handler fails with: any error, answered with the code it was marked with.
 pub struct Failure(anyhow::Error);
 

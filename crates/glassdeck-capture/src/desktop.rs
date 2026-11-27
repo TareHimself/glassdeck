@@ -158,3 +158,71 @@ impl GraphicsCaptureApiHandler for Capture {
         Ok(())
     }
 }
+
+/// One frame of a monitor as it is now: BGRA rows without padding, and its size. For a preview of a
+/// stream nobody is playing yet, so nothing is encoded.
+pub fn capture_still(monitor: windows_capture::monitor::Monitor) -> Result<(Vec<u8>, (u32, u32))> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let settings = Settings::new(
+        monitor,
+        CursorCaptureSettings::WithoutCursor,
+        DrawBorderSettings::WithoutBorder,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
+        ColorFormat::Bgra8,
+        tx,
+    );
+    let control = StillCapture::start_free_threaded(settings).map_err(|e| anyhow!("starting capture: {e}"))?;
+    let still = rx.recv_timeout(STILL_WAIT).map_err(|_| anyhow!("the monitor gave no frame within {STILL_WAIT:?}"));
+    let stopped = control.stop().map_err(|e| anyhow!("stopping capture: {e}"));
+    let still = still?;
+    stopped?;
+    Ok(still)
+}
+
+/// A monitor that shows nothing new still gives its first frame at once; this is for one that's asleep.
+const STILL_WAIT: Duration = Duration::from_secs(2);
+
+struct StillCapture {
+    tx: SyncSender<(Vec<u8>, (u32, u32))>,
+    scratch: Vec<u8>,
+}
+
+impl GraphicsCaptureApiHandler for StillCapture {
+    type Flags = SyncSender<(Vec<u8>, (u32, u32))>;
+    type Error = BoxError;
+
+    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        Ok(Self { tx: ctx.flags, scratch: Vec::new() })
+    }
+
+    fn on_frame_arrived(&mut self, frame: &mut CapturedFrame, control: InternalCaptureControl) -> Result<(), Self::Error> {
+        let size = (frame.width(), frame.height());
+        let buffer = frame.buffer()?;
+        let bgra = buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
+        // Only the first frame is wanted; a full channel means it's already on its way.
+        let _ = self.tx.try_send((bgra, size));
+        control.stop();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::monitors::{self, MonitorQuery};
+
+    use super::*;
+
+    #[test]
+    fn a_still_is_one_whole_frame_of_the_monitor() {
+        let Some(info) = monitors::enumerate().ok().and_then(|all| all.into_iter().next()) else {
+            eprintln!("skipped: no monitor to capture");
+            return;
+        };
+        let found = monitors::find(&MonitorQuery::Index(info.index)).unwrap();
+        let (bgra, (width, height)) = capture_still(found.monitor).unwrap();
+        assert_eq!((width, height), (info.width, info.height), "the monitor's own size");
+        assert_eq!(bgra.len(), (width * height * 4) as usize, "every pixel, with no row padding");
+    }
+}

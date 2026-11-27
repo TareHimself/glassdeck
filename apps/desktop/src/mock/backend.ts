@@ -16,7 +16,7 @@ import type {
   WidgetSummary,
 } from "../bindings";
 import { BACKGROUNDS, CANVAS_FILES, CLOCK_KEYBOARD, CLOCK_OPTIONS, PANEL_LAYOUT, STATUS, STREAMS, THEME, WIDGETS } from "./fixtures";
-import { canvasFrame, staleFrame, widgetTile } from "./frames";
+import { canvasFrame, monitorFrame, staleFrame, widgetTile } from "./frames";
 
 const STALE_FRAME = staleFrame();
 
@@ -135,6 +135,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   status: () => state.status,
   theme: () => state.theme,
   streams: () => ({ streams: STREAMS }),
+  stream_snapshot: ({ name }) => {
+    if (!STREAMS.some((s) => s.name === name)) throw { kind: "refused", error: { code: "not_found", error: `no stream ${String(name)} is attached` } };
+    return monitorFrame();
+  },
   apply_theme: ({ theme }) => {
     if (state.status.link.connection.state !== "connected") {
       throw { kind: "glassdeckd", error: { kind: "refused", error: { code: "unavailable", error: "the keyboard isn't connected" } } };

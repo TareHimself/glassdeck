@@ -51,3 +51,17 @@ export function staleFrame(): string {
   g.fillRect(0, 0, 32, 18);
   return base64Of(canvas, "image/jpeg");
 }
+
+/** A monitor's picture for a stream snapshot: a desktop with two windows, as base64 JPEG. */
+export function monitorFrame(): string {
+  const [canvas, g] = canvasOf(480, 270);
+  g.fillStyle = "#14203a";
+  g.fillRect(0, 0, 480, 270);
+  g.fillStyle = "#1e1f29";
+  g.fillRect(36, 30, 250, 190);
+  g.fillStyle = "#f4f5f8";
+  g.fillRect(245, 75, 200, 140);
+  g.fillStyle = "#0a0d16";
+  g.fillRect(0, 257, 480, 13);
+  return base64Of(canvas, "image/jpeg");
+}

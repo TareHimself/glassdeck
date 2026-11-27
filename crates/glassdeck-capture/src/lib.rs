@@ -18,5 +18,5 @@ pub mod sources;
 pub mod wallpaper;
 mod web;
 
-pub use desktop::EncoderKind;
+pub use desktop::{EncoderKind, capture_still};
 pub use web::helper_process_exit_code;

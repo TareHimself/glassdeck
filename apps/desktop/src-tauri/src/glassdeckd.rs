@@ -79,6 +79,15 @@ impl Glassdeckd {
         self.fetch("/streams").await
     }
 
+    /// What the stream's monitor shows now, as JPEG bytes.
+    pub async fn stream_snapshot(&self, name: &str) -> Result<Vec<u8>, GlassdeckdError> {
+        let reply = self.get(&format!("/streams/{name}/snapshot"))?.send().await.map_err(unreachable)?;
+        if !reply.status().is_success() {
+            return Err(refusal(reply).await);
+        }
+        Ok(reply.bytes().await.map_err(unreachable)?.to_vec())
+    }
+
     /// Makes `push` the active theme: glassdeckd copies the packages it doesn't hold and sends them on.
     pub async fn put_theme(&self, push: &ThemePush) -> Result<ThemeApplied, GlassdeckdError> {
         let at = endpoint()?;

@@ -9,6 +9,8 @@ export const commands = {
 	status: (options?: InvokeOptions) => typedError<Status, GlassdeckdError>(__TAURI_INVOKE("status", undefined, options)),
 	theme: (options?: InvokeOptions) => typedError<Theme, GlassdeckdError>(__TAURI_INVOKE("theme", undefined, options)),
 	streams: (options?: InvokeOptions) => typedError<Streams, GlassdeckdError>(__TAURI_INVOKE("streams", undefined, options)),
+	/**  What a stream's monitor shows now, as a base64 JPEG, for the keyboard preview of a chosen stream. */
+	streamSnapshot: (name: string, options?: InvokeOptions) => typedError<string, GlassdeckdError>(__TAURI_INVOKE("stream_snapshot", { name }, options)),
 	/**  Packs every package `theme` uses from the library, the built-in background aside, then makes it the active theme. */
 	applyTheme: (theme: Theme, options?: InvokeOptions) => typedError<ThemeApplied, ApplyError>(__TAURI_INVOKE("apply_theme", { theme }, options)),
 	listWidgets: (options?: InvokeOptions) => typedError<WidgetSummary[], LibraryError>(__TAURI_INVOKE("list_widgets", undefined, options)),

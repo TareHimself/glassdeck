@@ -50,6 +50,14 @@ async fn streams(glassdeckd: State<'_, Glassdeckd>) -> Result<Streams, Glassdeck
     glassdeckd.streams().await
 }
 
+/// What a stream's monitor shows now, as a base64 JPEG, for the keyboard preview of a chosen stream.
+#[tauri::command]
+#[specta::specta]
+async fn stream_snapshot(glassdeckd: State<'_, Glassdeckd>, name: String) -> Result<String, GlassdeckdError> {
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(glassdeckd.stream_snapshot(&name).await?))
+}
+
 /// Why Apply didn't reach the keyboard.
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -512,6 +520,7 @@ fn bindings() -> Builder<tauri::Wry> {
             status,
             theme,
             streams,
+            stream_snapshot,
             apply_theme,
             list_widgets,
             create_widget,

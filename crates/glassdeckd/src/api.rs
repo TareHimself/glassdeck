@@ -38,6 +38,9 @@ use crate::theme::{self, ActiveTheme};
 const START_WAIT: Duration = Duration::from_secs(30);
 /// Longer than the runner gives a worker to stop before killing it.
 const STOP_WAIT: Duration = Duration::from_secs(15);
+/// A stream snapshot's width: the app's keyboard preview shows it at about this size
+const SNAPSHOT_WIDTH: u32 = 960;
+const SNAPSHOT_QUALITY: u8 = 80;
 /// Events a slow `/events` client may fall behind by before it's sent the whole status again.
 pub const EVENT_BACKLOG: usize = 64;
 const API_THREADS: usize = 2;
@@ -246,6 +249,23 @@ impl Api {
     }
 
     /// `None` when no monitor has that stream's name now.
+    /// What the stream's monitor shows now, as a JPEG at most `SNAPSHOT_WIDTH` wide: the app's preview of a
+    /// stream before it's applied, when nothing is encoding it yet.
+    fn stream_snapshot(&self, name: &str) -> Result<Vec<u8>> {
+        let name = StreamName::parse(name).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
+        let stream = self.find_stream(&name)?.ok_or_else(|| crate::error::not_found(format!("no stream {name} is attached")))?;
+        let found = monitors::find(&monitors::MonitorQuery::Index(stream.monitor.index))?;
+        let (bgra, (width, height)) = glassdeck_capture::capture_still(found.monitor)?;
+        let rgb: Vec<u8> = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        let mut image = image::RgbImage::from_raw(width, height, rgb).context("the frame isn't its size")?;
+        if width > SNAPSHOT_WIDTH {
+            image = image::imageops::thumbnail(&image, SNAPSHOT_WIDTH, height * SNAPSHOT_WIDTH / width);
+        }
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SNAPSHOT_QUALITY).encode_image(&image).context("encoding the snapshot")?;
+        Ok(jpeg)
+    }
+
     fn find_stream(&self, name: &StreamName) -> Result<Option<MonitorStream>> {
         Ok(monitor_streams(&monitors::enumerate()?).into_iter().find(|s| s.name == *name))
     }
@@ -299,6 +319,7 @@ fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/streams", get(list_streams))
+        .route("/streams/{name}/snapshot", get(stream_snapshot))
         .route("/theme", get(get_theme).put(put_theme))
         .route("/events", get(events))
         .fallback(|| async { answer(ErrorCode::NotFound, "no such route".to_owned()) })
@@ -329,6 +350,14 @@ async fn status(State(api): State<Arc<Api>>) -> Reply<Status> {
 
 async fn list_streams(State(api): State<Arc<Api>>) -> Reply<Streams> {
     blocking(api, Api::streams).await
+}
+
+async fn stream_snapshot(State(api): State<Arc<Api>>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, Failure> {
+    let jpeg = match tokio::task::spawn_blocking(move || api.stream_snapshot(&name)).await {
+        Ok(result) => result?,
+        Err(e) => return Err(anyhow!("the request's handler panicked: {e}").into()),
+    };
+    Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg).into_response())
 }
 
 async fn get_theme(State(api): State<Arc<Api>>) -> Reply<Theme> {

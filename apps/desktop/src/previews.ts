@@ -217,3 +217,34 @@ export function useVideoSource(id: string | null): VideoSource | null {
   }, [id]);
   return source;
 }
+
+/** How often a chosen stream's snapshot is refreshed while the preview shows it. */
+const SNAPSHOT_EVERY_MS = 1000;
+
+/**
+ * What the stream `name`'s monitor shows, about once a second, while `name` isn't null: the keyboard
+ * preview of a stream, which overrides the background whenever it's attached. Each snapshot is asked
+ * for only after the last one arrived, so a slow capture never piles requests up.
+ */
+export function useStreamSnapshot(name: string | null): string | null {
+  const [snapshot, setSnapshot] = useState<string | null>(null);
+  useEffect(() => {
+    setSnapshot(null);
+    if (!name) return;
+    let alive = true;
+    let timer = 0;
+    const take = async () => {
+      const result = await commands.streamSnapshot(name);
+      if (!alive) return;
+      if (result.status === "ok") setSnapshot(jpegUrl(result.data));
+      else console.warn(`no snapshot of ${name}:`, result.error);
+      timer = window.setTimeout(() => void take(), SNAPSHOT_EVERY_MS);
+    };
+    void take();
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [name]);
+  return snapshot;
+}
