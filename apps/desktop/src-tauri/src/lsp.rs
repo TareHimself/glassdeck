@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use glassdeck_package::PackageType;
+use glassdeck_slang::pack::TYPES_FOLDER;
+
 use crate::library::LibraryError;
 
 /// Which server an editor tab talks to. Each Luau script kind has its own, because each runs with
@@ -28,6 +31,29 @@ pub enum LspServer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct LspSession(u32);
+
+/// A started server: its session, and the `file://` URI of the folder it works in, which documents sit under.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct LspStarted {
+    pub session: LspSession,
+    pub root: String,
+}
+
+/// `path` as a `file://` URI, the form LSP names documents and folders by.
+pub fn file_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::from("file://");
+    if !text.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => uri.push(byte as char),
+            other => uri.push_str(&format!("%{other:02X}")),
+        }
+    }
+    uri
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -70,17 +96,40 @@ pub struct Launch {
     pub folder: PathBuf,
 }
 
+/// The `.glassdeck/` definition files a Luau script kind is typed by, the same ones its save-time check uses.
+pub fn definitions(server: LspServer, package: PackageType) -> &'static [&'static str] {
+    match (server, package) {
+        (LspServer::LuauKeyboard, PackageType::Widget) => &["common.d.luau", "keyboard.d.luau"],
+        (LspServer::LuauKeyboard, PackageType::Background) => &["canvas.d.luau", "inputs.d.luau"],
+        (LspServer::LuauHost, _) => &["options.d.luau", "common.d.luau", "host.d.luau"],
+        (LspServer::LuauOptions, _) => &["options-api.d.luau", "options.d.luau", "current.d.luau"],
+        (LspServer::Slang, _) => &[],
+    }
+}
+
 /// The program for `server`, from the native libraries folder, working in the package's `folder`.
-pub fn launch(server: LspServer, folder: &Path, native: &Path) -> Result<Launch, LspError> {
-    let (name, args): (&str, &[&str]) = match server {
-        LspServer::LuauKeyboard | LspServer::LuauHost | LspServer::LuauOptions => ("luau-lsp", &["lsp"]),
-        LspServer::Slang => ("slangd", &[]),
+/// `.glassdeck/` must already be written there, which checking the package does.
+pub fn launch(server: LspServer, package: PackageType, folder: &Path, native: &Path) -> Result<Launch, LspError> {
+    let name = match server {
+        LspServer::Slang => "slangd",
+        _ => "luau-lsp",
     };
     let program = native.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if !program.is_file() {
         return Err(LspError::Unavailable { reason: format!("{name} isn't installed in {}", native.display()) });
     }
-    Ok(Launch { program, args: args.iter().map(OsString::from).collect(), folder: folder.to_path_buf() })
+    let mut args: Vec<OsString> = Vec::new();
+    if server != LspServer::Slang {
+        args.extend(["lsp", "--stdio"].map(OsString::from));
+        for file in definitions(server, package) {
+            let path = folder.join(TYPES_FOLDER).join(file);
+            let stem = file.trim_end_matches(".d.luau");
+            let mut arg = OsString::from(format!("--definitions:@{stem}="));
+            arg.push(&path);
+            args.push(arg);
+        }
+    }
+    Ok(Launch { program, args, folder: folder.to_path_buf() })
 }
 
 /// LSP's base protocol: each message is `Content-Length: N`, a blank line, then N bytes of JSON.
@@ -263,7 +312,8 @@ mod tests {
     fn sessions() -> (Sessions, mpsc::Receiver<Output>) {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        (Sessions::new(move |output| tx.lock().unwrap().send(output).unwrap()), rx)
+        // A test may finish before a server's last message; that one has nowhere to go
+        (Sessions::new(move |output| drop(tx.lock().unwrap().send(output))), rx)
     }
 
     fn next(rx: &mpsc::Receiver<Output>) -> Output {
@@ -313,9 +363,78 @@ mod tests {
         assert_eq!(sessions.stop(session), Err(LspError::NoSession { session }));
     }
 
+    /// `target/native`, where `native/build.py` puts the servers.
+    fn native() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/native")
+    }
+
+    /// The next message `matches` accepts, skipping the rest (logs, progress, other notifications).
+    fn wait_for(rx: &mpsc::Receiver<Output>, matches: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(30)).expect("the server kept answering") {
+                Output::Message(m) => {
+                    let value: serde_json::Value = serde_json::from_str(&m.message).expect("JSON-RPC");
+                    if matches(&value) {
+                        return value;
+                    }
+                }
+                Output::Exited(e) => panic!("the server exited: {}", e.reason),
+            }
+        }
+    }
+
+    #[test]
+    fn luau_lsp_reports_errors_and_completes_from_our_definitions() {
+        let native = native();
+        let folder = std::env::temp_dir().join(format!("glassdeck-lsp-test-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join(TYPES_FOLDER)).unwrap();
+        std::fs::write(folder.join(TYPES_FOLDER).join("common.d.luau"), glassdeck_luau_check::definitions::COMMON).unwrap();
+        std::fs::write(folder.join(TYPES_FOLDER).join("keyboard.d.luau"), glassdeck_luau_check::definitions::KEYBOARD).unwrap();
+        let Ok(launch) = launch(LspServer::LuauKeyboard, PackageType::Widget, &folder, &native) else {
+            eprintln!("skipped: luau-lsp isn't built in {} (run native/build.py)", native.display());
+            return;
+        };
+        let (sessions, rx) = sessions();
+        let session = sessions.start(&launch).unwrap();
+        let root = file_uri(&folder);
+        let script = format!("{root}/keyboard.luau");
+        let send = |value: serde_json::Value| sessions.send(session, &value.to_string()).unwrap();
+
+        send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "processId": null, "rootUri": root, "workspaceFolders": [{ "uri": root, "name": "widget" }],
+            "capabilities": { "textDocument": { "publishDiagnostics": {}, "completion": { "completionItem": {} } } }
+        }}));
+        wait_for(&rx, |v| v["id"] == 1);
+        send(serde_json::json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+        let text = "--!strict\nlocal count: number = \"three\"\nwidget.\n";
+        send(serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": script, "languageId": "luau", "version": 1, "text": text }
+        }}));
+        let published = wait_for(&rx, |v| v["method"] == "textDocument/publishDiagnostics" && v["params"]["diagnostics"].as_array().is_some_and(|d| !d.is_empty()));
+        let messages: Vec<&str> = published["params"]["diagnostics"].as_array().unwrap().iter().filter_map(|d| d["message"].as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("string") && m.contains("number")), "a type error for the string: {messages:?}");
+
+        send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion", "params": {
+            "textDocument": { "uri": script }, "position": { "line": 2, "character": 7 },
+            "context": { "triggerKind": 2, "triggerCharacter": "." }
+        }}));
+        let completion = wait_for(&rx, |v| v["id"] == 2);
+        let items = completion["result"]["items"].as_array().or_else(|| completion["result"].as_array()).cloned().unwrap_or_default();
+        let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+        assert!(labels.contains(&"on_draw") && labels.contains(&"every"), "the widget API from keyboard.d.luau: {labels:?}");
+        sessions.stop(session).unwrap();
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn file_uris_escape_what_they_must() {
+        assert_eq!(file_uri(Path::new(r"C:\Users\A B\library\widget.local.user.clock")), "file:///C:/Users/A%20B/library/widget.local.user.clock");
+        assert_eq!(file_uri(Path::new("/home/a/x#1")), "file:///home/a/x%231");
+    }
+
     #[test]
     fn a_missing_server_is_unavailable() {
         let missing = std::env::temp_dir().join("glassdeck-no-servers-here");
-        assert!(matches!(launch(LspServer::Slang, Path::new("."), &missing), Err(LspError::Unavailable { .. })));
+        assert!(matches!(launch(LspServer::Slang, PackageType::Background, Path::new("."), &missing), Err(LspError::Unavailable { .. })));
     }
 }

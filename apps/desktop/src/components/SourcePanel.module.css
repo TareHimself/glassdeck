@@ -159,3 +159,8 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.languageNote {
+  font-size: 12px;
+  color: var(--muted);
+}

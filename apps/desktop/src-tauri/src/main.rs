@@ -271,10 +271,11 @@ fn panel_layout() -> PanelLayout {
 /// Starts the language server an editor tab needs, working in the package's library folder.
 #[tauri::command]
 #[specta::specta]
-async fn lsp_start(sessions: State<'_, lsp::Sessions>, server: lsp::LspServer, id: String) -> Result<lsp::LspSession, lsp::LspError> {
-    let folder = in_library(move |root| library::package_folder(root, &id).map(|(_, folder)| folder)).await.map_err(|error| lsp::LspError::Library { error })?;
+async fn lsp_start(sessions: State<'_, lsp::Sessions>, server: lsp::LspServer, id: String) -> Result<lsp::LspStarted, lsp::LspError> {
+    let (id, folder) = in_library(move |root| library::package_folder(root, &id)).await.map_err(|error| lsp::LspError::Library { error })?;
     let native = native_libraries().map_err(|error| lsp::LspError::Library { error })?;
-    sessions.start(&lsp::launch(server, &folder, &native)?)
+    let session = sessions.start(&lsp::launch(server, id.package_type(), &folder, &native)?)?;
+    Ok(lsp::LspStarted { session, root: lsp::file_uri(&folder) })
 }
 
 /// Sends one JSON-RPC message to a running language server.

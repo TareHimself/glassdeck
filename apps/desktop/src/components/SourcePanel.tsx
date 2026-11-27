@@ -2,6 +2,7 @@ import Editor from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import { useEffect, useRef, useState } from "react";
 import type { LogLevel, LogSource } from "../bindings";
+import { useLanguageServers, type LanguageSupport } from "../lsp/useLanguageServers";
 import { languageOf, THEME } from "../monaco";
 import { classes } from "./classes";
 import styles from "./SourcePanel.module.css";
@@ -33,11 +34,15 @@ type Props = {
   status: { tone: StatusTone; line: string; details: string[] };
   log: LogLine[];
   onClearLog: () => void;
+  /** Runs language servers for the files: errors as you type, completion, hover */
+  language?: LanguageSupport;
 };
 
 /** An editor's source: one tab per file, the code, the check's status, and the debug log. */
-export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog }: Props) {
+export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language }: Props) {
   const logEnd = useRef<HTMLDivElement>(null);
+  const [editorMounted, setEditorMounted] = useState(false);
+  const languageUnavailable = useLanguageServers(language, tab, editorMounted);
 
   useEffect(() => {
     void document.fonts.ready.then(() => monaco.editor.remeasureFonts());
@@ -63,6 +68,7 @@ export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status
           language={languageOf(tab)}
           theme={THEME}
           onChange={(text) => onEdit(tab, text ?? "")}
+          onMount={() => setEditorMounted(true)}
           options={{
             fontFamily: "'JetBrains Mono Variable', 'Cascadia Mono', monospace",
             fontSize: 13,
@@ -86,6 +92,7 @@ export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status
           <span className={styles.dot} data-tone={status.tone} />
           {status.line}
         </div>
+        {languageUnavailable && <div className={styles.languageNote}>{languageUnavailable}</div>}
         {status.details.map((line) => (
           <div key={line} className={styles.problem}>
             {line}

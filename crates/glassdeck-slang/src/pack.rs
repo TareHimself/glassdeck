@@ -126,6 +126,7 @@ fn write_types(folder: &Path, types: &Types) -> Result<()> {
         ("inputs.d.luau", types.inputs.as_str()),
         ("options-api.d.luau", definitions::OPTIONS_API),
         ("options.d.luau", types.options.as_str()),
+        ("current.d.luau", definitions::CURRENT),
         ("common.d.luau", definitions::COMMON),
         ("host.d.luau", definitions::HOST),
     ];
@@ -187,8 +188,10 @@ pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck>
     for (name, text) in [
         ("options-api.d.luau", definitions::OPTIONS_API),
         ("options.d.luau", generated.as_str()),
+        ("current.d.luau", definitions::CURRENT),
         ("common.d.luau", definitions::COMMON),
         ("host.d.luau", definitions::HOST),
+        ("keyboard.d.luau", definitions::KEYBOARD),
     ] {
         let path = types.join(name);
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;

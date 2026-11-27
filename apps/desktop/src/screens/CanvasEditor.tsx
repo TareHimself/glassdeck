@@ -243,6 +243,7 @@ export function CanvasEditor({ id }: { id: string }) {
           status={statusOf(check)}
           log={log.lines}
           onClearLog={log.clear}
+          language={{ packageId: id, definitions: check.state === "checking" ? null : check }}
         />
 
         <div className={styles.side}>

@@ -63,7 +63,7 @@ export const commands = {
 	previewOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_options", { values }, options),
 	stopPreview: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_preview", undefined, options),
 	/**  Starts the language server an editor tab needs, working in the package's library folder. */
-	lspStart: (server: LspServer, id: string, options?: InvokeOptions) => typedError<LspSession, LspError>(__TAURI_INVOKE("lsp_start", { server, id }, options)),
+	lspStart: (server: LspServer, id: string, options?: InvokeOptions) => typedError<LspStarted, LspError>(__TAURI_INVOKE("lsp_start", { server, id }, options)),
 	/**  Sends one JSON-RPC message to a running language server. */
 	lspSend: (session: LspSession, message: string, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_send", { session, message }, options)),
 	lspStop: (session: LspSession, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_stop", { session }, options)),
@@ -247,6 +247,12 @@ export type LspMessage = {
 export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | "slang";
 
 export type LspSession = number;
+
+/**  A started server: its session, and the `file://` URI of the folder it works in, which documents sit under. */
+export type LspStarted = {
+	session: LspSession,
+	root: string,
+};
 
 export type NewBackground = {
 	title: string,

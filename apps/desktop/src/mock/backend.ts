@@ -24,6 +24,7 @@ const state = {
   theme: structuredClone(THEME),
   status: structuredClone(STATUS),
   canvas: null as { id: string; started: number; timer: number } | null,
+  nextLspSession: 1,
 };
 
 type Args = Record<string, unknown>;
@@ -166,10 +167,47 @@ const handlers: Record<string, (args: Args) => unknown> = {
   preview_resize: () => undefined,
   preview_options: () => undefined,
   stop_preview: () => undefined,
-  lsp_start: () => 1,
-  lsp_send: () => null,
+  lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package" }),
+  lsp_send: ({ session, message }) => {
+    fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);
+    return null;
+  },
   lsp_stop: () => null,
 };
+
+type LspRequest = { id?: number; method: string; params?: Args };
+
+/** Enough of a language server for the editor's tests: a type error for a string given to a number, widget completions, a hover. */
+function fakeLanguageServer(session: number, request: LspRequest) {
+  const reply = (message: object) => window.setTimeout(() => void emit("lsp-message", { session, message: JSON.stringify({ jsonrpc: "2.0", ...message }) }));
+  const params = request.params ?? {};
+  switch (request.method) {
+    case "initialize":
+      return reply({ id: request.id, result: { capabilities: {} } });
+    case "textDocument/didOpen":
+    case "textDocument/didChange": {
+      const document = (params.textDocument ?? {}) as { uri: string; text?: string };
+      const text = document.text ?? ((params.contentChanges as { text: string }[] | undefined)?.at(-1)?.text ?? "");
+      const diagnostics = text.split("\n").flatMap((line, i) => {
+        const at = line.indexOf('"three"');
+        return at < 0 ? [] : [{ range: { start: { line: i, character: at }, end: { line: i, character: at + 7 } }, severity: 1, message: "Type 'string' could not be converted into 'number'" }];
+      });
+      return reply({ method: "textDocument/publishDiagnostics", params: { uri: document.uri, diagnostics } });
+    }
+    case "textDocument/completion":
+      return reply({
+        id: request.id,
+        result: [
+          { label: "on_draw", kind: 2, detail: "(self, (ui: Ui) -> ()) -> ()" },
+          { label: "every", kind: 2, detail: "(self, seconds: number, () -> ()) -> ()" },
+        ],
+      });
+    case "textDocument/hover":
+      return reply({ id: request.id, result: { contents: { kind: "markdown", value: "```luau\nwidget: Widget\n```" } } });
+    default:
+      if (request.id !== undefined) reply({ id: request.id, result: null });
+  }
+}
 
 /** Lets a test put the fake keyboard in another state, as glassdeckd would report it. */
 function setKeyboard(connection: KeyboardLink) {

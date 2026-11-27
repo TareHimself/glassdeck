@@ -229,6 +229,7 @@ export function WidgetEditor() {
           status={{ tone, line: checkLine(check), details: check.state === "done" ? check.problems : [] }}
           log={log.lines}
           onClearLog={log.clear}
+          language={{ packageId: id, definitions: check.state === "checking" ? null : check }}
         />
 
         <aside className={styles.aside}>

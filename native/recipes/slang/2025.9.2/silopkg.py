@@ -70,9 +70,12 @@ class Slang(SiloPackage):
     def package(self):
         folder, pattern, linked = LIBRARIES[self.profile.settings.os]
         compiler = Component("slang", headers=["include"], shared_libs=["slang"])
+        suffix = ".exe" if self.profile.settings.os == Platform.Windows else ""
+        # Slang's language server, which the desktop app's editor runs for canvas.slang
+        language_server = Component("slangd", executables=[f"bin/slangd{suffix}"])
         # Loaded by slang when it runs, never linked. They only have to ship with it.
         runtime = Component("runtime")
         for library in sorted((self.install_dir / folder).glob(pattern)):
             if library.name != linked:
                 runtime.shared_libs.append(SharedLib(f"{folder}/{library.name}"))
-        return Package(components=[compiler, runtime])
+        return Package(components=[compiler, runtime, language_server])
