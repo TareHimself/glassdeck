@@ -1,0 +1,11 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.search {
+  flex: 1 1 280px;
+  max-width: 440px;
+}

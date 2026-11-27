@@ -1,4 +1,17 @@
-import type { LibraryError, Sizing } from "./bindings";
+import { useEffect, useState } from "react";
+import { BUILT_IN_BACKGROUND, commands, type BackgroundSummary, type LibraryError, type Sizing } from "./bindings";
+
+/** The built-in gradient, offered beside the library's backgrounds; it has no folder, so no summary of its own. */
+export const BUILT_IN: BackgroundSummary = { id: BUILT_IN_BACKGROUND, title: "Gradient", version: "", kind: "canvas", preview: null };
+
+/** The built-in gradient, with its still once it's drawn. */
+export function useBuiltInBackground(): BackgroundSummary {
+  const [builtIn, setBuiltIn] = useState<BackgroundSummary>(BUILT_IN);
+  useEffect(() => {
+    void commands.builtInStill().then((r) => r.status === "ok" && setBuiltIn({ ...BUILT_IN, preview: r.data }));
+  }, []);
+  return builtIn;
+}
 
 export function describeLibraryError(error: LibraryError): string {
   switch (error.kind) {

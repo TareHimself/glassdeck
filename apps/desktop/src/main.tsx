@@ -1,13 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
-import { Layout } from "./Layout";
+import { BareLayout, Layout } from "./Layout";
 import { followGlassdeckd } from "./glassdeckd";
 import { BackgroundEditor } from "./screens/BackgroundEditor";
-import { Backgrounds } from "./screens/Backgrounds";
+import { Backgrounds, ChooseBackground } from "./screens/Backgrounds";
 import { Overview } from "./screens/Overview";
 import { WidgetEditor } from "./screens/WidgetEditor";
-import { Widgets } from "./screens/Widgets";
+import { AddWidget, Widgets } from "./screens/Widgets";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./monaco";
@@ -22,6 +22,13 @@ const router = createBrowserRouter([
       { path: "widgets/:id", element: <WidgetEditor /> },
       { path: "backgrounds", element: <Backgrounds /> },
       { path: "backgrounds/:id", element: <BackgroundEditor /> },
+    ],
+  },
+  {
+    element: <BareLayout />,
+    children: [
+      { path: "choose/background", element: <ChooseBackground /> },
+      { path: "choose/widget", element: <AddWidget /> },
     ],
   },
 ]);

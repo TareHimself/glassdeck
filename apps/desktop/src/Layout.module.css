@@ -116,3 +116,10 @@
 .eye:hover {
   color: var(--ink);
 }
+
+.bare {
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 24px 28px;
+}

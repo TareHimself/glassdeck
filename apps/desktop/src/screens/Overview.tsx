@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type PreviewRun, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
 import { BACK_TO_OVERVIEW, PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
 import { BackgroundThumb, StreamLayer } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
-import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
+import { setDraft, sameTheme, useSeededDraft } from "../draft";
 import { nextPreviewRun } from "../previews";
 import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
-import { describeLibraryError } from "../library";
-import { NewBackgroundDialog } from "./NewBackgroundDialog";
-import { NewWidgetDialog } from "./NewWidgetDialog";
-import { BackgroundPicker, WidgetPicker } from "./Pickers";
+import { BUILT_IN, describeLibraryError, useBuiltInBackground } from "../library";
+import { overlaps, type Box } from "../widgetArea";
 import { SelectedWidget } from "./SelectedWidget";
+import { addedWidget } from "./Widgets";
 import styles from "./Overview.module.css";
 
 const PANEL = { w: 1920, h: 1080 };
@@ -31,8 +30,6 @@ const KEY_LABELS = [
 /** What the background card says when the theme names a background that isn't in the library. */
 const MISSING_BACKGROUND = "Missing background";
 
-/** The built-in gradient, offered beside the library's backgrounds. */
-const BUILT_IN: BackgroundSummary = { id: BUILT_IN_BACKGROUND, title: "Gradient", version: "", kind: "canvas", preview: null };
 
 /** A rectangle on the panel as percentages of the preview, which shows the whole panel. */
 function placed(rect: PanelRect) {
@@ -40,7 +37,6 @@ function placed(rect: PanelRect) {
   return { left: percent(rect.x, PANEL.w), top: percent(rect.y, PANEL.h), width: percent(rect.w, PANEL.w), height: percent(rect.h, PANEL.h) };
 }
 
-type Box = { x: number; y: number; w: number; h: number };
 type Size = { w: number; h: number };
 
 /** How small and large a widget may be made, from its sizing in the library. */
@@ -69,21 +65,6 @@ function dragged(start: Box, mode: "move" | "resize", dx: number, dy: number, bo
     w: clamp(snap(start.w + dx), bounds.min.w, Math.min(bounds.max.w, WIDGET_AREA.w - start.x)),
     h: clamp(snap(start.h + dy), bounds.min.h, Math.min(bounds.max.h, WIDGET_AREA.h - start.y)),
   };
-}
-
-function overlaps(a: Box, b: Box): boolean {
-  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-}
-
-/** The first grid spot, top row first, where a widget of `size` fits without overlapping `taken`. */
-function freeSpot(size: { w: number; h: number }, taken: Box[]): Box | null {
-  for (let y = 0; y + size.h <= WIDGET_AREA.h; y += GRID) {
-    for (let x = 0; x + size.w <= WIDGET_AREA.w; x += GRID) {
-      const box = { x, y, ...size };
-      if (!taken.some((t) => overlaps(box, t))) return box;
-    }
-  }
-  return null;
 }
 
 function tileOf(tile: Tile | undefined, title: string) {
@@ -133,11 +114,10 @@ function useWidgetTiles(widgets: ThemeWidget[]): Tile[] {
 function useLibrary() {
   const [backgrounds, setBackgrounds] = useState<BackgroundSummary[]>([]);
   const [widgets, setWidgets] = useState<WidgetSummary[]>([]);
-  const [builtIn, setBuiltIn] = useState<BackgroundSummary>(BUILT_IN);
+  const builtIn = useBuiltInBackground();
   useEffect(() => {
     void commands.listBackgrounds().then((r) => r.status === "ok" && setBackgrounds(r.data));
     void commands.listWidgets().then((r) => r.status === "ok" && setWidgets(r.data));
-    void commands.builtInStill().then((r) => r.status === "ok" && setBuiltIn({ ...BUILT_IN, preview: r.data }));
   }, []);
   return { backgrounds: [builtIn, ...backgrounds], widgets };
 }
@@ -145,25 +125,18 @@ function useLibrary() {
 export function Overview() {
   const connection = useGlassdeckd((s) => s.connection);
   const active = useGlassdeckd((s) => s.theme);
-  const draft = useDraft((s) => s.draft);
+  const draft = useSeededDraft();
   const library = useLibrary();
   const [layout, setLayout] = useState<PanelLayout | null>(null);
   const [streams, setStreams] = useState<StreamEntry[]>([]);
   const [showKeys, setShowKeys] = useState(true);
-  const [picking, setPicking] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [creatingWidget, setCreatingWidget] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
+  const added = addedWidget(useLocation().state);
+  const [selected, setSelected] = useState<number | null>(added);
   /** The widget being dragged, where it is now; the draft changes only when the drag ends. */
   const [ghost, setGhost] = useState<{ index: number; box: Box } | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [applying, setApplying] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (active) seedDraft(active);
-  }, [active]);
 
   useEffect(() => {
     void commands.panelLayout().then(setLayout);
@@ -312,9 +285,9 @@ export function Overview() {
               </div>
             </div>
             <div className={styles.twoButtons}>
-              <Button onClick={() => setPicking(true)} aria-haspopup="dialog">
+              <Link className={styles.linkButton} to="/choose/background">
                 Change
-              </Button>
+              </Link>
               {!known || background.id === BUILT_IN_BACKGROUND ? (
                 <Button disabled>Edit</Button>
               ) : (
@@ -348,11 +321,11 @@ export function Overview() {
           <section className={styles.card}>
             <div className={styles.cardHead}>
               <h2 className={styles.cardTitle}>Widgets</h2>
-              <button type="button" className={styles.add} aria-label="Add widget" aria-haspopup="dialog" onClick={() => setAdding(true)}>
+              <Link className={styles.add} aria-label="Add widget" to="/choose/widget">
                 <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M8 3v10M3 8h10" />
                 </svg>
-              </button>
+              </Link>
             </div>
             <div className={styles.widgetList}>
               {placedWidgets.map((widget, i) => (
@@ -377,40 +350,6 @@ export function Overview() {
         </aside>
       </div>
 
-      {picking && (
-        <BackgroundPicker
-          items={library.backgrounds}
-          current={background.id}
-          onPick={(choice) => {
-            setPicking(false);
-            if (choice.id !== background.id) setDraft((d) => ({ ...d, background: { package: choice.id, options: {} } }));
-          }}
-          onNew={() => {
-            setPicking(false);
-            setCreating(true);
-          }}
-          onClose={() => setPicking(false)}
-        />
-      )}
-      {adding && (
-        <WidgetPicker
-          items={library.widgets}
-          onPick={(widget) => {
-            setAdding(false);
-            const spot = freeSpot(widget.sizing.size, draft.widgets ?? []);
-            if (!spot) return setProblem(`There's no room for ${widget.title} in the widget area`);
-            setSelected(draft.widgets?.length ?? 0);
-            setDraft((d) => ({ ...d, widgets: [...(d.widgets ?? []), { package: widget.id, ...spot, options: {} }] }));
-          }}
-          onNew={() => {
-            setAdding(false);
-            setCreatingWidget(true);
-          }}
-          onClose={() => setAdding(false)}
-        />
-      )}
-      {creating && <NewBackgroundDialog onClose={() => setCreating(false)} />}
-      {creatingWidget && <NewWidgetDialog onClose={() => setCreatingWidget(false)} />}
     </div>
   );
 }

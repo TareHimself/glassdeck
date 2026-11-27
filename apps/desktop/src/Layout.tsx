@@ -88,3 +88,12 @@ export function Layout() {
     </div>
   );
 }
+
+/** A screen of its own, without the sidebar: the libraries in select mode, which end in going back or a pick. */
+export function BareLayout() {
+  return (
+    <main className={styles.bare}>
+      <Outlet />
+    </main>
+  );
+}

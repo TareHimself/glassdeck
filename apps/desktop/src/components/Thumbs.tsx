@@ -2,46 +2,41 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import type { BackgroundSummary, Value, WidgetSummary } from "../bindings";
 import { pngUrl, useLivePackageCanvas, useStill, useStreamSnapshot, useStreamVideo, useVideoSource, useWidgetPreview } from "../previews";
 import { classes } from "./classes";
+import { PreviewBadge } from "./PreviewBadge";
 import styles from "./Thumbs.module.css";
 
 type Values = { [key: string]: Value };
 
-/**
- * The still, with the live view over it once its first frame is in: it fades in, and a small spinner
- * shows while it's starting. Never another package's picture in between.
- */
-function Layers({ still, live, liveSrc, alt }: { still: string | null; live: boolean; liveSrc: string | null; alt: string }) {
-  return (
-    <>
-      {still && <img className={styles.fill} alt={alt} src={still} />}
-      {live && liveSrc && <img className={classes(styles.fill, styles.live)} alt={alt} src={liveSrc} />}
-      {live && !liveSrc && <span className={styles.spinner} role="status" aria-label="Loading the live preview" />}
-    </>
-  );
+/** What shows while a live view runs: on a card, the previewing badge; elsewhere, a small spinner until its first frame. */
+function LiveIndicator({ badge, playing }: { badge: boolean; playing: boolean }) {
+  if (badge) return <PreviewBadge playing={playing} />;
+  return playing ? null : <span className={styles.spinner} role="status" aria-label="Loading the live preview" />;
 }
 
 /** The canvas drawn live in WebGL over its still, shown from its first frame. */
-function LiveCanvasLayer({ id, values }: { id: string; values?: Values }) {
+function LiveCanvasLayer({ id, values, badge }: { id: string; values?: Values; badge: boolean }) {
   const { ref, drawing } = useLivePackageCanvas(id, values);
   return (
     <>
       <canvas ref={ref} className={classes(styles.fill, styles.live)} data-hidden={!drawing || undefined} />
-      {!drawing && <span className={styles.spinner} role="status" aria-label="Loading the live preview" />}
+      <LiveIndicator badge={badge} playing={drawing} />
     </>
   );
 }
 
-function CanvasFrame({ background, live, values }: { background: Pick<BackgroundSummary, "id" | "preview">; live: boolean; values?: Values }) {
+type FrameProps = { background: Pick<BackgroundSummary, "id" | "preview">; live: boolean; badge: boolean };
+
+function CanvasFrame({ background, live, values, badge }: FrameProps & { values?: Values }) {
   const still = useStill(background.id, background.preview);
   return (
     <>
       {still && <img className={styles.fill} alt="" src={still} />}
-      {live && <LiveCanvasLayer id={background.id} values={values} />}
+      {live && <LiveCanvasLayer id={background.id} values={values} badge={badge} />}
     </>
   );
 }
 
-function VideoFrame({ background, live }: { background: Pick<BackgroundSummary, "id" | "preview">; live: boolean }) {
+function VideoFrame({ background, live, badge }: FrameProps) {
   const source = useVideoSource(background.id);
   const still = useStill(background.id, background.preview);
   const video = useRef<HTMLVideoElement>(null);
@@ -75,28 +70,37 @@ function VideoFrame({ background, live }: { background: Pick<BackgroundSummary, 
           onPlaying={() => setPlaying(true)}
         />
       )}
-      {live && !playing && <span className={styles.spinner} role="status" aria-label="Loading the live preview" />}
+      {live && <LiveIndicator badge={badge} playing={playing} />}
     </>
   );
 }
 
-/** A background as its still, playing over it while `live`; its kind's pattern until it has a still. */
+/**
+ * A background as its still, playing over it while `live`; its kind's pattern until it has a still.
+ * `badge`: a card shows the previewing badge while it plays, rather than a spinner.
+ */
 export function BackgroundThumb({
   background,
   live = false,
+  badge = false,
   values,
   className,
   children,
 }: {
   background: Pick<BackgroundSummary, "id" | "kind" | "preview">;
   live?: boolean;
+  badge?: boolean;
   values?: Values;
   className?: string;
   children?: ReactNode;
 }) {
   return (
     <div className={classes(styles.background, className)} data-kind={background.kind}>
-      {background.kind === "canvas" ? <CanvasFrame background={background} live={live} values={values} /> : <VideoFrame background={background} live={live} />}
+      {background.kind === "canvas" ? (
+        <CanvasFrame background={background} live={live} values={values} badge={badge} />
+      ) : (
+        <VideoFrame background={background} live={live} badge={badge} />
+      )}
       {children}
     </div>
   );
@@ -114,16 +118,30 @@ export function StreamLayer({ name, className }: { name: string; className?: str
   );
 }
 
-/** A widget at its size on a sample background, as its still, or running over it while `live`. */
-export function WidgetThumb({ widget, live = false, className }: { widget: Pick<WidgetSummary, "id" | "title" | "sizing" | "preview">; live?: boolean; className?: string }) {
+/** A widget at its size on a sample background, as its still, or running over it while `live` (see `BackgroundThumb` for `badge`). */
+export function WidgetThumb({
+  widget,
+  live = false,
+  badge = false,
+  className,
+}: {
+  widget: Pick<WidgetSummary, "id" | "title" | "sizing" | "preview">;
+  live?: boolean;
+  badge?: boolean;
+  className?: string;
+}) {
   const { w, h } = widget.sizing.size;
   const png = useWidgetPreview(live ? widget.id : null, widget.sizing.size);
   const still = useStill(widget.id, widget.preview);
+  const liveSrc = png && pngUrl(png);
   return (
     <div className={classes(styles.stage, className)}>
       <div className={styles.footprint} data-empty={!still || undefined} style={{ "--w": w, "--h": h } as CSSProperties}>
-        <Layers still={still} live={live} liveSrc={png && pngUrl(png)} alt={widget.title} />
+        {still && <img className={styles.fill} alt={widget.title} src={still} />}
+        {live && liveSrc && <img className={classes(styles.fill, styles.live)} alt={widget.title} src={liveSrc} />}
+        {live && !badge && <LiveIndicator badge={false} playing={liveSrc !== null} />}
       </div>
+      {live && badge && <PreviewBadge playing={liveSrc !== null} />}
     </div>
   );
 }

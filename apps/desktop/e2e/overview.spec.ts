@@ -14,31 +14,31 @@ test("shows the active theme and a connected keyboard", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Keyboard up to date" })).toBeDisabled();
 });
 
-test("Change background searches the library and picks into the draft", async ({ page }) => {
-  await backgroundCard(page).getByRole("button", { name: "Change" }).click();
-  const dialog = page.getByRole("dialog", { name: "Change background" });
-  await expect(dialog.getByLabel("Search backgrounds")).toBeFocused();
-  await page.keyboard.type("aur");
-  await expect(dialog.getByRole("button", { name: /Rain on glass/ })).toHaveCount(0);
-  await dialog.getByRole("button", { name: /Aurora/ }).click();
-  await expect(dialog).toBeHidden();
+test("Change opens the backgrounds in select mode, and a pick goes into the draft", async ({ page }) => {
+  await backgroundCard(page).getByRole("link", { name: "Change" }).click();
+  await expect(page.getByRole("heading", { name: "Choose a background" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Gradient.*Current/ })).toBeVisible();
+  await page.getByLabel("Search backgrounds").fill("aur");
+  await expect(page.getByRole("button", { name: /Rain on glass/ })).toHaveCount(0);
+  await page.getByRole("button", { name: /Aurora/ }).click();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
   await expect(backgroundCard(page).getByText("Aurora")).toBeVisible();
   await expect(page.getByRole("button", { name: "Apply to keyboard" })).toBeEnabled();
 });
 
-test("dialogs close on Escape and on a click outside", async ({ page }) => {
-  const dialog = page.getByRole("dialog", { name: "Change background" });
-  await backgroundCard(page).getByRole("button", { name: "Change" }).click();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await backgroundCard(page).getByRole("button", { name: "Change" }).click();
-  await page.mouse.click(5, 5);
-  await expect(dialog).toBeHidden();
+test("going back from select mode changes nothing", async ({ page }) => {
+  await backgroundCard(page).getByRole("link", { name: "Change" }).click();
+  await page.getByRole("link", { name: "← Overview" }).click();
+  await expect(backgroundCard(page).getByText("Gradient")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Keyboard up to date" })).toBeDisabled();
 });
 
 test("Add widget places it in a free spot and selects it", async ({ page }) => {
-  await widgetsCard(page).getByRole("button", { name: "Add widget" }).click();
-  await page.getByRole("dialog", { name: "Add widget" }).getByRole("button", { name: /Now playing/ }).click();
+  await widgetsCard(page).getByRole("link", { name: "Add widget" }).click();
+  await expect(page.getByRole("heading", { name: "Add a widget" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Clock.*On the keyboard/ })).toBeVisible();
+  await page.getByRole("button", { name: /Now playing/ }).click();
   const row = widgetsCard(page).getByRole("button", { name: /Now playing/ });
   await expect(row).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "Now playing", level: 2 })).toBeVisible();
@@ -67,8 +67,8 @@ test("dragging a widget moves it on the 8 px grid", async ({ page }) => {
 test("an outdated keyboard is named, and Apply says to update it", async ({ page }) => {
   await page.evaluate(() => window.glassdeckMock?.setKeyboard({ state: "incompatible", keyboard: 11, host: 12 }));
   await expect(page.getByText("Keyboard needs an update")).toBeVisible();
-  await backgroundCard(page).getByRole("button", { name: "Change" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /Aurora/ }).click();
+  await backgroundCard(page).getByRole("link", { name: "Change" }).click();
+  await page.getByRole("button", { name: /Aurora/ }).click();
   await page.getByRole("button", { name: "Apply to keyboard" }).click();
   await expect(page.getByText(/Update the keyboard/)).toBeVisible();
 });
@@ -119,8 +119,8 @@ test("an attached stream plays live over WebRTC and the session ends with it", a
 });
 
 test("an editor opened from the Overview goes back to the Overview", async ({ page }) => {
-  await page.getByRole("button", { name: "Change" }).click();
-  await page.getByRole("dialog", { name: "Change background" }).getByRole("button", { name: /Aurora/ }).click();
+  await page.getByRole("link", { name: "Change" }).click();
+  await page.getByRole("button", { name: /Aurora/ }).click();
   await page.getByRole("link", { name: "Edit" }).first().click();
   await page.getByRole("link", { name: "← Overview" }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();

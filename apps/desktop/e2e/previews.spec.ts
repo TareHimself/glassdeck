@@ -2,11 +2,10 @@ import { expect, test } from "@playwright/test";
 import { HOVER_PLAY_DELAY_MS } from "../src/components/hoverPlay";
 
 test("a late shader from the previous preview never shows on the next", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Change" }).click();
-  const dialog = page.getByRole("dialog", { name: "Change background" });
+  await page.goto("/choose/background");
+  const dialog = page.getByRole("main");
   await dialog.getByRole("button", { name: /Aurora/ }).hover();
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(HOVER_PLAY_DELAY_MS + 300);
   // Each switch makes the mock send an all-black shader from the run it replaced, as a slow real one would arrive
   const gradient = dialog.getByRole("button", { name: /Gradient/ });
   await gradient.hover();
@@ -58,14 +57,16 @@ test("library cards play once hovered for a moment, and stop when left", async (
   }
 });
 
-test("hovering a card plays it over its still", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Change" }).click();
-  const aurora = page.getByRole("dialog", { name: "Change background" }).getByRole("button", { name: /Aurora/ });
+test("a hovered card plays over its still, with the previewing badge", async ({ page }) => {
+  await page.goto("/choose/background");
+  const aurora = page.getByRole("button", { name: /Aurora/ });
   await expect(aurora.locator("img")).toHaveCount(1);
   await aurora.hover();
   await expect(aurora.locator("canvas")).toBeVisible();
   await expect(aurora.locator("img")).toHaveCount(1);
+  await expect(aurora.getByRole("img", { name: "Previewing" })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(aurora.getByRole("img", { name: "Previewing" })).toHaveCount(0);
 });
 
 test("Use this frame makes the moment on screen the canvas's still", async ({ page }) => {
