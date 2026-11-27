@@ -409,52 +409,54 @@ pub struct WidgetSource {
     pub files: Vec<SourceFile>,
 }
 
+/// What an editor saves: its scripts, and the title and version for `deck.json`.
 #[derive(Clone, Debug, Deserialize, Type)]
-pub struct WidgetEdit {
+pub struct SourceEdit {
     pub title: String,
     pub version: String,
     pub files: Vec<SourceFile>,
 }
 
-fn check_script_name(name: &str) -> Result<(), LibraryError> {
-    if SCRIPTS.contains(&name) {
-        Ok(())
-    } else {
-        Err(LibraryError::Io { reason: format!("{name} isn't a script the editor writes") })
+/// Every one of `names` in `folder`, a missing one as empty.
+pub(crate) fn read_sources(folder: &Path, names: &[&str]) -> Result<Vec<SourceFile>, LibraryError> {
+    let mut files = Vec::new();
+    for name in names {
+        let path = folder.join(name);
+        let text = if path.is_file() { fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))? } else { String::new() };
+        files.push(SourceFile { name: (*name).to_owned(), text });
     }
+    Ok(files)
+}
+
+/// Writes an editor's files, which must be among `names`, and the title and version into `deck.json`.
+pub(crate) fn write_sources(folder: &Path, edit: SourceEdit, names: &[&str]) -> Result<(), LibraryError> {
+    let title = edit.title.trim();
+    if title.is_empty() {
+        return Err(LibraryError::InvalidTitle { reason: "Give it a title".into() });
+    }
+    let version = Version::parse(edit.version.trim()).map_err(|e| LibraryError::InvalidVersion { reason: e.to_string() })?;
+    if let Some(stray) = edit.files.iter().find(|f| !names.contains(&f.name.as_str())) {
+        return Err(LibraryError::Io { reason: format!("{} isn't a file the editor writes", stray.name) });
+    }
+    for file in &edit.files {
+        let path = folder.join(&file.name);
+        fs::write(&path, &file.text).map_err(io(format!("writing {}", path.display())))?;
+    }
+    let mut deck = read_deck_json(folder)?;
+    deck.insert("title".into(), json!(title));
+    deck.insert("version".into(), json!(version.to_string()));
+    write_deck_json(folder, &deck)
 }
 
 pub fn read_widget(root: &Path, id: &str) -> Result<WidgetSource, LibraryError> {
     let folder = widget_folder(root, id)?;
     let widget = summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })?;
-    let mut files = Vec::new();
-    for name in SCRIPTS {
-        let path = folder.join(name);
-        let text = if path.is_file() { fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))? } else { String::new() };
-        files.push(SourceFile { name: name.to_owned(), text });
-    }
-    Ok(WidgetSource { widget, files })
+    Ok(WidgetSource { widget, files: read_sources(&folder, &SCRIPTS)? })
 }
 
-/// Writes the editor's scripts and the title and version into `deck.json`.
-pub fn save_widget(root: &Path, id: &str, edit: WidgetEdit) -> Result<WidgetSummary, LibraryError> {
-    let title = edit.title.trim();
-    if title.is_empty() {
-        return Err(LibraryError::InvalidTitle { reason: "Give the widget a title".into() });
-    }
-    let version = Version::parse(edit.version.trim()).map_err(|e| LibraryError::InvalidVersion { reason: e.to_string() })?;
-    for file in &edit.files {
-        check_script_name(&file.name)?;
-    }
+pub fn save_widget(root: &Path, id: &str, edit: SourceEdit) -> Result<WidgetSummary, LibraryError> {
     let folder = widget_folder(root, id)?;
-    for file in &edit.files {
-        let path = folder.join(&file.name);
-        fs::write(&path, &file.text).map_err(io(format!("writing {}", path.display())))?;
-    }
-    let mut deck = read_deck_json(&folder)?;
-    deck.insert("title".into(), json!(title));
-    deck.insert("version".into(), json!(version.to_string()));
-    write_deck_json(&folder, &deck)?;
+    write_sources(&folder, edit, &SCRIPTS)?;
     summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
 }
 
@@ -553,11 +555,11 @@ mod tests {
         assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
         assert!((source.widget.has_options, source.widget.runs_on_host) == (true, false), "an empty host.luau is no host half");
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
-        let saved = save_widget(&root, "widget.local.me.weather", WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
+        let saved = save_widget(&root, "widget.local.me.weather", SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));
-        let bad_version = WidgetEdit { title: "Sky".into(), version: "1.1".into(), files: vec![] };
+        let bad_version = SourceEdit { title: "Sky".into(), version: "1.1".into(), files: vec![] };
         assert!(matches!(save_widget(&root, "widget.local.me.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
-        let stray = WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "../x.luau".into(), text: String::new() }] };
+        let stray = SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "../x.luau".into(), text: String::new() }] };
         assert!(save_widget(&root, "widget.local.me.weather", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }

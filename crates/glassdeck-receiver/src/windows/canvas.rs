@@ -97,7 +97,7 @@ fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, da
     let size = render_size(files.canvas.scale);
     let period = Duration::from_secs_f64(1.0 / f64::from(files.canvas.frame_rate));
     let offscreen = Offscreen::new(size)?;
-    let mut canvas = CanvasProgram::new(&offscreen.gl, files)?;
+    let mut canvas = CanvasProgram::new(&offscreen.gl, files, None)?;
     println!("Preview {label}: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
     let started = Instant::now();
     let mut due = started;

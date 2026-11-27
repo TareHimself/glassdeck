@@ -1,0 +1,308 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { commands, events, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
+import { Button } from "../components/Button";
+import { PageHeader } from "../components/PageHeader";
+import { Problem } from "../components/Problem";
+import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
+import { describeLibraryError } from "../library";
+import { OptionControls, type Chosen } from "./OptionControls";
+import styles from "./CanvasEditor.module.css";
+
+const BACK = { to: "/backgrounds", label: "Backgrounds" };
+const FILES = ["canvas.slang", "keyboard.luau", "options.luau", "host.luau"];
+const OPTIONS_SCRIPT = "options.luau";
+const PANEL = { w: 1920, h: 1080 };
+const EDIT_SETTLE_MS = 400;
+
+type Files = Record<string, string>;
+type Check = { state: "checking" } | { state: "done"; result: CanvasCheck } | { state: "unavailable"; reason: string };
+type Frame = { state: "none" } | { state: "frame"; jpeg: string; time: number };
+
+function filesOf(list: SourceFile[]): Files {
+  return Object.fromEntries(list.map((f) => [f.name, f.text]));
+}
+
+function listOf(files: Files): SourceFile[] {
+  return FILES.map((name) => ({ name, text: files[name] ?? "" }));
+}
+
+function statusOf(check: Check): { tone: StatusTone; line: string; details: string[] } {
+  switch (check.state) {
+    case "checking":
+      return { tone: undefined, line: "Checking…", details: [] };
+    case "unavailable":
+      return { tone: "problem", line: `The checks didn't run: ${check.reason}`, details: [] };
+    case "done": {
+      const { shader_error, problems } = check.result;
+      if (shader_error) return { tone: "problem", line: "Slang didn't compile", details: [shader_error] };
+      if (problems.length > 0) return { tone: "problem", line: `Slang compiled, luau-check: ${problems.length} ${problems.length === 1 ? "problem" : "problems"}`, details: problems };
+      return { tone: "ok", line: "Slang compiled, luau-check: no problems", details: [] };
+    }
+  }
+}
+
+/** A rectangle on the panel as percentages of the preview, which shows the whole panel. */
+function placed(rect: PanelRect) {
+  const percent = (value: number | null, of: number) => `${((value ?? 0) / of) * 100}%`;
+  return { left: percent(rect.x, PANEL.w), top: percent(rect.y, PANEL.h), width: percent(rect.w, PANEL.w), height: percent(rect.h, PANEL.h) };
+}
+
+/** Floats come through as null when they aren't numbers, such as NaN. */
+type Floats = (number | null)[];
+
+function hexOf(values: Floats): string {
+  const channel = (v: number | null) => Math.round(Math.min(1, Math.max(0, v ?? 0)) * 255).toString(16).padStart(2, "0");
+  return `#${values.slice(0, 3).map(channel).join("")}`;
+}
+
+function numbersOf(values: Floats): string {
+  const shown = values.map((v) => (v === null ? "NaN" : v.toFixed(3)));
+  return shown.length === 1 ? (shown[0] ?? "") : `(${shown.join(", ")})`;
+}
+
+/** Three or four components read as a color, as the canvases write them with `color.hex`; anything else as numbers. */
+function isColor(input: InputReading): boolean {
+  return input.values.length === 3 || input.values.length === 4;
+}
+
+function PlayIcon({ playing }: { playing: boolean }) {
+  return playing ? (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <rect x="3" y="2" width="3.5" height="12" rx="1" />
+      <rect x="9.5" y="2" width="3.5" height="12" rx="1" />
+    </svg>
+  ) : (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <path d="M4 2.5v11l9-5.5z" />
+    </svg>
+  );
+}
+
+export function CanvasEditor({ id }: { id: string }) {
+  const [background, setBackground] = useState<BackgroundSummary | null>(null);
+  const [failed, setFailed] = useState<LibraryError | null>(null);
+  const [files, setFiles] = useState<Files>({});
+  const [saved, setSaved] = useState<{ files: Files; title: string; version: string }>({ files: {}, title: "", version: "" });
+  const [title, setTitle] = useState("");
+  const [version, setVersion] = useState("");
+  const [tab, setTab] = useState("canvas.slang");
+  const [check, setCheck] = useState<Check>({ state: "checking" });
+  const [frame, setFrame] = useState<Frame>({ state: "none" });
+  const [inputs, setInputs] = useState<InputReading[]>([]);
+  const [playing, setPlaying] = useState(true);
+  const [showKeys, setShowKeys] = useState(true);
+  const [showArea, setShowArea] = useState(false);
+  const [layout, setLayout] = useState<PanelLayout | null>(null);
+  const [chosen, setChosen] = useState<Chosen>({});
+  const [panel, setPanel] = useState<OptionsPanel | null>(null);
+  const [problem, setProblem] = useState<LibraryError | null>(null);
+  const log = useDebugLog();
+  const started = useRef(false);
+
+  const runCheck = async () => {
+    setCheck({ state: "checking" });
+    const result = await commands.checkCanvas(id);
+    setCheck(result.status === "ok" ? { state: "done", result: result.data } : { state: "unavailable", reason: describeLibraryError(result.error) });
+  };
+
+  useEffect(() => {
+    void commands.panelLayout().then(setLayout);
+    void commands.readCanvas(id).then((result) => {
+      if (result.status === "error") return setFailed(result.error);
+      const initial = filesOf(result.data.files);
+      setBackground(result.data.background);
+      setFiles(initial);
+      setSaved({ files: initial, title: result.data.background.title, version: result.data.background.version });
+      setTitle(result.data.background.title);
+      setVersion(result.data.background.version);
+      void runCheck();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  useEffect(() => {
+    const listening = events.canvasUpdate.listen(({ payload }) => {
+      switch (payload.state) {
+        case "frame":
+          return setFrame({ state: "frame", jpeg: payload.jpeg, time: payload.time ?? 0 });
+        case "cleared":
+          return setFrame({ state: "none" });
+        case "inputs":
+          return setInputs(payload.inputs);
+        case "log":
+          return log.add(payload.source, payload.level, payload.text);
+      }
+    });
+    return () => {
+      void listening.then((unlisten) => unlisten());
+      void commands.stopCanvas();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filesKey = JSON.stringify(files);
+  useEffect(() => {
+    if (!background) return;
+    const timer = setTimeout(
+      () => {
+        started.current = true;
+        void commands.previewCanvas(listOf(files), chosen);
+      },
+      started.current ? EDIT_SETTLE_MS : 0,
+    );
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [background === null, filesKey]);
+
+  const optionsSource = files[OPTIONS_SCRIPT];
+  const chosenKey = JSON.stringify(chosen);
+  const lastOptionsSource = useRef(optionsSource);
+  useEffect(() => {
+    const edited = lastOptionsSource.current !== optionsSource;
+    lastOptionsSource.current = optionsSource;
+    const timer = setTimeout(() => void commands.widgetOptions(optionsSource ?? "", chosen).then(setPanel), edited ? EDIT_SETTLE_MS : 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optionsSource, chosenKey]);
+
+  const dirty = useMemo(
+    () => title !== saved.title || version !== saved.version || JSON.stringify(files) !== JSON.stringify(saved.files),
+    [title, version, files, saved],
+  );
+
+  const save = async (): Promise<boolean> => {
+    const result = await commands.saveCanvas(id, { title, version, files: listOf(files) });
+    if (result.status === "error") {
+      setProblem(result.error);
+      return false;
+    }
+    setProblem(null);
+    setBackground(result.data);
+    setSaved({ files, title: result.data.title, version: result.data.version });
+    await runCheck();
+    return true;
+  };
+
+  const pack = async () => {
+    if (dirty && !(await save())) return;
+    const result = await commands.exportPackage(id);
+    if (result.status === "error") setProblem(result.error);
+  };
+
+  const togglePlay = () => {
+    setPlaying(!playing);
+    void commands.playCanvas(!playing);
+  };
+
+  const choose = (path: string, value: Value) => {
+    const next = { ...chosen, [path]: value };
+    setChosen(next);
+    void commands.canvasOptions(next);
+  };
+
+  if (failed)
+    return (
+      <div className={styles.page}>
+        <PageHeader back={BACK} title="" />
+        <Problem>{describeLibraryError(failed)}</Problem>
+      </div>
+    );
+  if (!background) return <PageHeader back={BACK} title="" />;
+
+  const colors = inputs.filter(isColor);
+  const numbers = inputs.filter((input) => !isColor(input));
+  const hasOptions = panel !== null && !(panel.state === "ready" && panel.items.length === 0);
+
+  return (
+    <div className={styles.page}>
+      <PageHeader
+        back={BACK}
+        title={background.title}
+        id={`${background.id} ${background.version}, canvas background`}
+        actions={
+          <>
+            <Button onClick={() => void runCheck()}>Check</Button>
+            <Button onClick={() => void pack()}>Pack .deck</Button>
+            <Button variant="primary" onClick={() => void (dirty && save())}>
+              {dirty ? "Save" : "Saved"}
+            </Button>
+          </>
+        }
+      />
+
+      {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+
+      <div className={styles.columns}>
+        <SourcePanel
+          className={styles.source}
+          tabs={FILES}
+          tab={tab}
+          onTab={setTab}
+          files={files}
+          onEdit={(name, text) => setFiles((f) => ({ ...f, [name]: text }))}
+          status={statusOf(check)}
+          log={log.lines}
+          onClearLog={log.clear}
+        />
+
+        <div className={styles.side}>
+          <section aria-label="Preview" className={styles.preview}>
+            <div className={styles.stage}>
+              {frame.state === "frame" && <img className={styles.frame} alt={`${background.title} preview`} src={`data:image/jpeg;base64,${frame.jpeg}`} />}
+              {showArea && layout && <div className={styles.area} style={placed(layout.widget_area)} />}
+              {showKeys && layout?.keys.map((key, i) => <div key={i} className={styles.key} style={placed(key)} />)}
+            </div>
+            <div className={styles.controls}>
+              <button type="button" className={styles.play} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>
+                <PlayIcon playing={playing} />
+              </button>
+              <button type="button" className={styles.control} onClick={() => void commands.restartCanvas()}>
+                Restart
+              </button>
+              <span className={styles.time}>frame.time {frame.state === "frame" ? frame.time.toFixed(2) : "0.00"} s</span>
+              <div className={styles.spacer} />
+              <button type="button" className={styles.control} aria-pressed={showKeys} onClick={() => setShowKeys(!showKeys)}>
+                Keys
+              </button>
+              <button type="button" className={styles.control} aria-pressed={showArea} onClick={() => setShowArea(!showArea)}>
+                Widget area
+              </button>
+            </div>
+          </section>
+
+          <section aria-label="Inputs" className={styles.card}>
+            <div className={styles.cardHead}>
+              <h2 className={styles.cardTitle}>Inputs, live</h2>
+              <span className={styles.note}>set by keyboard.luau</span>
+            </div>
+            <div className={styles.inputs}>
+              {colors.map((input) => (
+                <div key={input.name} className={styles.input}>
+                  <span className={styles.swatch} style={{ background: hexOf(input.values) }} />
+                  <span className={styles.inputName}>{input.name}</span>
+                  <span className={styles.muted}>{hexOf(input.values)}</span>
+                </div>
+              ))}
+              {numbers.map((input) => (
+                <div key={input.name} className={styles.input}>
+                  <span className={styles.inputName}>{input.name}</span>
+                  <span className={styles.number}>{numbersOf(input.values)}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {hasOptions && (
+            <section aria-label="Options" className={styles.card}>
+              <div className={styles.cardHead}>
+                <h2 className={styles.cardTitle}>Options</h2>
+                <span className={styles.note}>from options.luau</span>
+              </div>
+              {panel.state === "ready" ? <OptionControls items={panel.items} chosen={chosen} onChange={choose} /> : <div className={styles.failed}>{panel.reason}</div>}
+            </section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

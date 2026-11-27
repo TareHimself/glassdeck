@@ -1,16 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backgrounds;
+mod canvas_preview;
 mod glassdeckd;
 mod library;
 mod options;
 mod preview;
 
-use backgrounds::{BackgroundSummary, NewBackground};
+use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};
+use canvas_preview::{CanvasPreview, CanvasUpdate};
 use glassdeck_api::{Status, Theme};
 use glassdeck_package::PackageType;
 use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
-use library::{Dims, LibraryError, NewWidget, SourceFile, WidgetEdit, WidgetSource, WidgetSummary};
+use library::{Dims, LibraryError, NewWidget, SourceFile, SourceEdit, WidgetSource, WidgetSummary};
 use options::OptionsPanel;
 use preview::{Preview, PreviewUpdate};
 use serde::Serialize;
@@ -63,6 +65,80 @@ async fn create_background(background: NewBackground) -> Result<BackgroundSummar
 
 #[tauri::command]
 #[specta::specta]
+async fn read_canvas(id: String) -> Result<CanvasSource, LibraryError> {
+    in_library(move |root| backgrounds::read_canvas(root, &id)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn save_canvas(id: String, edit: SourceEdit) -> Result<BackgroundSummary, LibraryError> {
+    in_library(move |root| backgrounds::save_canvas(root, &id, edit)).await
+}
+
+/// Compiles the canvas as saved and type-checks its scripts.
+#[tauri::command]
+#[specta::specta]
+async fn check_canvas(id: String) -> Result<CanvasCheck, LibraryError> {
+    in_library(move |root| backgrounds::check_canvas(root, &id, &native_libraries()?)).await
+}
+
+/// Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s.
+#[tauri::command]
+#[specta::specta]
+fn preview_canvas(preview: State<'_, CanvasPreview>, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value>) {
+    preview.send(canvas_preview::Command::Show { files, values });
+}
+
+#[tauri::command]
+#[specta::specta]
+fn canvas_options(preview: State<'_, CanvasPreview>, values: serde_json::Map<String, serde_json::Value>) {
+    preview.send(canvas_preview::Command::Options(values));
+}
+
+#[tauri::command]
+#[specta::specta]
+fn play_canvas(preview: State<'_, CanvasPreview>, playing: bool) {
+    preview.send(canvas_preview::Command::Play(playing));
+}
+
+#[tauri::command]
+#[specta::specta]
+fn restart_canvas(preview: State<'_, CanvasPreview>) {
+    preview.send(canvas_preview::Command::Restart);
+}
+
+#[tauri::command]
+#[specta::specta]
+fn stop_canvas(preview: State<'_, CanvasPreview>) {
+    preview.send(canvas_preview::Command::Stop);
+}
+
+/// A rectangle on the 1920x1080 panel, in panel pixels.
+#[derive(Clone, Copy, Debug, Serialize, Type)]
+struct PanelRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+struct PanelLayout {
+    keys: Vec<PanelRect>,
+    widget_area: PanelRect,
+}
+
+/// Where the keys and the widget area sit on the panel, for the canvas preview's overlays.
+#[tauri::command]
+#[specta::specta]
+fn panel_layout() -> PanelLayout {
+    let layout = glassdeck_layout::Layout::new(glassdeck_layout::Variant::Ansi);
+    let rect = |r: &glassdeck_layout::Rect| PanelRect { x: r.x, y: r.y, w: r.width, h: r.height };
+    PanelLayout { keys: layout.keys.iter().map(rect).collect(), widget_area: rect(&layout.widget_area) }
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn create_widget(widget: NewWidget) -> Result<WidgetSummary, LibraryError> {
     in_library(move |root| library::create_widget(root, widget)).await
 }
@@ -108,7 +184,7 @@ async fn read_widget(id: String) -> Result<WidgetSource, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
-async fn save_widget(id: String, edit: WidgetEdit) -> Result<WidgetSummary, LibraryError> {
+async fn save_widget(id: String, edit: SourceEdit) -> Result<WidgetSummary, LibraryError> {
     in_library(move |root| library::save_widget(root, &id, edit)).await
 }
 
@@ -252,6 +328,15 @@ fn bindings() -> Builder<tauri::Wry> {
             reveal_package,
             list_backgrounds,
             create_background,
+            read_canvas,
+            save_canvas,
+            check_canvas,
+            preview_canvas,
+            canvas_options,
+            play_canvas,
+            restart_canvas,
+            stop_canvas,
+            panel_layout,
             export_package,
             pick_video,
             import_widget,
@@ -264,7 +349,7 @@ fn bindings() -> Builder<tauri::Wry> {
             preview_options,
             stop_preview,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .error_handling(ErrorHandlingMode::Result)
@@ -294,6 +379,7 @@ fn main() {
         .setup(move |app| {
             bindings.mount_events(app);
             app.manage(Preview::start(app.handle().clone()));
+            app.manage(CanvasPreview::start(app.handle().clone(), native_libraries().ok()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<Glassdeckd>().relay_events(handle.clone()).await;

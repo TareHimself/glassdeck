@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail, ensure};
+use glassdeck_luau::Print;
 use glassdeck_package::{Canvas, CanvasFiles};
 use glow::HasContext;
 
@@ -36,22 +37,25 @@ pub struct CanvasProgram {
     /// The shader reads `frame`, so every frame looks different.
     animated: bool,
     script: Option<CanvasScript>,
+    /// Every input's latest value, as the script last wrote it
+    values: BTreeMap<String, InputValue>,
     last: Option<f32>,
     index: u32,
     drawn: bool,
 }
 
 impl CanvasProgram {
-    pub fn new(gl: &glow::Context, files: CanvasFiles) -> Result<Self> {
+    /// `print`: where `keyboard.luau`'s `print` goes, instead of the process's own output.
+    pub fn new(gl: &glow::Context, files: CanvasFiles, print: Option<Print>) -> Result<Self> {
         let CanvasFiles { canvas, fragment, script, .. } = files;
         let program = compile(gl, &fragment)?;
         let uniforms = active_uniforms(gl, program);
         let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
         let script = match script {
-            Some(source) => Some(CanvasScript::load(&source, &canvas.inputs)?),
+            Some(source) => Some(CanvasScript::load(&source, &canvas.inputs, print)?),
             None => None,
         };
-        Ok(Self { canvas, program, uniforms, animated, script, last: None, index: 0, drawn: false })
+        Ok(Self { canvas, program, uniforms, animated, script, values: BTreeMap::new(), last: None, index: 0, drawn: false })
     }
 
     /// What the host half sent, for the script's `on_data`; a canvas without a script has nothing to give it to.
@@ -60,6 +64,11 @@ impl CanvasProgram {
             Some(script) => script.deliver(payload),
             None => Ok(()),
         }
+    }
+
+    /// Every input's latest value, as the script last wrote it.
+    pub fn inputs(&self) -> &BTreeMap<String, InputValue> {
+        &self.values
     }
 
     /// Draws a frame if anything changed, and waits for the GPU, so the time returned is the frame's real cost.
@@ -110,6 +119,7 @@ impl CanvasProgram {
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.finish();
         }
+        self.values.extend(changes);
         self.index = self.index.wrapping_add(1);
         self.drawn = true;
         Ok(Some(started.elapsed()))

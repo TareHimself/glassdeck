@@ -12,6 +12,7 @@ anyhow.workspace = true
 fontdue.workspace = true
 futures-util = "0.3.31"
 glassdeck-api.workspace = true
+glassdeck-gpu.workspace = true
 glassdeck-host.workspace = true
 glassdeck-layout.workspace = true
 glassdeck-luau.workspace = true
@@ -22,6 +23,7 @@ glassdeck-widget.workspace = true
 base64 = "0.23.1"
 mlua = { version = "0.12.3", features = ["luau", "serde"] }
 png = "0.18.1"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true

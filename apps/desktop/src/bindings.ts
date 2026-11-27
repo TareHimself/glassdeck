@@ -17,6 +17,18 @@ export const commands = {
 	revealPackage: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("reveal_package", { id }, options)),
 	listBackgrounds: (options?: InvokeOptions) => typedError<BackgroundSummary[], LibraryError>(__TAURI_INVOKE("list_backgrounds", undefined, options)),
 	createBackground: (background: NewBackground, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("create_background", { background }, options)),
+	readCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasSource, LibraryError>(__TAURI_INVOKE("read_canvas", { id }, options)),
+	saveCanvas: (id: string, edit: SourceEdit, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("save_canvas", { id, edit }, options)),
+	/**  Compiles the canvas as saved and type-checks its scripts. */
+	checkCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasCheck, LibraryError>(__TAURI_INVOKE("check_canvas", { id }, options)),
+	/**  Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s. */
+	previewCanvas: (files: SourceFile[], values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_canvas", { files, values }, options),
+	canvasOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("canvas_options", { values }, options),
+	playCanvas: (playing: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("play_canvas", { playing }, options),
+	restartCanvas: (options?: InvokeOptions) => __TAURI_INVOKE<void>("restart_canvas", undefined, options),
+	stopCanvas: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_canvas", undefined, options),
+	/**  Where the keys and the widget area sit on the panel, for the canvas preview's overlays. */
+	panelLayout: (options?: InvokeOptions) => __TAURI_INVOKE<PanelLayout>("panel_layout", undefined, options),
 	/**  Asks where to save, then packs the widget or background there. `None` when the dialog is cancelled. */
 	exportPackage: (id: string, options?: InvokeOptions) => typedError<string | null, LibraryError>(__TAURI_INVOKE("export_package", { id }, options)),
 	/**  Asks for a video file to make a background from. `None` when the dialog is cancelled. */
@@ -24,7 +36,7 @@ export const commands = {
 	/**  Asks for a `.deck`, then unpacks it into the library. `None` when the dialog is cancelled. */
 	importWidget: (options?: InvokeOptions) => typedError<WidgetSummary | null, LibraryError>(__TAURI_INVOKE("import_widget", undefined, options)),
 	readWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSource, LibraryError>(__TAURI_INVOKE("read_widget", { id }, options)),
-	saveWidget: (id: string, edit: WidgetEdit, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("save_widget", { id, edit }, options)),
+	saveWidget: (id: string, edit: SourceEdit, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("save_widget", { id, edit }, options)),
 	/**  Type-checks the widget's `options.luau` and `host.luau` as saved, skipping blank ones. */
 	checkWidget: (id: string, options?: InvokeOptions) => typedError<WidgetCheck, LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
 	widgetOptions: (source: string, values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<OptionsPanel>("widget_options", { source, values }, options),
@@ -37,6 +49,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	canvasUpdate: makeEvent<CanvasUpdate, CanvasUpdate>("canvas-update"),
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
 };
@@ -61,6 +74,23 @@ export type BackgroundSummary = {
 	version: string,
 	kind: BackgroundKind,
 };
+
+/**  What checking a canvas as saved found: Slang's error, if it didn't compile, and the scripts' type problems. */
+export type CanvasCheck = {
+	shader_error: string | null,
+	problems: string[],
+	checked: number,
+};
+
+/**  A canvas as the editor opens it: its summary and every file, a missing one as empty. */
+export type CanvasSource = {
+	background: BackgroundSummary,
+	files: SourceFile[],
+};
+
+export type CanvasUpdate = { state: "frame"; jpeg: string; time: number | null } | 
+/**  Nothing to show: the canvas didn't compile, or stopped on an error */
+{ state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
 
 export type Dims = {
 	w: number,
@@ -109,6 +139,11 @@ export type GlassdeckdError =
 
 /**  What the frontend hears about the connection to glassdeckd and what it sends. */
 export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; event: Event } | { state: "lost"; error: GlassdeckdError };
+
+export type InputReading = {
+	name: string,
+	values: (number | null)[],
+};
 
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
 /**  A background's video file that can't be used */
@@ -172,6 +207,19 @@ export type PanelItem = ({ item: "section"; path: string; label: string; items: 
 	item: "option",
 } & OptionView;
 
+export type PanelLayout = {
+	keys: PanelRect[],
+	widget_area: PanelRect,
+};
+
+/**  A rectangle on the 1920x1080 panel, in panel pixels. */
+export type PanelRect = {
+	x: number | null,
+	y: number | null,
+	w: number | null,
+	h: number | null,
+};
+
 export type PreviewUpdate = { state: "frame"; width: number; height: number; png: string } | 
 /**  Nothing to show: the widget didn't start, or stopped on an error */
 { state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string };
@@ -180,6 +228,13 @@ export type PreviewUpdate = { state: "frame"; width: number; height: number; png
 export type Sizing = { kind: "fixed"; size: Dims } | { kind: "range"; size: Dims; min: Dims; max: Dims } | 
 /**  Any size in the widget area; stored as the grid's smallest step up to the whole area */
 { kind: "any"; size: Dims };
+
+/**  What an editor saves: its scripts, and the title and version for `deck.json`. */
+export type SourceEdit = {
+	title: string,
+	version: string,
+	files: SourceFile[],
+};
 
 export type SourceFile = {
 	name: string,
@@ -242,12 +297,6 @@ export type Value = null | boolean | number | string | Value[] | { [key in strin
 export type WidgetCheck = {
 	problems: string[],
 	checked: number,
-};
-
-export type WidgetEdit = {
-	title: string,
-	version: string,
-	files: SourceFile[],
 };
 
 /**  A widget as the editor opens it: its summary and every script, a missing one as empty. */

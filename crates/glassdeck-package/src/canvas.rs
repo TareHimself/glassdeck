@@ -58,6 +58,7 @@ impl Canvas {
 }
 
 /// What the keyboard needs to run a canvas.
+#[derive(Clone)]
 pub struct CanvasFiles {
     pub origin: Origin,
     pub canvas: Canvas,

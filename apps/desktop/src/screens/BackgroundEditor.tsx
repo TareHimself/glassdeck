@@ -4,9 +4,13 @@ import { commands, type BackgroundSummary, type LibraryError } from "../bindings
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { describeLibraryError } from "../library";
+import { CanvasEditor } from "./CanvasEditor";
 
 type Loaded = { state: "loading" } | { state: "ready"; background: BackgroundSummary } | { state: "failed"; error: LibraryError };
 
+const BACK = { to: "/backgrounds", label: "Backgrounds" };
+
+/** Opens a background in the editor for its kind. */
 export function BackgroundEditor() {
   const id = useParams().id ?? "";
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -19,21 +23,20 @@ export function BackgroundEditor() {
     });
   }, [id]);
 
-  if (loaded.state === "loading") return null;
-  if (loaded.state === "failed") {
-    return (
-      <>
-        <PageHeader back={{ to: "/backgrounds", label: "Backgrounds" }} title="Background" />
-        <Problem>{describeLibraryError(loaded.error)}</Problem>
-      </>
-    );
+  switch (loaded.state) {
+    case "loading":
+      return <PageHeader back={BACK} title="" />;
+    case "failed":
+      return (
+        <>
+          <PageHeader back={BACK} title="" />
+          <Problem>{describeLibraryError(loaded.error)}</Problem>
+        </>
+      );
+    case "ready": {
+      const { background } = loaded;
+      if (background.kind === "canvas") return <CanvasEditor id={id} />;
+      return <PageHeader back={BACK} title={background.title} id={`${background.id} ${background.version}, video background`} />;
+    }
   }
-  const { background } = loaded;
-  return (
-    <PageHeader
-      back={{ to: "/backgrounds", label: "Backgrounds" }}
-      title={background.title}
-      id={`${background.id} ${background.version}, ${background.kind} background`}
-    />
-  );
 }

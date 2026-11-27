@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     let size = glassdeck_gpu::program::render_size(files.canvas.scale);
     let offscreen = Offscreen::new(size)?;
     println!("glassdeck-gpu: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
-    let mut canvas = CanvasProgram::new(&offscreen.gl, files)?;
+    let mut canvas = CanvasProgram::new(&offscreen.gl, files, None)?;
     canvas.draw(&offscreen.gl, offscreen.framebuffer(), size, 10.0)?;
     // Bottom row first, as the keyboard's snapshots come out of glReadPixels, so the two compare directly.
     let pixels = offscreen.read_rgb();

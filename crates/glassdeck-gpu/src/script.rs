@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_luau::color::color_api;
-use glassdeck_luau::{LuaResultExt, Vm, decode};
+use glassdeck_luau::{LuaResultExt, Print, Vm, decode};
 use glassdeck_package::{InputField, InputKind};
 use mlua::{Function, Lua, Table, Value, Vector};
 
@@ -43,9 +43,13 @@ struct Inputs {
 }
 
 impl CanvasScript {
-    pub fn load(source: &str, inputs: &[InputField]) -> Result<Self> {
+    /// `print`: where the script's `print` goes, instead of the process's own output.
+    pub fn load(source: &str, inputs: &[InputField], print: Option<Print>) -> Result<Self> {
         let vm = Vm::new()?;
         install_library(vm.lua())?;
+        if let Some(print) = print {
+            vm.install_print(print)?;
+        }
         vm.seal()?;
         let lua = vm.lua();
         let canvas = lua.create_table().lua_context("creating canvas")?;
@@ -223,7 +227,7 @@ mod tests {
 
     #[test]
     fn writes_at_load_and_per_frame_are_recorded_and_data_changes_state() {
-        let script = CanvasScript::load(CANVAS, &fields()).unwrap();
+        let script = CanvasScript::load(CANVAS, &fields(), None).unwrap();
         let changes = script.take_changes();
         let InputValue::Float(night) = &changes["night"] else { panic!("{changes:?}") };
         assert!((night[0] - 1.0).abs() < 1e-6 && (night[1] - 128.0 / 255.0).abs() < 1e-6 && night[2] == 0.0);
@@ -239,25 +243,25 @@ mod tests {
 
     #[test]
     fn wrong_names_and_types_are_errors_naming_the_input() {
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields()).unwrap();
+        let script = CanvasScript::load("canvas.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("the shader has no input nite"));
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.night = 3 end)", &fields()).unwrap();
+        let script = CanvasScript::load("canvas.on_frame(function() inputs.night = 3 end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("input night takes a vector"));
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.bands = { 1 } end)", &fields()).unwrap();
+        let script = CanvasScript::load("canvas.on_frame(function() inputs.bands = { 1 } end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("takes 2 numbers, not 1"));
     }
 
     #[test]
     fn an_array_input_reads_back_frozen_so_writes_into_it_error() {
-        let script = CanvasScript::load("inputs.bands = { 1, 2 } inputs.bands[1] = 5", &fields());
+        let script = CanvasScript::load("inputs.bands = { 1, 2 } inputs.bands[1] = 5", &fields(), None);
         assert!(format!("{:#}", script.err().unwrap()).contains("readonly"));
-        let script = CanvasScript::load("local b = { 1, 2 } inputs.bands = b b[1] = 5 inputs.bands = inputs.bands", &fields()).unwrap();
+        let script = CanvasScript::load("local b = { 1, 2 } inputs.bands = b b[1] = 5 inputs.bands = inputs.bands", &fields(), None).unwrap();
         assert_eq!(script.take_changes()["bands"], InputValue::Array(vec![1.0, 2.0]));
     }
 
     #[test]
     fn a_script_without_callbacks_does_nothing_later() {
-        let script = CanvasScript::load("inputs.night = color.hex('#000')", &fields()).unwrap();
+        let script = CanvasScript::load("inputs.night = color.hex('#000')", &fields(), None).unwrap();
         script.take_changes();
         script.frame(1.0, 0.1, 1).unwrap();
         script.deliver(&payload("return { a = 1 }")).unwrap();
@@ -266,14 +270,14 @@ mod tests {
 
     #[test]
     fn callbacks_are_registered_once_with_a_function() {
-        assert!(CanvasScript::load("canvas.on_frame(3)", &fields()).is_err());
-        let twice = CanvasScript::load("canvas.on_data(function() end) canvas.on_data(function() end)", &fields());
+        assert!(CanvasScript::load("canvas.on_frame(3)", &fields(), None).is_err());
+        let twice = CanvasScript::load("canvas.on_data(function() end) canvas.on_data(function() end)", &fields(), None);
         assert!(format!("{:#}", twice.err().unwrap()).contains("canvas.on_data was already called"));
     }
 
     #[test]
     fn colours_come_from_every_form() {
-        let script = CanvasScript::load("inputs.night = color.rgb(255, 0, 0)", &fields()).unwrap();
+        let script = CanvasScript::load("inputs.night = color.rgb(255, 0, 0)", &fields(), None).unwrap();
         assert_eq!(script.take_changes()["night"], InputValue::Float(vec![1.0, 0.0, 0.0]));
     }
 }

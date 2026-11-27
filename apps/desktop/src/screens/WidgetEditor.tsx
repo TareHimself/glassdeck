@@ -1,13 +1,11 @@
-import Editor from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type LogLevel, type LogSource, type OptionsPanel, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
+import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
+import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
 import { describeLibraryError } from "../library";
-import { LANGUAGE, THEME } from "../monaco";
 import { OptionControls, type Chosen } from "./OptionControls";
 import styles from "./WidgetEditor.module.css";
 
@@ -21,13 +19,6 @@ type Files = Record<string, string>;
 type Loaded = { state: "loading" } | { state: "ready"; source: WidgetSource } | { state: "failed"; error: LibraryError };
 type Check = { state: "checking" } | { state: "done"; problems: string[]; files: number } | { state: "unavailable"; reason: string };
 type Frame = { state: "none" } | { state: "frame"; png: string };
-type LogLine = { n: number; at: string; source: LogSource; level: LogLevel; text: string };
-
-const LOG_LIMIT = 500;
-
-function clock(): string {
-  return new Date().toLocaleTimeString("en-GB", { hour12: false });
-}
 
 function filesOf(list: SourceFile[]): Files {
   return Object.fromEntries(list.map((f) => [f.name, f.text]));
@@ -80,10 +71,8 @@ export function WidgetEditor() {
   const [panel, setPanel] = useState<OptionsPanel | null>(null);
   const [sizeIndex, setSizeIndex] = useState(0);
   const [frame, setFrame] = useState<Frame>({ state: "none" });
-  const [log, setLog] = useState<LogLine[]>([]);
-  const logEnd = useRef<HTMLDivElement>(null);
-  const addLog = (source: LogSource, level: LogLevel, text: string) =>
-    setLog((lines) => [...lines, { n: (lines.at(-1)?.n ?? 0) + 1, at: clock(), source, level, text }].slice(-LOG_LIMIT));
+  const log = useDebugLog();
+  const addLog = log.add;
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const started = useRef(false);
 
@@ -132,10 +121,6 @@ export function WidgetEditor() {
     };
   }, []);
 
-  useEffect(() => {
-    void document.fonts.ready.then(() => monaco.editor.remeasureFonts());
-  }, []);
-
   const sizes = loaded.state === "ready" ? sizesOf(loaded.source.widget.sizing) : [];
   const size = sizes[sizeIndex]?.dims;
   const filesKey = JSON.stringify(files);
@@ -170,10 +155,6 @@ export function WidgetEditor() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [optionsSource, chosenKey]);
-
-  useEffect(() => {
-    void logEnd.current?.scrollIntoView({ block: "nearest" });
-  }, [log]);
 
   const dirty = useMemo(
     () => title !== saved.title || version !== saved.version || JSON.stringify(files) !== JSON.stringify(saved.files),
@@ -216,8 +197,7 @@ export function WidgetEditor() {
 
   const { widget } = loaded.source;
   const scale = size ? Math.min(1, PREVIEW_ROOM.w / size.w, PREVIEW_ROOM.h / size.h) : 1;
-  const tabs = SCRIPT_ORDER;
-  const tone = check.state === "done" ? (check.problems.length > 0 ? "problem" : "ok") : check.state === "unavailable" ? "problem" : undefined;
+  const tone: StatusTone = check.state === "done" ? (check.problems.length > 0 ? "problem" : "ok") : check.state === "unavailable" ? "problem" : undefined;
 
   return (
     <div className={styles.page}>
@@ -239,73 +219,17 @@ export function WidgetEditor() {
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
 
       <div className={styles.columns}>
-        <section aria-label="Source" className={styles.source}>
-          <div role="tablist" className={styles.tabs}>
-            {tabs.map((name) => (
-              <button key={name} type="button" role="tab" aria-selected={name === tab} className={styles.tab} onClick={() => setTab(name)}>
-                {name}
-              </button>
-            ))}
-          </div>
-          <div className={styles.code}>
-            <Editor
-              path={tab}
-              value={files[tab] ?? ""}
-              language={LANGUAGE}
-              theme={THEME}
-              onChange={(text) => setFiles((f) => ({ ...f, [tab]: text ?? "" }))}
-              options={{
-                fontFamily: "'JetBrains Mono Variable', 'Cascadia Mono', monospace",
-                fontSize: 13,
-                lineHeight: 21,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                padding: { top: 14, bottom: 14 },
-                renderLineHighlight: "none",
-                automaticLayout: true,
-                lineNumbersMinChars: 4,
-                glyphMargin: false,
-                folding: false,
-                overviewRulerLanes: 0,
-                tabSize: 4,
-                guides: { indentation: false },
-              }}
-            />
-          </div>
-          <div className={styles.status}>
-            <div className={styles.statusLine}>
-              <span className={styles.dot} data-tone={tone} />
-              {checkLine(check)}
-            </div>
-            {check.state === "done" &&
-              check.problems.map((line) => (
-                <div key={line} className={styles.problem}>
-                  {line}
-                </div>
-              ))}
-          </div>
-          <div className={styles.log} aria-label="Debug log">
-            <div className={styles.logHead}>
-              <span>Debug log</span>
-              <button type="button" className={styles.logClear} disabled={log.length === 0} onClick={() => setLog([])}>
-                Clear
-              </button>
-            </div>
-            <div className={styles.logLines} role="log">
-              {log.length === 0 && <div className={styles.logEmpty}>No output</div>}
-              {log.map((line) => (
-                <div key={line.n} className={styles.logLine} data-level={line.level}>
-                  <span className={styles.logAt}>{line.at}</span>
-                  <span className={styles.logSource} data-source={line.source}>
-                    {line.source}
-                  </span>
-                  <span className={styles.logText}>{line.text}</span>
-                </div>
-              ))}
-              <div ref={logEnd} />
-            </div>
-          </div>
-        </section>
+        <SourcePanel
+          className={styles.source}
+          tabs={SCRIPT_ORDER}
+          tab={tab}
+          onTab={setTab}
+          files={files}
+          onEdit={(name, text) => setFiles((f) => ({ ...f, [name]: text }))}
+          status={{ tone, line: checkLine(check), details: check.state === "done" ? check.problems : [] }}
+          log={log.lines}
+          onClearLog={log.clear}
+        />
 
         <aside className={styles.aside}>
           <section aria-label="Preview" className={styles.card}>

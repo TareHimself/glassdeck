@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use specta::Type;
 
-use crate::library::{FIRST_VERSION, LibraryError, io, typed_folder};
+use crate::library::{FIRST_VERSION, LibraryError, SourceEdit, SourceFile, io, read_sources, typed_folder, write_sources};
 
 /// A video background's source file, as the library keeps it.
 pub const VIDEO_SOURCE: &str = "video.json";
@@ -172,6 +172,67 @@ pub fn create_background(root: &Path, new: NewBackground) -> Result<BackgroundSu
     summarize(&folder)?.ok_or_else(|| LibraryError::Unreadable { folder: folder.display().to_string(), reason: "the new background didn't read back".into() })
 }
 
+/// The files the canvas editor shows, in tab order.
+pub const CANVAS_FILES: [&str; 4] = [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT];
+
+/// A canvas as the editor opens it: its summary and every file, a missing one as empty.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct CanvasSource {
+    pub background: BackgroundSummary,
+    pub files: Vec<SourceFile>,
+}
+
+fn canvas_folder(root: &Path, id: &str) -> Result<PathBuf, LibraryError> {
+    let folder = typed_folder(root, id, PackageType::Background)?;
+    match kind_of(&folder) {
+        Some(BackgroundKind::Canvas) => Ok(folder),
+        _ => Err(LibraryError::NotFound { id: id.to_owned() }),
+    }
+}
+
+pub fn read_canvas(root: &Path, id: &str) -> Result<CanvasSource, LibraryError> {
+    let folder = canvas_folder(root, id)?;
+    let background = summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })?;
+    Ok(CanvasSource { background, files: read_sources(&folder, &CANVAS_FILES)? })
+}
+
+pub fn save_canvas(root: &Path, id: &str, edit: SourceEdit) -> Result<BackgroundSummary, LibraryError> {
+    let folder = canvas_folder(root, id)?;
+    write_sources(&folder, edit, &CANVAS_FILES)?;
+    summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
+}
+
+/// What checking a canvas as saved found: Slang's error, if it didn't compile, and the scripts' type problems.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct CanvasCheck {
+    pub shader_error: Option<String>,
+    pub problems: Vec<String>,
+    pub checked: u32,
+}
+
+pub fn check_canvas(root: &Path, id: &str, native: &Path) -> Result<CanvasCheck, LibraryError> {
+    let folder = canvas_folder(root, id)?;
+    let unavailable = |e: anyhow::Error| LibraryError::CheckerUnavailable { reason: format!("{e:#}") };
+    let slang = glassdeck_slang::Slang::load(native).map_err(unavailable)?;
+    let luau = glassdeck_luau_check::LuauChecker::load(native).map_err(unavailable)?;
+    let files = read_sources(&folder, &CANVAS_FILES)?;
+    let text = |name: &str| files.iter().find(|f| f.name == name).map(|f| f.text.as_str()).filter(|t| !glassdeck_package::is_blank_script(t));
+    let shader = text(CANVAS_SOURCE).unwrap_or_default();
+    let sources = glassdeck_slang::pack::CanvasSources {
+        shader,
+        path: CANVAS_SOURCE,
+        keyboard: text(KEYBOARD_SCRIPT),
+        options: text(OPTIONS_SCRIPT),
+        host: text(HOST_SCRIPT),
+    };
+    let compiled = match glassdeck_slang::pack::compile_canvas(&slang, &sources) {
+        Ok(compiled) => compiled,
+        Err(e) => return Ok(CanvasCheck { shader_error: Some(format!("{e:#}")), problems: Vec::new(), checked: 0 }),
+    };
+    let check = glassdeck_slang::pack::canvas_problems(&luau, &folder, &compiled, &sources).map_err(unavailable)?;
+    Ok(CanvasCheck { shader_error: None, problems: check.problems, checked: check.checked.len() as u32 })
+}
+
 /// Packs a canvas with Slang, or copies a converted video, to `out`. `native`: where Slang and the
 /// Luau checker are.
 pub fn export_background(root: &Path, id: &str, out: &Path, native: &Path) -> Result<(), LibraryError> {
@@ -236,6 +297,21 @@ mod tests {
         assert_eq!(recorded.source, file);
         let missing = new("Gone", "local.me.gone", NewContent::Video { source: root.join("gone.mp4").display().to_string() });
         assert!(matches!(create_background(&root, missing), Err(LibraryError::BadVideo { .. })));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_canvas_editor_reads_every_file_and_saves_title_and_version() {
+        let root = scratch("editor");
+        create_background(&root, new("Aurora", "local.me.aurora", NewContent::Canvas)).unwrap();
+        let source = read_canvas(&root, "background.local.me.aurora").unwrap();
+        let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, CANVAS_FILES);
+        let edit = SourceEdit { title: "Dawn".into(), version: "1.1.0".into(), files: vec![SourceFile { name: HOST_SCRIPT.into(), text: "-- later\n".into() }] };
+        let saved = save_canvas(&root, "background.local.me.aurora", edit).unwrap();
+        assert_eq!((saved.title.as_str(), saved.version.as_str()), ("Dawn", "1.1.0"));
+        let stray = SourceEdit { title: "Dawn".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "deck.json".into(), text: String::new() }] };
+        assert!(save_canvas(&root, "background.local.me.aurora", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -31,5 +31,7 @@ monaco.editor.defineTheme(THEME, {
   },
 });
 
-/** Luau reads as Lua for highlighting; Monaco has no Luau grammar. */
-export const LANGUAGE = "lua";
+/** Monaco has no Luau or Slang grammar: Luau reads well as Lua, and Slang as C++. */
+export function languageOf(file: string): string {
+  return file.endsWith(".slang") ? "cpp" : "lua";
+}
