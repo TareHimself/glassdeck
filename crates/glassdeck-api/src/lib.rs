@@ -122,7 +122,7 @@ pub struct Theme {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeBackground {
-    /// A background package's id, such as `dev.glassdeck.gradient`
+    /// A background's qualified id, such as `background.local.glassdeck.gradient`
     pub package: String,
     /// Chosen values by option path, as in [`OptionView::value`]
     #[serde(default)]
@@ -132,7 +132,7 @@ pub struct ThemeBackground {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeWidget {
-    /// A widget package's id, such as `dev.glassdeck.clock`
+    /// A widget's qualified id, such as `widget.local.me.clock`
     pub package: String,
     /// Where it sits in the widget area, in panel pixels on an 8 px grid
     pub x: u32,
@@ -332,8 +332,8 @@ mod tests {
     fn wire_shapes_are_tagged_and_snake_case() {
         let event = Event::Link { connected: true };
         assert_eq!(serde_json::to_value(&event).unwrap(), serde_json::json!({ "type": "link", "connected": true }));
-        let owner = OptionsOwner::Widget { index: 1, package: "dev.glassdeck.clock".into() };
-        assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "dev.glassdeck.clock" }));
+        let owner = OptionsOwner::Widget { index: 1, package: "widget.local.me.clock".into() };
+        assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "widget.local.me.clock" }));
         let item = PanelItem::Heading { text: "Look".into() };
         assert_eq!(serde_json::to_value(&item).unwrap(), serde_json::json!({ "item": "heading", "text": "Look" }));
         let kind = OptionKind::Toggle { default: true };
@@ -344,8 +344,8 @@ mod tests {
     #[test]
     fn unknown_fields_in_requests_are_refused() {
         assert!(serde_json::from_str::<ThemePush>(r#"{"theme":{"format":1,"background":{"package":"a.b"}},"extra":1}"#).is_err());
-        let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"dev.glassdeck.gradient"}}"#).unwrap();
-        assert_eq!(theme, Theme::starting("dev.glassdeck.gradient"));
+        let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"background.local.glassdeck.gradient"}}"#).unwrap();
+        assert_eq!(theme, Theme::starting("background.local.glassdeck.gradient"));
         assert!(serde_json::from_str::<Theme>(r#"{"format":1,"background":{"package":"a.b"},"effects":[]}"#).is_err());
     }
 }

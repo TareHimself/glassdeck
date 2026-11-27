@@ -11,7 +11,7 @@ import { KeyboardIcon, MonitorIcon, SlidersIcon } from "../icons";
 import { describeLibraryError, slug } from "../library";
 import styles from "./NewWidget.module.css";
 
-const ID_PREFIX = "local";
+const ID_PREFIX = "local.me";
 const STEPS = ["Name", "Parts", "Size"] as const;
 type Step = 0 | 1 | 2;
 
@@ -42,6 +42,10 @@ const MODES: { value: Mode; name: string }[] = [
 
 function idOf(draft: Draft): string {
   return `${ID_PREFIX}.${slug(draft.title) || "widget"}`;
+}
+
+function qualifiedIdOf(draft: Draft): string {
+  return `widget.${idOf(draft)}`;
 }
 
 function sizingOf(draft: Draft): Sizing {
@@ -192,7 +196,7 @@ export function NewWidget() {
               <Input id="ww-title" type="text" value={draft.title} autoFocus onChange={(e) => update({ title: e.target.value })} />
             </Field>
             <Field label="Package id" htmlFor="ww-id">
-              <Input id="ww-id" type="text" variant="mono" value={idOf(draft)} readOnly />
+              <Input id="ww-id" type="text" variant="mono" value={qualifiedIdOf(draft)} readOnly />
             </Field>
           </>
         )}

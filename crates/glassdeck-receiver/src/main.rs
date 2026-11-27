@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use glassdeck_luau::placement::{Placement, PlacedWidget};
-use glassdeck_package::PackageId;
+use glassdeck_package::QualifiedId;
 use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
 
 use director::{Director, SharedDirector, lock};
@@ -222,7 +222,7 @@ fn placed_widgets(slots: &[WidgetSlot]) -> Result<Vec<PlacedWidget>> {
         .iter()
         .map(|slot| {
             let placement = Placement { x: slot.x.into(), y: slot.y.into(), w: slot.w.into(), h: slot.h.into() };
-            Ok(PlacedWidget { package: PackageId::parse(&slot.package)?, placement })
+            Ok(PlacedWidget { package: QualifiedId::parse(&slot.package)?, placement })
         })
         .collect()
 }

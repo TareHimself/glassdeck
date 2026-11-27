@@ -22,7 +22,7 @@ Every message is an 8-byte header (`VERSION`, kind, length) and a body of at mos
   - Files: `PutFile` pieces to a `FileTarget` (one variant, `Package(file name)`, a `<id>.deck`), answered by `PutDone` or `PutRefused`.
 - `StreamInfo`: `Codec` (H.264 or HEVC), `Mode` (`Live` with a clock offset, or `Paced`), size.
 - `SessionState` and `step(state, message)`: the receiver's state machine, returning the `Action` to take.
-- Constants: `BUILT_IN_BACKGROUND` (`dev.glassdeck.gradient`), `LARGE_FILE_BYTES`, `PACED_SEND_AHEAD_US`, `PACED_PLAYOUT_DELAY_US`.
+- Constants: `BUILT_IN_BACKGROUND` (`background.local.glassdeck.gradient`), `LARGE_FILE_BYTES`, `PACED_SEND_AHEAD_US`, `PACED_PLAYOUT_DELAY_US`.
 - `unix_micros()`: wall clock, for frame times and clock sync.
 
 ## Compositor socket

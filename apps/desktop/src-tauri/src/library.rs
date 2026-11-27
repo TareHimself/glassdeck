@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use glassdeck_layout::{Layout, Variant};
-use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, SourceType, Version, check_name};
+use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, PackageType, QualifiedId, Version, check_name};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use specta::Type;
@@ -131,6 +131,7 @@ fn check_sizing(sizing: Sizing) -> Result<(), String> {
 struct ValidNewWidget {
     title: String,
     id: PackageId,
+    qualified: QualifiedId,
     options: bool,
     runs_on_host: bool,
     sizing: Sizing,
@@ -143,7 +144,8 @@ fn parse_new(new: NewWidget) -> Result<ValidNewWidget, LibraryError> {
     }
     let id = PackageId::parse(new.id.trim()).map_err(|e| LibraryError::InvalidId { reason: e.to_string() })?;
     check_sizing(new.sizing).map_err(|reason| LibraryError::InvalidSize { reason })?;
-    Ok(ValidNewWidget { title, id, options: new.options, runs_on_host: new.runs_on_host, sizing: new.sizing })
+    let qualified = QualifiedId::new(PackageType::Widget, &id);
+    Ok(ValidNewWidget { title, id, qualified, options: new.options, runs_on_host: new.runs_on_host, sizing: new.sizing })
 }
 
 fn luau_string(text: &str) -> String {
@@ -199,13 +201,13 @@ fn summarize(folder: &Path) -> Result<Option<WidgetSummary>, LibraryError> {
         return Ok(None);
     }
     let (deck, _) = DeckSource::read(folder).map_err(|e| unreadable(format!("{e:#}")))?;
-    if deck.kind != SourceType::Widget {
+    if deck.kind != PackageType::Widget {
         return Ok(None);
     }
     let details = deck.details.as_ref().ok_or_else(|| unreadable("a widget's deck.json needs details".into()))?;
     let sizing = sizing_of(details).map_err(unreadable)?;
     Ok(Some(WidgetSummary {
-        id: deck.id.to_string(),
+        id: QualifiedId::new(deck.kind, &deck.id).to_string(),
         title: deck.title.clone(),
         version: deck.version.to_string(),
         sizing,
@@ -235,11 +237,11 @@ pub fn list_widgets(root: &Path) -> Result<Vec<WidgetSummary>, LibraryError> {
 
 pub fn create_widget(root: &Path, new: NewWidget) -> Result<WidgetSummary, LibraryError> {
     let new = parse_new(new)?;
-    let folder = root.join(new.id.as_str());
+    let folder = root.join(new.qualified.as_str());
     if folder.exists() {
-        return Err(LibraryError::AlreadyExists { id: new.id.to_string() });
+        return Err(LibraryError::AlreadyExists { id: new.qualified.to_string() });
     }
-    let staging = root.join(format!(".new-{}", new.id.as_str()));
+    let staging = root.join(format!(".new-{}", new.qualified.as_str()));
     fs::create_dir_all(&staging).map_err(io(format!("creating {}", staging.display())))?;
     for (name, text) in starting_files(&new) {
         let path = staging.join(name);
@@ -249,11 +251,11 @@ pub fn create_widget(root: &Path, new: NewWidget) -> Result<WidgetSummary, Libra
     summarize(&folder)?.ok_or_else(|| LibraryError::Unreadable { folder: folder.display().to_string(), reason: "the new widget didn't read back".into() })
 }
 
-/// The folder of an existing widget, by id.
+/// The folder of an existing widget, by qualified id.
 pub fn widget_folder(root: &Path, id: &str) -> Result<PathBuf, LibraryError> {
-    let id = PackageId::parse(id).map_err(|e| LibraryError::InvalidId { reason: e.to_string() })?;
+    let id = QualifiedId::parse(id).map_err(|e| LibraryError::InvalidId { reason: format!("{e:#}") })?;
     let folder = root.join(id.as_str());
-    if !folder.join(DECK_SOURCE).is_file() {
+    if id.package_type() != PackageType::Widget || !folder.join(DECK_SOURCE).is_file() {
         return Err(LibraryError::NotFound { id: id.to_string() });
     }
     Ok(folder)
@@ -286,26 +288,29 @@ fn copy_folder(from: &Path, to: &Path) -> Result<(), LibraryError> {
 }
 
 /// The first free id of the form `<id>-copy`, `<id>-copy-2`, ...
-fn free_copy_id(root: &Path, id: &str) -> String {
+fn free_copy_id(root: &Path, id: &PackageId) -> PackageId {
     (1..)
         .map(|n| if n == 1 { format!("{id}-copy") } else { format!("{id}-copy-{n}") })
-        .find(|candidate| !root.join(candidate).exists())
+        .map(|text| PackageId::parse(&text).expect("a suffix on the last part keeps an id valid"))
+        .find(|candidate| !root.join(QualifiedId::new(PackageType::Widget, candidate).as_str()).exists())
         .expect("an unbounded range finds a free id")
 }
 
 pub fn duplicate_widget(root: &Path, id: &str) -> Result<WidgetSummary, LibraryError> {
     let from = widget_folder(root, id)?;
-    let copy_id = free_copy_id(root, id);
-    let staging = root.join(format!(".new-{copy_id}"));
+    let original = QualifiedId::parse(id).expect("widget_folder checked it").id();
+    let copy_id = free_copy_id(root, &original);
+    let copy = QualifiedId::new(PackageType::Widget, &copy_id);
+    let staging = root.join(format!(".new-{copy}"));
     copy_folder(&from, &staging)?;
     let mut deck = read_deck_json(&staging)?;
     let title = deck.get("title").and_then(|t| t.as_str()).unwrap_or(id).to_owned();
-    deck.insert("id".into(), json!(copy_id));
+    deck.insert("id".into(), json!(copy_id.as_str()));
     deck.insert("title".into(), json!(format!("{title} copy")));
     write_deck_json(&staging, &deck)?;
-    let folder = root.join(&copy_id);
+    let folder = root.join(copy.as_str());
     fs::rename(&staging, &folder).map_err(io(format!("moving {} into place", folder.display())))?;
-    summarize(&folder)?.ok_or(LibraryError::NotFound { id: copy_id })
+    summarize(&folder)?.ok_or(LibraryError::NotFound { id: copy.to_string() })
 }
 
 pub fn rename_widget(root: &Path, id: &str, title: &str) -> Result<WidgetSummary, LibraryError> {
@@ -339,11 +344,11 @@ pub fn import_widget(root: &Path, deck: &Path) -> Result<WidgetSummary, LibraryE
     let Kind::Widget(size) = &manifest.kind else {
         return Err(not_a_widget(format!("{} is a background, not a widget", manifest.id)));
     };
-    let folder = root.join(manifest.id.as_str());
+    let folder = root.join(package.id().as_str());
     if folder.exists() {
-        return Err(LibraryError::AlreadyExists { id: manifest.id.to_string() });
+        return Err(LibraryError::AlreadyExists { id: package.id().to_string() });
     }
-    let staging = root.join(format!(".new-{}", manifest.id.as_str()));
+    let staging = root.join(format!(".new-{}", package.id()));
     if staging.exists() {
         fs::remove_dir_all(&staging).map_err(io(format!("clearing {}", staging.display())))?;
     }
@@ -366,7 +371,7 @@ pub fn import_widget(root: &Path, deck: &Path) -> Result<WidgetSummary, LibraryE
     });
     write_deck_json(&staging, source.as_object().expect("a JSON object"))?;
     fs::rename(&staging, &folder).map_err(io(format!("moving {} into place", folder.display())))?;
-    summarize(&folder)?.ok_or(LibraryError::NotFound { id: manifest.id.to_string() })
+    summarize(&folder)?.ok_or(LibraryError::NotFound { id: package.id().to_string() })
 }
 
 /// The scripts the widget editor shows, in tab order.
@@ -443,7 +448,7 @@ mod tests {
     use super::*;
 
     fn new(sizing: Sizing, options: bool, runs_on_host: bool) -> NewWidget {
-        NewWidget { title: "Weather \"now\"".into(), id: "local.weather".into(), options, runs_on_host, sizing }
+        NewWidget { title: "Weather \"now\"".into(), id: "local.me.weather".into(), options, runs_on_host, sizing }
     }
 
     const SIZE: Dims = Dims { w: 320, h: 160 };
@@ -495,10 +500,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let made = create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, true)).unwrap();
-        assert_eq!(made.id, "local.weather");
+        assert_eq!(made.id, "widget.local.me.weather");
         assert!(made.has_options && made.runs_on_host);
         assert_eq!(list_widgets(&root).unwrap().len(), 1);
-        glassdeck_package::pack_folder(&root.join("local.weather"), &root.join("packed.deck")).expect("a new widget packs as it is");
+        glassdeck_package::pack_folder(&root.join("widget.local.me.weather"), &root.join("packed.deck")).expect("a new widget packs as it is");
         assert!(matches!(create_widget(&root, new(Sizing::Fixed { size: SIZE }, false, false)), Err(LibraryError::AlreadyExists { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
@@ -508,17 +513,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-actions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         create_widget(&root, new(Sizing::Any { size: SIZE }, true, false)).unwrap();
-        assert_eq!(duplicate_widget(&root, "local.weather").unwrap().id, "local.weather-copy");
-        assert_eq!(duplicate_widget(&root, "local.weather").unwrap().id, "local.weather-copy-2");
-        assert_eq!(rename_widget(&root, "local.weather-copy", "Sky").unwrap().title, "Sky");
-        assert!(matches!(rename_widget(&root, "local.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
+        assert_eq!(duplicate_widget(&root, "widget.local.me.weather").unwrap().id, "widget.local.me.weather-copy");
+        assert_eq!(duplicate_widget(&root, "widget.local.me.weather").unwrap().id, "widget.local.me.weather-copy-2");
+        assert_eq!(rename_widget(&root, "widget.local.me.weather-copy", "Sky").unwrap().title, "Sky");
+        assert!(matches!(rename_widget(&root, "widget.local.me.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
         let deck = root.join("out.deck");
-        export_widget(&root, "local.weather", &deck).unwrap();
+        export_widget(&root, "widget.local.me.weather", &deck).unwrap();
         assert!(matches!(import_widget(&root, &deck), Err(LibraryError::AlreadyExists { .. })));
         let imported = import_widget(&root.join("elsewhere"), &deck).unwrap();
         assert_eq!(imported.sizing, Sizing::Any { size: SIZE });
         assert!(imported.has_options);
-        assert!(matches!(widget_folder(&root, "local.nope"), Err(LibraryError::NotFound { .. })));
+        assert!(matches!(widget_folder(&root, "widget.local.me.nope"), Err(LibraryError::NotFound { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -527,17 +532,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-editor-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, false)).unwrap();
-        let source = read_widget(&root, "local.weather").unwrap();
+        let source = read_widget(&root, "widget.local.me.weather").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT]);
         assert!(source.host_template.contains("host.on_options"));
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
-        let saved = save_widget(&root, "local.weather", WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
+        let saved = save_widget(&root, "widget.local.me.weather", WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));
         let bad_version = WidgetEdit { title: "Sky".into(), version: "1.1".into(), files: vec![] };
-        assert!(matches!(save_widget(&root, "local.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
+        assert!(matches!(save_widget(&root, "widget.local.me.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
         let stray = WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "../x.luau".into(), text: String::new() }] };
-        assert!(save_widget(&root, "local.weather", stray).is_err());
+        assert!(save_widget(&root, "widget.local.me.weather", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

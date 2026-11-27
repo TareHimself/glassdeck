@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::ResourceReader;
-use glassdeck_package::{Package, PackageId, is_package};
+use glassdeck_package::{Package, QualifiedId, is_package};
 use glassdeck_proto::compositor::MAX_DATA_LEN;
 
 use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
@@ -61,7 +61,7 @@ struct Running {
 /// What a host side runs from: its package as installed, and the user's chosen options.
 #[derive(Clone, Debug, PartialEq)]
 struct SideEntry {
-    package: PackageId,
+    package: QualifiedId,
     modified: SystemTime,
     options: Chosen,
 }
@@ -291,7 +291,7 @@ mod tests {
 
     fn entry(package: &str, at: u64, options: serde_json::Value) -> SideEntry {
         SideEntry {
-            package: PackageId::parse(package).unwrap(),
+            package: QualifiedId::parse(package).unwrap(),
             modified: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
             options: options.as_object().cloned().unwrap_or_default(),
         }
@@ -299,16 +299,16 @@ mod tests {
 
     #[test]
     fn only_what_changed_restarts_or_hears_about_it() {
-        let clock = entry("dev.glassdeck.clock", 1, serde_json::json!({ "seconds": true }));
+        let clock = entry("widget.local.me.clock", 1, serde_json::json!({ "seconds": true }));
         let running = BTreeMap::from([
             (0, clock.clone()),
-            (1, entry("dev.glassdeck.cpu", 1, serde_json::json!({}))),
-            (2, entry("dev.glassdeck.pomodoro", 1, serde_json::json!({}))),
+            (1, entry("widget.local.me.cpu", 1, serde_json::json!({}))),
+            (2, entry("widget.local.me.pomodoro", 1, serde_json::json!({}))),
         ]);
         let wanted = BTreeMap::from([
-            (0, entry("dev.glassdeck.clock", 1, serde_json::json!({ "seconds": false, "hours24": true }))),
-            (1, entry("dev.glassdeck.cpu", 2, serde_json::json!({}))),
-            (3, entry("dev.glassdeck.now-playing", 1, serde_json::json!({}))),
+            (0, entry("widget.local.me.clock", 1, serde_json::json!({ "seconds": false, "hours24": true }))),
+            (1, entry("widget.local.me.cpu", 2, serde_json::json!({}))),
+            (3, entry("widget.local.me.now-playing", 1, serde_json::json!({}))),
         ]);
         assert_eq!(widget_changes(&running, &wanted), vec![
             (0, Change::Reapply(BTreeSet::from(["hours24".to_owned(), "seconds".to_owned()]))),
@@ -317,7 +317,7 @@ mod tests {
             (3, Change::Start),
         ]);
         assert!(widget_changes(&running, &running).is_empty());
-        let swapped = entry("dev.glassdeck.cpu", 1, serde_json::json!({ "seconds": true }));
+        let swapped = entry("widget.local.me.cpu", 1, serde_json::json!({ "seconds": true }));
         assert_eq!(side_change(Some(&clock), Some(&swapped)), Some(Change::Start));
         assert_eq!(side_change(Some(&clock), None), Some(Change::Stop));
         assert_eq!(side_change(None, None), None);

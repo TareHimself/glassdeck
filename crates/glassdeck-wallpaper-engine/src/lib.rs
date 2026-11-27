@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use glassdeck_convert::{Details, EncodeSettings};
-use glassdeck_package::{Origin, Package, PackageId};
+use glassdeck_package::{Origin, Package, PackageId, PackageType, QualifiedId};
 use serde_json::{Map, Value};
 
 pub use library::{Item, find, subscribed};
@@ -27,13 +27,13 @@ pub fn why_unsupported(kind: &Kind) -> Option<String> {
     })
 }
 
-/// Wallpaper Engine items are `wallpaper-engine.<workshop id>`.
+/// Wallpaper Engine items are `com.wallpaperengine.<workshop id>`.
 pub fn package_id(item: &Item) -> Result<PackageId> {
-    PackageId::parse(&format!("wallpaper-engine.{}", item.id))
+    PackageId::parse(&format!("com.wallpaperengine.{}", item.id))
 }
 
 pub fn package_path(packages_dir: &Path, item: &Item) -> Result<PathBuf> {
-    Ok(packages_dir.join(package_id(item)?.file_name()))
+    Ok(packages_dir.join(QualifiedId::new(PackageType::Background, &package_id(item)?).file_name()))
 }
 
 /// Converts a video or web item into a background at `out`; other kinds are refused.

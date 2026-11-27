@@ -1,6 +1,6 @@
 {
   "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
-  "id": "dev.glassdeck.cpu-meter",
+  "id": "local.me.cpu-meter",
   "title": "CPU meter",
   "version": "1.0.0",
   "type": "widget",

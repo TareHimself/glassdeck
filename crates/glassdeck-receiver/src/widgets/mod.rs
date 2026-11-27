@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result};
 use fontdue::Font;
 use glassdeck_luau::placement::{Placement, PlacedWidget, WidgetArea, check_widgets};
-use glassdeck_package::{Package, PackageId, is_package};
+use glassdeck_package::{Package, QualifiedId, is_package};
 use serde::{Deserialize, Serialize};
 
 use glassdeck_luau::LiveName;
@@ -308,8 +308,8 @@ impl Host {
     }
 
     /// The installed widget packages, once the layout checks out against them.
-    fn load(&self) -> Result<HashMap<PackageId, Installed>> {
-        let mut packages: HashMap<PackageId, Installed> = HashMap::new();
+    fn load(&self) -> Result<HashMap<QualifiedId, Installed>> {
+        let mut packages: HashMap<QualifiedId, Installed> = HashMap::new();
         let folder = &self.config.packages;
         let entries = fs::read_dir(folder).with_context(|| format!("reading the packages folder {}", folder.display()))?;
         for entry in entries {
@@ -336,7 +336,7 @@ impl Host {
 
     /// Keeps instances whose module didn't change, telling them about moves and resizes; their options
     /// reach them from the host half as data. Others restart, carrying over what `unload` saved when it is the same module.
-    fn apply(&mut self, layout: Vec<PlacedWidget>, packages: HashMap<PackageId, Installed>) {
+    fn apply(&mut self, layout: Vec<PlacedWidget>, packages: HashMap<QualifiedId, Installed>) {
         let mut old: Vec<Option<Instance>> = std::mem::take(&mut self.instances).into_iter().map(Some).collect();
         for (index, widget) in layout.iter().enumerate() {
             let installed = packages[&widget.package].clone();
@@ -390,7 +390,7 @@ fn read_layout(state: &Path) -> Result<Vec<PlacedWidget>> {
     let saved: Vec<SavedWidget> = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     saved
         .into_iter()
-        .map(|w| Ok(PlacedWidget { package: PackageId::parse(&w.package)?, placement: Placement { x: w.x, y: w.y, w: w.w, h: w.h } }))
+        .map(|w| Ok(PlacedWidget { package: QualifiedId::parse(&w.package)?, placement: Placement { x: w.x, y: w.y, w: w.w, h: w.h } }))
         .collect()
 }
 

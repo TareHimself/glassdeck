@@ -12,7 +12,7 @@ Pre-release. Package formats and the protocol are versioned, and a build refuses
 | host | The Windows PC that runs glassdeckd and streams to the keyboard |
 | keyboard | The RK3566 board, running Linux |
 | stream | A named feed, such as `monitor-q27g4zd` |
-| package | A `.deck`: a background or a widget, named by a reverse-DNS id such as `dev.glassdeck.gradient` |
+| package | A `.deck`: a background or a widget. Its id is `{tld}.{entity}.{name}`, such as `local.me.clock`, unique within its type; Glassdeck keys it by its qualified id, `{type}.{id}`, such as `widget.local.me.clock` |
 | canvas | A Slang `[Canvas]` shader plus optional `keyboard.luau`, `options.luau` and `host.luau`, packed as a background `.deck` |
 | widget | A widget package with a keyboard half and an optional host half |
 | theme | The background, an optional stream, and the placed widgets, each with its options. The desktop app owns themes and pushes the active one |

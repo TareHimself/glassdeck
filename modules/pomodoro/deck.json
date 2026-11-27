@@ -1,6 +1,6 @@
 {
   "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
-  "id": "dev.glassdeck.pomodoro",
+  "id": "local.me.pomodoro",
   "title": "Pomodoro",
   "version": "1.0.0",
   "type": "widget",

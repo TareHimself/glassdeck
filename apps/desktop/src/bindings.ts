@@ -193,14 +193,14 @@ export type Theme = {
 };
 
 export type ThemeBackground = {
-	/**  A background package's id, such as `dev.glassdeck.gradient` */
+	/**  A background's qualified id, such as `background.local.glassdeck.gradient` */
 	package: string,
 	/**  Chosen values by option path, as in [`OptionView::value`] */
 	options?: { [key in string]: Value },
 };
 
 export type ThemeWidget = {
-	/**  A widget package's id, such as `dev.glassdeck.clock` */
+	/**  A widget's qualified id, such as `widget.local.me.clock` */
 	package: string,
 	/**  Where it sits in the widget area, in panel pixels on an 8 px grid */
 	x: number,

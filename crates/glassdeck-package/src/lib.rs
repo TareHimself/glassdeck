@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 pub use canvas::{CANVAS_API, Canvas, CanvasFiles, CanvasScripts, InputField, InputKind, canvas_sources, source_digest};
-pub use folder::{DECK_SOURCE, DeckSource, SourceType, pack_folder};
+pub use folder::{DECK_SOURCE, DeckSource, pack_folder};
 pub use manifest::{
-    Content, FrameRate, Kind, Manifest, Origin, PackageId, ProbedCodec, ProbedVideo, Resize, Size, SpecMismatch, Version, VideoFormat,
+    Content, FrameRate, Kind, Manifest, Origin, PackageId, PackageType, ProbedCodec, QualifiedId, ProbedVideo, Resize, Size, SpecMismatch, Version, VideoFormat,
     WidgetSize, check,
 };
 pub use resource::{Resource, ResourceKind, ResourceName, literal_resources};
@@ -71,6 +71,7 @@ impl Source {
 pub struct Package {
     source: Source,
     manifest: Manifest,
+    id: QualifiedId,
     entries: HashMap<String, Entry>,
 }
 
@@ -93,7 +94,8 @@ impl Package {
         read_exact_at(&source, raw.offset, &mut text).with_context(|| format!("reading {}", source.describe()))?;
         let manifest: Manifest = serde_json::from_slice(&text).with_context(|| format!("parsing {MANIFEST} in {}", source.describe()))?;
         manifest.validate(|name| entries.contains_key(name)).with_context(|| format!("checking {}", source.describe()))?;
-        Ok(Self { source, manifest, entries })
+        let id = manifest.qualified_id();
+        Ok(Self { source, manifest, id, entries })
     }
 
     /// `None` for a built-in package.
@@ -108,8 +110,8 @@ impl Package {
         &self.manifest
     }
 
-    pub fn id(&self) -> &PackageId {
-        &self.manifest.id
+    pub fn id(&self) -> &QualifiedId {
+        &self.id
     }
 
     pub fn entry(&self, name: &str) -> Option<Entry> {
@@ -239,11 +241,11 @@ pub fn preview_name(source: &Path) -> String {
     }
 }
 
-/// A package's file name in a packages folder, `<id>.deck`, so nothing can name anything outside it.
+/// A package's file name in a packages folder, `<qualified id>.deck`, so nothing can name anything outside it.
 /// The one rule for every package the keyboard installs or selects.
-pub fn check_file_name(name: &str) -> Result<PackageId> {
+pub fn check_file_name(name: &str) -> Result<QualifiedId> {
     let stem = name.strip_suffix(&format!(".{EXTENSION}")).with_context(|| format!("{name:?} does not end in .{EXTENSION}"))?;
-    PackageId::parse(stem).with_context(|| format!("{name:?} is not <id>.{EXTENSION}"))
+    QualifiedId::parse(stem).with_context(|| format!("{name:?} is not <qualified id>.{EXTENSION}"))
 }
 
 /// A digest of a file's bytes (FNV-1a, 64-bit), so host and keyboard can tell whether they hold the same copy.
@@ -360,7 +362,7 @@ pub(crate) mod tests {
             file: "video.mp4".into(),
             format: VideoFormat { codec: Codec::Hevc, width: 1920, height: 1080, frame_rate: SIXTY },
         };
-        Manifest { preview: Some("preview.jpg".into()), ..manifest("wallpaper-engine.1184945377", Kind::Background(video)) }
+        Manifest { preview: Some("preview.jpg".into()), ..manifest("com.wallpaperengine.1184945377", Kind::Background(video)) }
     }
 
     pub(crate) fn web_manifest() -> Manifest {
@@ -368,7 +370,7 @@ pub(crate) mod tests {
             entry: "web/index.html".into(),
             properties: json!({ "speed": { "type": "slider", "value": 3 } }).as_object().unwrap().clone(),
         };
-        manifest("wallpaper-engine.1129194457", Kind::Background(web))
+        manifest("com.wallpaperengine.1129194457", Kind::Background(web))
     }
 
     #[test]
@@ -450,8 +452,8 @@ pub(crate) mod tests {
 
     #[test]
     fn file_names_are_ids() {
-        assert_eq!(check_file_name("dev.glassdeck.clock.deck").unwrap().as_str(), "dev.glassdeck.clock");
-        for bad in ["clock.deck", "dev.glassdeck.clock.deckbg", "../a.b.deck", "A.b.deck", "x!.y.deck"] {
+        assert_eq!(check_file_name("widget.local.me.clock.deck").unwrap().as_str(), "widget.local.me.clock");
+        for bad in ["clock.deck", "local.me.clock.deck", "widget.local.me.clock.deckbg", "../widget.a.b.deck", "widget.A.b.c.deck", "widget.x!.y.z.deck"] {
             assert!(check_file_name(bad).is_err(), "{bad}");
         }
     }

@@ -327,38 +327,38 @@ mod tests {
         Phase::Refusing { reason: reason.into() }
     }
 
-    const BAD_NAME: &str = "\"../a.b.deck\" is not <id>.deck: id \"../a.b\" is not lowercase reverse-DNS, like dev.glassdeck.clock";
+    const BAD_NAME: &str = "\"../widget.a.b.c.deck\" is not <qualified id>.deck: \"../widget.a.b.c\" does not start with widget. or background.";
 
     #[test]
     fn walks_the_whole_transition_table() {
-        let out_of_order = "pieces of package a.b.deck arrived out of order";
+        let out_of_order = "pieces of package widget.a.b.c.deck arrived out of order";
         let table = [
-            (Phase::Idle, piece("a.b.deck", 0, 4, 10), receiving("a.b.deck", 4, 10), vec![Create, Append]),
-            (Phase::Idle, piece("a.b.deck", 0, 10, 10), Phase::Idle, vec![Create, Append, Install]),
-            (Phase::Idle, piece("a.b.deck", 0, 0, 0), Phase::Idle, vec![Create, Append, Install]),
-            (Phase::Idle, piece("../a.b.deck", 0, 4, 10), refusing(BAD_NAME), vec![]),
-            (Phase::Idle, piece("a.b.deckbg", 0, 4, 10), refusing("\"a.b.deckbg\" does not end in .deck"), vec![]),
-            (Phase::Idle, piece("a.b.deck", 4, 4, 10), refusing("a piece at byte 4 arrived with no start"), vec![]),
+            (Phase::Idle, piece("widget.a.b.c.deck", 0, 4, 10), receiving("widget.a.b.c.deck", 4, 10), vec![Create, Append]),
+            (Phase::Idle, piece("widget.a.b.c.deck", 0, 10, 10), Phase::Idle, vec![Create, Append, Install]),
+            (Phase::Idle, piece("widget.a.b.c.deck", 0, 0, 0), Phase::Idle, vec![Create, Append, Install]),
+            (Phase::Idle, piece("../widget.a.b.c.deck", 0, 4, 10), refusing(BAD_NAME), vec![]),
+            (Phase::Idle, piece("widget.a.b.c.deckbg", 0, 4, 10), refusing("\"widget.a.b.c.deckbg\" does not end in .deck"), vec![]),
+            (Phase::Idle, piece("widget.a.b.c.deck", 4, 4, 10), refusing("a piece at byte 4 arrived with no start"), vec![]),
             (
                 Phase::Idle,
-                piece("a.b.deck", 4, 6, 10),
+                piece("widget.a.b.c.deck", 4, 6, 10),
                 Phase::Idle,
                 vec![Refuse("a piece at byte 4 arrived with no start".into())],
             ),
-            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 4, 4, 10), receiving("a.b.deck", 8, 10), vec![Append]),
-            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 4, 6, 10), Phase::Idle, vec![Append, Install]),
+            (receiving("widget.a.b.c.deck", 4, 10), piece("widget.a.b.c.deck", 4, 4, 10), receiving("widget.a.b.c.deck", 8, 10), vec![Append]),
+            (receiving("widget.a.b.c.deck", 4, 10), piece("widget.a.b.c.deck", 4, 6, 10), Phase::Idle, vec![Append, Install]),
             (
-                receiving("a.b.deck", 4, 10),
-                piece("a.b.deck", 4, 8, 10),
+                receiving("widget.a.b.c.deck", 4, 10),
+                piece("widget.a.b.c.deck", 4, 8, 10),
                 Phase::Idle,
                 vec![Append, Discard, Refuse("got 12 bytes of 10".into())],
             ),
-            (receiving("a.b.deck", 4, 10), piece("a.b.deck", 6, 2, 10), refusing(out_of_order), vec![Discard]),
-            (receiving("a.b.deck", 4, 10), piece("c.d.deck", 4, 2, 10), refusing(out_of_order), vec![Discard]),
-            (receiving("a.b.deck", 4, 10), piece("c.d.deck", 0, 2, 10), receiving("c.d.deck", 2, 10), vec![Discard, Create, Append]),
-            (refusing("full"), piece("a.b.deck", 4, 2, 10), refusing("full"), vec![]),
-            (refusing("full"), piece("a.b.deck", 4, 6, 10), Phase::Idle, vec![Refuse("full".into())]),
-            (refusing("full"), piece("a.b.deck", 0, 2, 10), receiving("a.b.deck", 2, 10), vec![Create, Append]),
+            (receiving("widget.a.b.c.deck", 4, 10), piece("widget.a.b.c.deck", 6, 2, 10), refusing(out_of_order), vec![Discard]),
+            (receiving("widget.a.b.c.deck", 4, 10), piece("widget.c.d.e.deck", 4, 2, 10), refusing(out_of_order), vec![Discard]),
+            (receiving("widget.a.b.c.deck", 4, 10), piece("widget.c.d.e.deck", 0, 2, 10), receiving("widget.c.d.e.deck", 2, 10), vec![Discard, Create, Append]),
+            (refusing("full"), piece("widget.a.b.c.deck", 4, 2, 10), refusing("full"), vec![]),
+            (refusing("full"), piece("widget.a.b.c.deck", 4, 6, 10), Phase::Idle, vec![Refuse("full".into())]),
+            (refusing("full"), piece("widget.a.b.c.deck", 0, 2, 10), receiving("widget.a.b.c.deck", 2, 10), vec![Create, Append]),
         ];
         for (from, put, phase, effects) in table {
             assert_eq!(step(from.clone(), &put), (phase, effects), "from {from:?} on {put:?}");
@@ -367,8 +367,8 @@ mod tests {
 
     #[test]
     fn only_package_ids_with_the_deck_extension() {
-        assert!(check_name(&FileTarget::Package("wallpaper-engine.1.deck".into())).is_ok());
-        for bad in ["", ".deck", "a/b.c.deck", "a\\b.c.deck", "..", "c:a.b.deck", "a.b.deck.tmp", "a.b.mp4", "nodot.deck"] {
+        assert!(check_name(&FileTarget::Package("background.com.wallpaperengine.1.deck".into())).is_ok());
+        for bad in ["", ".deck", "widget.a/b.c.d.deck", "widget.a\\b.c.d.deck", "..", "c:widget.a.b.c.deck", "widget.a.b.c.deck.tmp", "widget.a.b.c.mp4", "nodot.deck", "a.b.c.deck"] {
             assert!(check_name(&FileTarget::Package(bad.into())).is_err(), "{bad:?}");
         }
     }
@@ -378,15 +378,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-put-{}", std::process::id()));
         let folders = Folders { packages: root.join("packages") };
         let mut uploads = Uploads::new(&folders);
-        let target = FileTarget::Package("a.b.deck".into());
+        let target = FileTarget::Package("widget.a.b.c.deck".into());
         let answer = uploads.put(&PutFile { target: target.clone(), offset: 0, total: 4, data: b"junk".to_vec() });
         assert!(matches!(answer, Some(Message::PutRefused { .. })), "{answer:?}");
-        assert!(!folders.packages.join("a.b.deck").exists());
+        assert!(!folders.packages.join("widget.a.b.c.deck").exists());
 
         assert_eq!(uploads.put(&PutFile { target, offset: 0, total: 10, data: vec![1; 4] }), None);
-        assert!(folders.packages.join("a.b.deck.tmp").exists());
+        assert!(folders.packages.join("widget.a.b.c.deck.tmp").exists());
         uploads.abandon();
-        assert!(!folders.packages.join("a.b.deck.tmp").exists());
+        assert!(!folders.packages.join("widget.a.b.c.deck.tmp").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 }

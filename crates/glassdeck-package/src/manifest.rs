@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use glassdeck_proto::Codec;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -25,6 +25,13 @@ pub struct Manifest {
     pub kind: Kind,
 }
 
+impl Manifest {
+    /// What Glassdeck keys the package by: its type and its id.
+    pub fn qualified_id(&self) -> QualifiedId {
+        QualifiedId::new(self.kind.package_type(), &self.id)
+    }
+}
+
 /// What the package is, which decides the layer it draws on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "details", rename_all = "snake_case")]
@@ -33,6 +40,41 @@ pub enum Kind {
     Background(Content),
     /// Sits in the widget area
     Widget(WidgetSize),
+}
+
+impl Kind {
+    pub fn package_type(&self) -> PackageType {
+        match self {
+            Kind::Background(_) => PackageType::Background,
+            Kind::Widget(_) => PackageType::Widget,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageType {
+    Background,
+    Widget,
+}
+
+impl PackageType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PackageType::Background => "background",
+            PackageType::Widget => "widget",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [PackageType::Background, PackageType::Widget].into_iter().find(|t| t.as_str() == text)
+    }
+}
+
+impl fmt::Display for PackageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,7 +95,8 @@ pub enum Content {
     Canvas(Canvas),
 }
 
-/// Lowercase reverse-DNS, such as `dev.glassdeck.clock`; also the package's file name, `<id>.deck`.
+/// `{tld}.{entity}.{name}` in lowercase, such as `local.me.clock`: what a package calls itself.
+/// Unique within its type; Glassdeck keys packages by `QualifiedId`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct PackageId(String);
@@ -62,11 +105,11 @@ impl PackageId {
     pub fn parse(text: &str) -> Result<Self> {
         let part_ok = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
         let parts: Vec<&str> = text.split('.').collect();
-        ensure!(parts.len() >= 2 && parts.iter().all(|p| part_ok(p)), "id {text:?} is not lowercase reverse-DNS, like dev.glassdeck.clock");
+        ensure!(parts.len() == 3 && parts.iter().all(|p| part_ok(p)), "id {text:?} is not {{tld}}.{{entity}}.{{name}} in lowercase, like local.me.clock");
         Ok(Self(text.to_owned()))
     }
 
-    /// An id under `prefix` made from any name: lowercase, with runs of anything else as one `-`.
+    /// An id under `prefix` (`{tld}.{entity}`) made from any name: lowercase, with runs of anything else as one `-`.
     pub fn from_name(prefix: &str, name: &str) -> Result<Self> {
         let mut slug = String::new();
         for c in name.chars() {
@@ -81,11 +124,6 @@ impl PackageId {
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Where the package lives in a packages folder.
-    pub fn file_name(&self) -> String {
-        format!("{}.{}", self.0, crate::EXTENSION)
     }
 }
 
@@ -103,6 +141,64 @@ impl From<PackageId> for String {
 }
 
 impl fmt::Display for PackageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// `{type}.{tld}.{entity}.{name}`, such as `widget.local.me.clock`: what Glassdeck keys a package by,
+/// in packages folders, the library, themes and on the Link.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct QualifiedId(String);
+
+impl QualifiedId {
+    pub fn new(package_type: PackageType, id: &PackageId) -> Self {
+        Self(format!("{package_type}.{id}"))
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let (package_type, id) = text.split_once('.').unwrap_or((text, ""));
+        let package_type = PackageType::parse(package_type).with_context(|| format!("{text:?} does not start with widget. or background."))?;
+        Ok(Self::new(package_type, &PackageId::parse(id)?))
+    }
+
+    pub fn package_type(&self) -> PackageType {
+        PackageType::parse(self.parts().0).expect("checked when made")
+    }
+
+    pub fn id(&self) -> PackageId {
+        PackageId(self.parts().1.to_owned())
+    }
+
+    fn parts(&self) -> (&str, &str) {
+        self.0.split_once('.').expect("checked when made")
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Where the package lives in a packages folder.
+    pub fn file_name(&self) -> String {
+        format!("{}.{}", self.0, crate::EXTENSION)
+    }
+}
+
+impl TryFrom<String> for QualifiedId {
+    type Error = anyhow::Error;
+    fn try_from(text: String) -> Result<Self> {
+        Self::parse(&text)
+    }
+}
+
+impl From<QualifiedId> for String {
+    fn from(id: QualifiedId) -> Self {
+        id.0
+    }
+}
+
+impl fmt::Display for QualifiedId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -356,7 +452,7 @@ mod tests {
 
     #[test]
     fn the_type_is_written_once_and_details_follow_it() {
-        let text = r#"{"format":4,"id":"wallpaper-engine.1","title":"t","version":"1.0.0",
+        let text = r#"{"format":4,"id":"com.wallpaperengine.1","title":"t","version":"1.0.0",
             "origin":{"kind":"wallpaper_engine","workshop_id":"1"},
             "type":"background","details":{"content":"video","file":"video.mp4","codec":"hevc","width":1920,"height":1080,
             "frame_rate":{"numerator":24,"denominator":1}}}"#;
@@ -373,7 +469,7 @@ mod tests {
     fn widget_sizes_are_checked_when_read() {
         let widget = |details: &str| {
             serde_json::from_str::<Manifest>(&format!(
-                r#"{{"format":4,"id":"dev.glassdeck.clock","title":"Clock","version":"1.0.0",
+                r#"{{"format":4,"id":"local.me.clock","title":"Clock","version":"1.0.0",
                 "origin":{{"kind":"packed","from":"clock","sources":"x"}},"type":"widget","details":{details}}}"#
             ))
         };
@@ -386,14 +482,27 @@ mod tests {
 
     #[test]
     fn ids_and_versions_are_checked_when_read() {
-        assert!(PackageId::parse("dev.glassdeck.clock").is_ok());
-        assert!(PackageId::parse("wallpaper-engine.1184945377").is_ok());
-        for bad in ["clock", "Dev.Glassdeck", "a..b", "a.b/c", "a b.c"] {
+        assert!(PackageId::parse("local.me.clock").is_ok());
+        assert!(PackageId::parse("com.wallpaperengine.1184945377").is_ok());
+        for bad in ["clock", "me.clock", "a.b.c.d", "Local.Me.Clock", "a..b", "a.b/c.d", "a b.c.d"] {
             assert!(PackageId::parse(bad).is_err(), "{bad}");
         }
-        assert_eq!(PackageId::from_name("converted", "Late Night (2) v2!").unwrap().as_str(), "converted.late-night-2-v2");
-        assert!(PackageId::from_name("converted", "!!!").is_err());
+        assert_eq!(PackageId::from_name("local.converted", "Late Night (2) v2!").unwrap().as_str(), "local.converted.late-night-2-v2");
+        assert!(PackageId::from_name("local.converted", "!!!").is_err());
         assert!(Version::parse("1.0.0").is_ok());
         assert!(Version::parse("1.0").is_err());
+    }
+
+    #[test]
+    fn a_qualified_id_is_the_type_then_the_id() {
+        let id = QualifiedId::parse("widget.local.me.clock").unwrap();
+        assert_eq!(id.package_type(), PackageType::Widget);
+        assert_eq!(id.id().as_str(), "local.me.clock");
+        assert_eq!(id.file_name(), "widget.local.me.clock.deck");
+        let gradient = PackageId::parse("local.me.gradient").unwrap();
+        assert_eq!(QualifiedId::new(PackageType::Background, &gradient).as_str(), "background.local.me.gradient");
+        for bad in ["local.me.clock", "canvas.local.me.clock", "widget.me.clock", "widget"] {
+            assert!(QualifiedId::parse(bad).is_err(), "{bad}");
+        }
     }
 }

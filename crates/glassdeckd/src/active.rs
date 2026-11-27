@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
-use glassdeck_package::{Package, PackageId, file_digest};
+use glassdeck_package::{Package, QualifiedId, file_digest};
 use serde::{Deserialize, Serialize};
 
 use crate::error::bad_request;
@@ -53,7 +53,7 @@ impl ActivePackages {
     }
 
     /// The keyboard copy to upload for `id`, and its digest.
-    pub fn keyboard_copy(&self, id: &PackageId) -> Option<(PathBuf, u64)> {
+    pub fn keyboard_copy(&self, id: &QualifiedId) -> Option<(PathBuf, u64)> {
         let held = self.held.get(id.as_str())?;
         Some((self.folder.join(KEYBOARD_COPIES).join(id.file_name()), held.keyboard_digest))
     }

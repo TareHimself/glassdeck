@@ -20,7 +20,7 @@ flowchart LR
 | `script::CanvasScript` | `keyboard.luau`: `load`, `deliver` (host data to `canvas.on_data`), `frame`, `take_changes` |
 | `script::InputValue` | A written input value |
 | `offscreen::Offscreen` | Windows only: a hidden WGL context (GL 4.3 core, which takes GLSL ES 3.00) and a framebuffer to read back |
-| `BUILT_IN` | `canvases/gradient`, packed as `builtin/gradient.deck` (id `dev.glassdeck.gradient`), included with `include_bytes!` |
+| `BUILT_IN` | `canvases/gradient`, packed as `builtin/gradient.deck` (id `local.glassdeck.gradient`), included with `include_bytes!` |
 
 Only inputs written since the last draw are uploaded. A frame where nothing changed and the shader ignores the clock is not drawn.
 

@@ -24,7 +24,7 @@ enum Command {
     Import {
         /// Workshop ID, or a folder holding a project.json
         item: String,
-        /// Package file (default: wallpaper-engine.<id>.deck in the current folder)
+        /// Package file (default: background.com.wallpaperengine.<id>.deck in the current folder)
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when re-encoding

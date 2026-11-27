@@ -1,6 +1,6 @@
 {
   "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
-  "id": "dev.glassdeck.now-playing",
+  "id": "local.me.now-playing",
   "title": "Now playing",
   "version": "1.0.0",
   "type": "widget",

@@ -13,7 +13,7 @@ pub const VERSION: u8 = 11;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// The built-in canvas's package id: the default background, always on the keyboard and never a file.
-pub const BUILT_IN_BACKGROUND: &str = "dev.glassdeck.gradient";
+pub const BUILT_IN_BACKGROUND: &str = "background.local.glassdeck.gradient";
 /// Files at least this big pause the stream while they go to the keyboard, which shows their
 /// progress; smaller ones finish too quickly to be worth changing the screen for.
 pub const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -643,25 +643,25 @@ mod tests {
         round_trip(Message::StreamEnd { stream_id: 3 });
         round_trip(Message::ClockProbe { sent_us: 1_795_567_092_181_099 });
         round_trip(Message::ClockReply { probe_sent_us: 1, received_us: 1_795_567_093_267_780 });
-        round_trip(Message::SelectBackground { name: "converted.late-night".into() });
+        round_trip(Message::SelectBackground { name: "background.local.converted.late-night".into() });
         round_trip(Message::SetWidgets {
             widgets: vec![
-                WidgetSlot { package: "dev.glassdeck.clock".into(), x: 792, y: 16, w: 320, h: 160 },
-                WidgetSlot { package: "dev.glassdeck.pomodoro".into(), x: 1736, y: 16, w: 160, h: 160 },
+                WidgetSlot { package: "widget.local.me.clock".into(), x: 792, y: 16, w: 320, h: 160 },
+                WidgetSlot { package: "widget.local.me.pomodoro".into(), x: 1736, y: 16, w: 160, h: 160 },
             ],
         });
         round_trip(Message::SetWidgets { widgets: vec![] });
         round_trip(Message::Inventory {
             packages: vec![
-                HeldPackage { name: "dev.glassdeck.clock.deck".into(), digest: 0x0123_4567_89ab_cdef },
-                HeldPackage { name: "converted.late-night.deck".into(), digest: 7 },
+                HeldPackage { name: "widget.local.me.clock.deck".into(), digest: 0x0123_4567_89ab_cdef },
+                HeldPackage { name: "background.local.converted.late-night.deck".into(), digest: 7 },
             ],
         });
         round_trip(Message::Inventory { packages: vec![] });
         round_trip(Message::RemovePackages { names: vec!["a.b.deck".into(), "c.d.deck".into()] });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
         round_trip(Message::PutFile(PutFile {
-            target: FileTarget::Package("converted.late-night.deck".into()),
+            target: FileTarget::Package("background.local.converted.late-night.deck".into()),
             offset: 262_144,
             total: 300_000,
             data: vec![1, 2, 3],

@@ -17,7 +17,7 @@ use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::placement::{PlacedWidget, Placement};
 use glassdeck_luau::{LiveName, Print};
-use glassdeck_package::{Package, PackageId, pack_folder};
+use glassdeck_package::{Package, QualifiedId, pack_folder};
 use glassdeck_widget::{Installed, Instance, LiveCache};
 use serde::Serialize;
 use specta::Type;
@@ -249,7 +249,7 @@ fn show(cx: &Session, folder: &Path, files: &[SourceFile], size: Dims, values: &
     let deck = cx.scratch.join("preview.deck");
     pack_folder(&source, &deck)?;
     let package = Rc::new(Package::open(&deck)?);
-    let id: PackageId = package.id().clone();
+    let id: QualifiedId = package.id().clone();
     let readable = Rc::clone(&package);
     let sources = Sources {
         label: "host.luau".into(),
@@ -322,9 +322,9 @@ mod tests {
 
     fn new_widget(root: &Path, options: bool, host: bool) -> PathBuf {
         let size = Dims { w: 320, h: 160 };
-        let new = NewWidget { title: "Sky".into(), id: "local.sky".into(), options, runs_on_host: host, sizing: Sizing::Fixed { size } };
+        let new = NewWidget { title: "Sky".into(), id: "local.me.sky".into(), options, runs_on_host: host, sizing: Sizing::Fixed { size } };
         create_widget(root, new).unwrap();
-        root.join("local.sky")
+        root.join("widget.local.me.sky")
     }
 
     #[test]

@@ -9,7 +9,7 @@ use glassdeck_luau::options::{OptionsScript, Panel};
 use glassdeck_luau_check::{LuauChecker, LuauFile, definitions};
 use glassdeck_package::{
     CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
-    SHADER, SourceType, canvas_sources,
+    SHADER, PackageType, canvas_sources,
 };
 
 use crate::canvas::{FRAGMENT_ENTRY, CanvasShape};
@@ -28,7 +28,7 @@ pub fn is_canvas_folder(folder: &Path) -> bool {
 
 pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path) -> Result<Package> {
     let (deck, deck_text) = DeckSource::read(folder)?;
-    if deck.kind != SourceType::Background || deck.details.is_some() {
+    if deck.kind != PackageType::Background || deck.details.is_some() {
         bail!("a canvas's deck.json says \"type\": \"background\" and no details; packing works them out from {CANVAS_SOURCE}");
     }
     let source_path = folder.join(CANVAS_SOURCE);

@@ -11,7 +11,7 @@ glassdeck-wallpaper-engine list                      # subscribed items, their t
 glassdeck-wallpaper-engine import <id-or-folder> [--out file.deck] [--mbps 12]
 ```
 
-The default output is `wallpaper-engine.<id>.deck` in the current folder.
+The default output is `background.com.wallpaperengine.<id>.deck` in the current folder.
 
 ## API
 
@@ -22,7 +22,7 @@ The default output is `wallpaper-engine.<id>.deck` in the current folder.
 | `why_unsupported(kind)` | Why a kind can't become a background |
 | `convert(item, project, out, settings)` | Video and web items to a `.deck`, through glassdeck-convert |
 | `init_script(properties)` | JavaScript standing in for Wallpaper Engine's hooks: user property defaults go to `applyUserProperties`, audio and media listeners stay silent |
-| `package_id(item)`, `package_path(dir, item)` | An item's id, `wallpaper-engine.<workshop id>`, and where its package goes |
+| `package_id(item)`, `package_path(dir, item)` | An item's id, `com.wallpaperengine.<workshop id>`, and where its package goes |
 | `steam::{steam_root, library_folders, parse_vdf}` | Finds Steam and its library folders |
 
 Scenes can't be converted. glassdeck-capture streams them live instead, rendered by Wallpaper Engine itself.

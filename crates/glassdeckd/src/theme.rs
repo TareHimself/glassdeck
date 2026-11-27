@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use glassdeck_api::{THEME_FORMAT_VERSION, Theme};
 use glassdeck_luau::placement::{Placement, PlacedWidget, WidgetArea, check_widgets};
-use glassdeck_package::{Kind, Package, PackageId, is_package};
+use glassdeck_package::{Package, PackageType, QualifiedId, is_package};
 use glassdeck_proto::{BUILT_IN_BACKGROUND, WidgetSlot};
 use serde_json::{Map, Value as Json};
 
@@ -27,7 +27,7 @@ pub struct Installed {
 }
 
 /// Every package glassdeckd holds a copy of, by id. One that doesn't open is reported and left out.
-pub fn installed(folder: &Path) -> Result<HashMap<PackageId, Installed>> {
+pub fn installed(folder: &Path) -> Result<HashMap<QualifiedId, Installed>> {
     let mut packages = HashMap::new();
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -56,7 +56,7 @@ pub fn installed(folder: &Path) -> Result<HashMap<PackageId, Installed>> {
 /// A theme entry that's checked: which package, and what the user chose for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    pub package: PackageId,
+    pub package: QualifiedId,
     pub options: Chosen,
 }
 
@@ -71,18 +71,17 @@ pub struct ActiveTheme {
 impl ActiveTheme {
     /// Parses `theme` at the edge: ids, the stream name, a background that's a background, and a
     /// widget layout the keyboard will accept.
-    pub fn check(theme: &Theme, packages: &HashMap<PackageId, Installed>) -> Result<Self> {
+    pub fn check(theme: &Theme, packages: &HashMap<QualifiedId, Installed>) -> Result<Self> {
         if theme.format != THEME_FORMAT_VERSION {
             return Err(bad_request(format!("theme format {} is not the {THEME_FORMAT_VERSION} this build reads", theme.format)));
         }
-        let id = |text: &str| PackageId::parse(text).map_err(|e| bad_request(format!("{e:#}")));
+        let id = |text: &str| QualifiedId::parse(text).map_err(|e| bad_request(format!("{e:#}")));
         let background = id(&theme.background.package)?;
-        if background.as_str() != BUILT_IN_BACKGROUND {
-            match packages.get(&background).map(|i| &i.package.manifest().kind) {
-                Some(Kind::Background(_)) => {}
-                Some(Kind::Widget(_)) => return Err(bad_request(format!("{background} is a widget, not a background"))),
-                None => return Err(bad_request(format!("{background} isn't held; push its .deck with the theme"))),
-            }
+        if background.package_type() != PackageType::Background {
+            return Err(bad_request(format!("{background} is a widget, not a background")));
+        }
+        if background.as_str() != BUILT_IN_BACKGROUND && !packages.contains_key(&background) {
+            return Err(bad_request(format!("{background} isn't held; push its .deck with the theme")));
         }
         let stream = theme.stream.as_deref().map(StreamName::parse).transpose().map_err(|e| bad_request(format!("{e:#}")))?;
         let mut widgets = Vec::with_capacity(theme.widgets.len());
@@ -153,11 +152,13 @@ mod tests {
         assert_eq!(active.background.package.as_str(), BUILT_IN_BACKGROUND);
         assert!(active.slots().is_empty());
 
-        let missing = Theme { background: ThemeBackground { package: "converted.nope".into(), options: Map::new() }, ..starting.clone() };
+        let missing = Theme { background: ThemeBackground { package: "background.local.converted.nope".into(), options: Map::new() }, ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&missing, &packages).unwrap_err()).contains("isn't held"));
-        let widget = ThemeWidget { package: "dev.glassdeck.clock".into(), x: 0, y: 0, w: 8, h: 8, options: Map::new() };
+        let widget = ThemeWidget { package: "widget.local.me.clock".into(), x: 0, y: 0, w: 8, h: 8, options: Map::new() };
         let unknown_widget = Theme { widgets: vec![widget], ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&unknown_widget, &packages).unwrap_err()).contains("no widget"));
+        let widget_as_background = Theme { background: ThemeBackground { package: "widget.local.me.clock".into(), options: Map::new() }, ..starting.clone() };
+        assert!(format!("{:#}", ActiveTheme::check(&widget_as_background, &packages).unwrap_err()).contains("not a background"));
         let bad_stream = Theme { stream: Some("Big Screen".into()), ..starting };
         assert!(ActiveTheme::check(&bad_stream, &packages).is_err());
     }

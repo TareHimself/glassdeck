@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use glassdeck_api::{ShowState, Theme, ThemeApplied, ThemePush};
 use glassdeck_luau::options::{Item, Kind, OptionValue, OptionsScript, Panel, Values, read_values};
-use glassdeck_package::{Package, PackageId};
+use glassdeck_package::{Package, QualifiedId};
 use serde_json::{Map, Value, json};
 
 use crate::client;
@@ -40,9 +40,9 @@ pub fn set_background(choice: &str) -> Result<()> {
             packages.insert(id.to_string(), absolute(local)?);
             id
         } else if choice == BUILT_IN_NAME {
-            PackageId::parse(glassdeck_proto::BUILT_IN_BACKGROUND)?
+            QualifiedId::parse(glassdeck_proto::BUILT_IN_BACKGROUND)?
         } else {
-            PackageId::parse(choice)?
+            QualifiedId::parse(choice)?
         };
         theme.background = glassdeck_api::ThemeBackground { package: package.to_string(), options: Map::new() };
         theme.stream = None;
@@ -78,7 +78,7 @@ fn owner(theme: &Theme, widget: Option<usize>) -> Result<Owner> {
             (format!("widget {index} ({})", entry.package), &entry.package, &entry.options)
         }
     };
-    let id = PackageId::parse(package)?;
+    let id = QualifiedId::parse(package)?;
     if id.as_str() == glassdeck_proto::BUILT_IN_BACKGROUND {
         bail!("{label} is the built-in gradient, which has no options");
     }
@@ -185,7 +185,7 @@ pub fn push_theme_file(file: &Path, library: &Path) -> Result<()> {
     let ids = std::iter::once(&theme.background.package).chain(theme.widgets.iter().map(|w| &w.package));
     let mut packages = BTreeMap::new();
     for id in ids {
-        let path = library.join(PackageId::parse(id)?.file_name());
+        let path = library.join(QualifiedId::parse(id)?.file_name());
         if path.is_file() {
             packages.insert(id.clone(), absolute(&path)?);
         }

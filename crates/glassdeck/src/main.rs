@@ -19,7 +19,7 @@ use glassdeck_capture::monitors::{self, MonitorQuery};
 use glassdeck_capture::record::{self, RecordOptions};
 use glassdeck_convert::{Details, EncodeSettings};
 use glassdeck_api::{Status, Streams};
-use glassdeck_package::{Origin, PackageId};
+use glassdeck_package::{Origin, PackageId, PackageType, QualifiedId};
 
 #[derive(Parser)]
 #[command(about = "Glassdeck: choose what the keyboard shows, and put files on it")]
@@ -75,7 +75,7 @@ enum Command {
     /// Turn a video file, or a web page (a folder with index.html, or an .html file), into a background .deck
     Convert {
         input: PathBuf,
-        /// Defaults to converted.<name>.deck in the current folder
+        /// Defaults to background.local.converted.<name>.deck in the current folder
         #[arg(long)]
         out: Option<PathBuf>,
         /// Bitrate when a video has to be re-encoded
@@ -219,10 +219,10 @@ fn native_libraries() -> Result<PathBuf> {
 
 fn convert(input: &Path, out: Option<PathBuf>, mbps: u32) -> Result<()> {
     let title = input.file_stem().context("the input has no name")?.to_string_lossy().into_owned();
-    let id = PackageId::from_name("converted", &title)?;
+    let id = PackageId::from_name("local.converted", &title)?;
     let out = match out {
         Some(out) => out,
-        None => PathBuf::from(id.file_name()),
+        None => PathBuf::from(QualifiedId::new(PackageType::Background, &id).file_name()),
     };
     let details = Details { id, title, origin: Origin::Converted { from: file_name(input)? }, preview: None };
     let is_html = input.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));

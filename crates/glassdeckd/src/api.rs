@@ -201,7 +201,7 @@ impl Api {
         let needed: Vec<String> = active.package_ids().into_iter().collect();
         if let Some(inventory) = self.uplink.inventory() {
             for id in &needed {
-                let id = glassdeck_package::PackageId::parse(id)?;
+                let id = glassdeck_package::QualifiedId::parse(id)?;
                 let (copy, digest) = held.keyboard_copy(&id).with_context(|| format!("glassdeckd holds no copy of {id}"))?;
                 let name = id.file_name();
                 if inventory.get(&name) != Some(&digest) {

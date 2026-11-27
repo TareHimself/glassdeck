@@ -8,7 +8,7 @@
   "properties": {
     "$schema": { "type": "string" },
     "id": {
-      "description": "Lowercase reverse-DNS, like dev.glassdeck.clock; also the file name, <id>.deck",
+      "description": "{tld}.{entity}.{name} in lowercase, like local.me.clock. Unique within its type; Glassdeck keys packages by {type}.{id}",
       "type": "string",
       "pattern": "^[a-z0-9-]+(\.[a-z0-9-]+)+$"
     },
