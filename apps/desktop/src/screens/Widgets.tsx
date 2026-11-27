@@ -7,21 +7,15 @@ import { LibraryCard, type CardActions } from "../components/LibraryCard";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { Tag } from "../components/Tag";
+import { WidgetThumb } from "../components/Thumbs";
 import { useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError, sizeLabel } from "../library";
+import { matchesQuery } from "../search";
 import { NewWidgetDialog } from "./NewWidgetDialog";
 import styles from "./Widgets.module.css";
 
 type Library = { state: "loading" } | { state: "ready"; widgets: WidgetSummary[] } | { state: "failed"; error: LibraryError };
 type Answer<T> = { status: "ok"; data: T } | { status: "error"; error: LibraryError };
-
-const PREVIEW_SCALE = 0.4;
-const PREVIEW_ROOM = { w: 236, h: 110 };
-
-function footprint({ w, h }: { w: number; h: number }) {
-  const scale = Math.min(PREVIEW_SCALE, PREVIEW_ROOM.w / w, PREVIEW_ROOM.h / h);
-  return { width: w * scale, height: h * scale };
-}
 
 function HostIcon() {
   return (
@@ -41,11 +35,7 @@ function WidgetCard(props: { widget: WidgetSummary; active: boolean; menuOpen: b
       title={widget.title}
       version={widget.version}
       href={`/widgets/${widget.id}`}
-      preview={
-        <div className={styles.preview}>
-          <div className={styles.footprint} style={footprint(widget.sizing.size)} />
-        </div>
-      }
+      preview={<WidgetThumb className={styles.preview} widget={widget} />}
       tags={
         <>
           <Tag>{widget.sizing.kind === "any" ? "Any size" : sizeLabel(widget.sizing)}</Tag>
@@ -105,7 +95,7 @@ export function Widgets() {
 
   const shown =
     library.state === "ready"
-      ? library.widgets.filter((w) => `${w.title} ${w.id}`.toLowerCase().includes(query.trim().toLowerCase()))
+      ? library.widgets.filter((w) => matchesQuery(query, w.title, w.id))
       : [];
 
   return (

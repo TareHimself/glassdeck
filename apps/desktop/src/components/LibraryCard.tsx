@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { Input } from "./Input";
 import { Menu, MenuDivider, MenuItem, MenuLink } from "./Menu";
 import { Tag } from "./Tag";
+import { useClickOutside } from "./useClickOutside";
 import styles from "./LibraryCard.module.css";
 
 export type CardActions = {
@@ -42,14 +43,7 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, m
   const [draft, setDraft] = useState(title);
   const slotRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: PointerEvent) => {
-      if (!slotRef.current?.contains(e.target as Node)) onMenu(false);
-    };
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [menuOpen, onMenu]);
+  useClickOutside(menuOpen, slotRef, useCallback(() => onMenu(false), [onMenu]));
 
   const act = (run: () => void) => () => {
     onMenu(false);

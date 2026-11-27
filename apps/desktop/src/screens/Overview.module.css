@@ -35,21 +35,6 @@
   background: #07080b;
 }
 
-.thumb[data-kind="canvas"],
-.choiceThumb[data-kind="canvas"] {
-  background:
-    radial-gradient(circle at 30% 30%, rgba(214, 107, 120, 0.7), transparent 55%),
-    radial-gradient(circle at 80% 80%, rgba(13, 92, 133, 0.8), transparent 55%),
-    linear-gradient(180deg, #0f0a29, #3d1c73);
-}
-
-.thumb[data-kind="video"],
-.choiceThumb[data-kind="video"] {
-  background:
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.06) 0 2px, transparent 2px 14px),
-    linear-gradient(160deg, #20303d, #0e1a24 60%, #2b3b48);
-}
-
 .layer,
 .tile {
   position: absolute;
@@ -201,43 +186,6 @@
   text-decoration: none;
 }
 
-.picker {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 146px;
-  z-index: 6;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.choice {
-  gap: 12px;
-  min-height: 52px;
-}
-
-.choice[aria-checked="true"] {
-  background: var(--selected);
-}
-
-.choiceThumb {
-  flex: none;
-  width: 56px;
-  height: 32px;
-  border-radius: 5px;
-}
-
-.choiceTitle {
-  flex: 1;
-  font-weight: 500;
-}
-
-.streamRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .select {
   flex: 1;
   min-width: 0;
@@ -323,19 +271,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.addMenu {
-  position: absolute;
-  right: 8px;
-  top: 56px;
-  z-index: 5;
-  min-width: 220px;
-}
-
-.addItem {
-  justify-content: space-between;
-  gap: 10px;
 }
 
 .widgetRow[aria-pressed="true"] {

@@ -10,6 +10,10 @@ export function CanvasIcon() {
   );
 }
 
+export function KindIcon({ kind }: { kind: BackgroundKind }) {
+  return kind === "canvas" ? <CanvasIcon /> : <VideoIcon />;
+}
+
 export function VideoIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="#f5b678" strokeWidth="1.8">

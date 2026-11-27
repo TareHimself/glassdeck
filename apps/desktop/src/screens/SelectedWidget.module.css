@@ -1,0 +1,53 @@
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.names {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.edit {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.none {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.failed {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}

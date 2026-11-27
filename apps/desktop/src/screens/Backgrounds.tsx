@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { commands, type BackgroundKind, type BackgroundSummary, type LibraryError } from "../bindings";
 import { Button } from "../components/Button";
 import { LibraryCard, type CardActions } from "../components/LibraryCard";
+import { BackgroundThumb } from "../components/Thumbs";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { Segments } from "../components/Segments";
@@ -31,11 +32,11 @@ function BackgroundCard(props: { background: BackgroundSummary; active: boolean;
       version={background.version}
       href={`/backgrounds/${background.id}`}
       preview={
-        <div className={styles.thumb} data-kind={background.kind}>
+        <BackgroundThumb className={styles.thumb} background={background}>
           <span className={styles.kind} data-kind={background.kind}>
             {KIND_NAMES[background.kind]}
           </span>
-        </div>
+        </BackgroundThumb>
       }
     />
   );

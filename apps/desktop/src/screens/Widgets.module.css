@@ -12,18 +12,6 @@
 
 .preview {
   height: 130px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background:
-    radial-gradient(circle at 25% 15%, rgba(214, 107, 120, 0.5), transparent 60%),
-    radial-gradient(circle at 85% 95%, rgba(13, 92, 133, 0.7), transparent 55%),
-    linear-gradient(180deg, #0f0a29, #3d1c73);
-}
-
-.footprint {
-  border-radius: 6px;
-  border: 1px dashed rgba(255, 255, 255, 0.4);
 }
 
 .newTile {

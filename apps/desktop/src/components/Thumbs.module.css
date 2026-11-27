@@ -1,0 +1,53 @@
+.background {
+  position: relative;
+  overflow: hidden;
+}
+
+.background[data-kind="canvas"] {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(214, 107, 120, 0.7), transparent 55%),
+    radial-gradient(circle at 80% 80%, rgba(13, 92, 133, 0.8), transparent 55%),
+    linear-gradient(180deg, #0f0a29, #3d1c73);
+}
+
+.background[data-kind="video"] {
+  background:
+    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.06) 0 2px, transparent 2px 14px),
+    linear-gradient(160deg, #20303d, #0e1a24 60%, #2b3b48);
+}
+
+.fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stage {
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 25% 15%, rgba(214, 107, 120, 0.5), transparent 60%),
+    radial-gradient(circle at 85% 95%, rgba(13, 92, 133, 0.7), transparent 55%),
+    linear-gradient(180deg, #0f0a29, #3d1c73);
+}
+
+/* At 0.4 of panel size, shrunk to fit the stage */
+.footprint {
+  position: relative;
+  width: min(calc(var(--w) * 0.4px), 88cqw, calc(85cqh * var(--w) / var(--h)));
+  aspect-ratio: var(--w) / var(--h);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.footprint .fill {
+  object-fit: contain;
+}
+
+.footprint[data-empty] {
+  border: 1px dashed rgba(255, 255, 255, 0.4);
+}

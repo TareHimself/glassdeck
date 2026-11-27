@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import styles from "./Dialog.module.css";
 
 type Props = {
@@ -10,7 +10,7 @@ type Props = {
   children: ReactNode;
 };
 
-/** A dialog over the page: Escape or the close button dismisses it. */
+/** A dialog over the page: Escape, the close button or a click outside it dismisses it. */
 export function Dialog({ title, width, onClose, header, children }: Props) {
   useEffect(() => {
     const close = (e: KeyboardEvent) => {
@@ -20,8 +20,18 @@ export function Dialog({ title, width, onClose, header, children }: Props) {
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
 
+  const pressedOutside = useRef(false);
+
   return (
-    <div className={styles.overlay}>
+    <div
+      className={styles.overlay}
+      onPointerDown={(e) => {
+        pressedOutside.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (pressedOutside.current && e.target === e.currentTarget) onClose();
+      }}
+    >
       <section role="dialog" aria-modal="true" aria-label={title} className={styles.dialog} style={{ maxWidth: width }}>
         <div className={styles.head}>
           <h2 className={styles.title}>{title}</h2>

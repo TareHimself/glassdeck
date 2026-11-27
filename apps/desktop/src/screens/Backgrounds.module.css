@@ -12,20 +12,6 @@
 
 .thumb {
   aspect-ratio: 16 / 9;
-  position: relative;
-}
-
-.thumb[data-kind="canvas"] {
-  background:
-    radial-gradient(circle at 30% 30%, rgba(214, 107, 120, 0.7), transparent 55%),
-    radial-gradient(circle at 80% 80%, rgba(13, 92, 133, 0.8), transparent 55%),
-    linear-gradient(180deg, #0f0a29, #3d1c73);
-}
-
-.thumb[data-kind="video"] {
-  background:
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.06) 0 2px, transparent 2px 14px),
-    linear-gradient(160deg, #20303d, #0e1a24 60%, #2b3b48);
 }
 
 .kind {
