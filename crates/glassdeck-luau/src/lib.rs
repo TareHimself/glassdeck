@@ -2,6 +2,7 @@
 //! encoding of `send()`, so a table sent on the host arrives identical on the keyboard.
 
 pub mod color;
+pub mod messages;
 pub mod options;
 pub mod placement;
 mod resource;

@@ -299,6 +299,17 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
             r.next_frame = now;
         }
     }
+    if let (Some(host), Some(script)) = (&r.host, &r.script) {
+        for sent in host.take_messages() {
+            script.deliver_message(sent.message, &sent.payload)?;
+            r.next_frame = now;
+        }
+        for sent in script.take_messages() {
+            if let Err(e) = host.deliver_message(sent.message, &sent.payload) {
+                cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
+            }
+        }
+    }
     if now < r.next_frame {
         return Ok(());
     }
@@ -377,6 +388,7 @@ fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
         keyboard: script(files, KEYBOARD_SCRIPT),
         options: script(files, OPTIONS_SCRIPT),
         host: script(files, HOST_SCRIPT),
+        messages: script(files, glassdeck_package::MESSAGES_SCRIPT),
     };
     let compiled = compile_canvas(slang, &sources)?;
     let canvas_files = CanvasFiles {
@@ -384,6 +396,7 @@ fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
         canvas: compiled.canvas,
         fragment: compiled.fragment,
         script: sources.keyboard.map(str::to_owned),
+        messages: sources.messages.map(str::to_owned),
     };
     Ok(Compiled { files: canvas_files, options: sources.options, host: sources.host })
 }
@@ -393,6 +406,7 @@ fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
 pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<u8>> {
     let compiled = compile(slang, files)?;
     let offscreen = Offscreen::new(render_size(compiled.files.canvas.scale))?;
+    let messages = compiled.files.messages.clone();
     let mut program = CanvasProgram::new(&offscreen.gl, compiled.files, None)?;
     let sources = Sources {
         label: "host.luau".into(),
@@ -401,6 +415,7 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
         reader: None,
         send_limit: None,
         print: None,
+        messages,
     };
     let nothing_playing: SharedNowPlaying = Arc::new(Mutex::new(None));
     if let Some(host) = HostSide::start(sources, &glassdeck_host::system(), &nothing_playing)? {
@@ -429,6 +444,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         reader: None,
         send_limit: None,
         print: Some(cx.printer(LogSource::Host)),
+        messages: files.messages.clone(),
     };
     let host = HostSide::start(host_sources, &cx.system, &cx.now_playing).unwrap_or_else(|e| {
         cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
@@ -457,7 +473,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
 /// `keyboard.luau`, ready for its first frame; a canvas without one has none.
 fn load_script(cx: &Session, files: &CanvasFiles) -> Result<Option<CanvasScript>> {
     match &files.script {
-        Some(source) => Ok(Some(CanvasScript::load(source, &files.canvas.inputs, Some(cx.printer(LogSource::Keyboard)))?)),
+        Some(source) => Ok(Some(CanvasScript::load(source, files.messages.as_deref(), &files.canvas.inputs, Some(cx.printer(LogSource::Keyboard)))?)),
         None => Ok(None),
     }
 }

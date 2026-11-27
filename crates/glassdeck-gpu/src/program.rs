@@ -47,12 +47,12 @@ pub struct CanvasProgram {
 impl CanvasProgram {
     /// `print`: where `keyboard.luau`'s `print` goes, instead of the process's own output.
     pub fn new(gl: &glow::Context, files: CanvasFiles, print: Option<Print>) -> Result<Self> {
-        let CanvasFiles { canvas, fragment, script, .. } = files;
+        let CanvasFiles { canvas, fragment, script, messages, .. } = files;
         let program = compile(gl, &fragment)?;
         let uniforms = active_uniforms(gl, program);
         let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
         let script = match script {
-            Some(source) => Some(CanvasScript::load(&source, &canvas.inputs, print)?),
+            Some(source) => Some(CanvasScript::load(&source, messages.as_deref(), &canvas.inputs, print)?),
             None => None,
         };
         Ok(Self { canvas, program, uniforms, animated, script, values: BTreeMap::new(), last: None, index: 0, drawn: false })

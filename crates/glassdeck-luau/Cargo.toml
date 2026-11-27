@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 glassdeck-package.workspace = true
 glassdeck-layout.workspace = true
+glassdeck-messages.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "luau-vector4", "serde"] }
 rmpv = { version = "1.3.1", features = ["with-serde"] }
 serde.workspace = true

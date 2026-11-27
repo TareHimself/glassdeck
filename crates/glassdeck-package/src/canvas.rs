@@ -64,6 +64,8 @@ pub struct CanvasFiles {
     pub canvas: Canvas,
     pub fragment: String,
     pub script: Option<String>,
+    /// `messages.luau`, when the canvas has one
+    pub messages: Option<String>,
 }
 
 impl CanvasFiles {
@@ -71,7 +73,7 @@ impl CanvasFiles {
         let manifest = package.manifest();
         let Kind::Background(Content::Canvas(canvas)) = &manifest.kind else { bail!("{} isn't a canvas", manifest.id) };
         let fragment = package.text(SHADER)?.with_context(|| format!("{} has no {SHADER}", manifest.id))?;
-        Ok(Self { origin: manifest.origin.clone(), canvas: canvas.clone(), fragment, script: package.text(KEYBOARD_SCRIPT)? })
+        Ok(Self { origin: manifest.origin.clone(), canvas: canvas.clone(), fragment, script: package.text(KEYBOARD_SCRIPT)?, messages: package.messages_script()? })
     }
 }
 
@@ -91,7 +93,7 @@ pub fn source_digest<'a>(files: impl IntoIterator<Item = &'a str>) -> String {
 
 /// What a packed canvas depends on: its `deck.json`, the glassdeck API module, its shader and its scripts.
 pub fn canvas_sources(deck: &str, api: &str, shader: &str, scripts: CanvasScripts) -> String {
-    source_digest([deck, api, shader, scripts.keyboard.unwrap_or(""), scripts.options.unwrap_or(""), scripts.host.unwrap_or("")])
+    source_digest([deck, api, shader, scripts.keyboard.unwrap_or(""), scripts.options.unwrap_or(""), scripts.host.unwrap_or(""), scripts.messages.unwrap_or("")])
 }
 
 /// A canvas folder's optional scripts.
@@ -100,6 +102,7 @@ pub struct CanvasScripts<'a> {
     pub keyboard: Option<&'a str>,
     pub options: Option<&'a str>,
     pub host: Option<&'a str>,
+    pub messages: Option<&'a str>,
 }
 
 #[cfg(test)]

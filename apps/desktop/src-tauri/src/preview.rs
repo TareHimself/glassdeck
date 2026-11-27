@@ -259,10 +259,19 @@ pub(crate) fn step(cx: &Session, r: &mut Running) -> Drawn {
 }
 
 /// What the host half sent and the live images it made, to the keyboard half.
+/// Carries what each half sent to the other, as the Link will between the PC and the keyboard.
 fn deliver(cx: &Session, r: &mut Running) {
     let Some(host) = &r.host else { return };
     if let Some(payload) = host.take_sent() {
         r.instance.on_data(&payload);
+    }
+    for sent in host.take_messages() {
+        r.instance.deliver_message(sent.message, &sent.payload);
+    }
+    for sent in r.instance.take_messages() {
+        if let Err(e) = host.deliver_message(sent.message, &sent.payload) {
+            cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
+        }
     }
     for (name, bytes) in host.take_live() {
         let stored = LiveName::parse(&name).and_then(|name| r.live.put(name.clone(), bytes).map(|dropped| (name, dropped)));
@@ -318,6 +327,7 @@ pub(crate) fn show(
         reader: Some(Rc::new(move |resource| readable.resource(resource))),
         send_limit: None,
         print: Some(cx.printer(LogSource::Host)),
+        messages: package.messages_script()?,
     };
     let host = match HostSide::start(sources, &cx.system, &cx.now_playing) {
         Ok(host) => host,
@@ -404,6 +414,66 @@ mod tests {
         let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewChange::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
         assert_eq!(prints, ["host up", "drawn by\tkeyboard"]);
         assert!(running.host.is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn typed_messages_go_both_ways_between_the_halves() {
+        let root = std::env::temp_dir().join(format!("glassdeck-preview-messages-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = new_widget(&root);
+        let messages = SourceFile {
+            name: "messages.luau".into(),
+            text: "export type label = KeyboardState<{ text: string }>
+export type drawn = HostEvent<{ width: number }>
+".into(),
+        };
+        let host = SourceFile {
+            name: "host.luau".into(),
+            text: "script.on_options(function(o) keyboard.script.label({ text = o.label }) end)
+script.on.drawn(function(d) print('keyboard drew at', d.width) end)
+".into(),
+        };
+        let keyboard = SourceFile {
+            name: "keyboard.luau".into(),
+            text: "local text = ''
+script.on.label(function(l) text = l.text end)
+script.on_draw(function(ui) ui:text(text) host.script.drawn({ width = ui.width }) end)
+".into(),
+        };
+        let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))
+".into() };
+        let (cx, seen) = session();
+        let mut running = show(&cx, "test", &folder, &[keyboard, host, options, messages], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();
+        assert!(matches!(step(&cx, &mut running), Drawn::Frame { .. }), "the keyboard half drew with the label it heard");
+        step(&cx, &mut running);
+        let seen = seen.borrow();
+        let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewChange::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(prints, ["keyboard drew at	320"], "{seen:#?}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn with_a_blank_host_luau_the_options_arrive_in_script_on_options() {
+        let root = std::env::temp_dir().join(format!("glassdeck-preview-options-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let folder = new_widget(&root);
+        let keyboard = SourceFile {
+            name: "keyboard.luau".into(),
+            text: "local text = ''
+script.on.options(function(o) text = o.label print('label', text) end)
+script.on_draw(function(ui) ui:text(text) end)
+".into(),
+        };
+        let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))
+".into() };
+        let (cx, seen) = session();
+        let values = serde_json::json!({ "label": "Hi" });
+        let mut running = show(&cx, "test", &folder, &[keyboard, options], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
+        assert!(matches!(step(&cx, &mut running), Drawn::Frame { .. }));
+        let seen = seen.borrow();
+        let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewChange::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(prints, ["label	Hi"], "{seen:#?}");
         fs::remove_dir_all(&root).unwrap();
     }
 

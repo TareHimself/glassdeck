@@ -258,6 +258,7 @@ pub fn check_canvas(root: &Path, id: &str, native: &Path) -> Result<CanvasCheck,
         keyboard: text(KEYBOARD_SCRIPT),
         options: text(OPTIONS_SCRIPT),
         host: text(HOST_SCRIPT),
+        messages: text(glassdeck_package::MESSAGES_SCRIPT),
     };
     let compiled = match glassdeck_slang::pack::compile_canvas(&slang, &sources) {
         Ok(compiled) => compiled,

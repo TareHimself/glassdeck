@@ -14,7 +14,9 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use glassdeck_luau::color::color_api;
 use glassdeck_luau::options::{OptionsScript, Panel, Values, any_function, changed_table, options_table};
+use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
 use glassdeck_luau::{LuaResultExt, Print, ResourceReader, Vm, encode};
+use glassdeck_messages::Half;
 use glassdeck_package::ResourceKind;
 use mlua::{Function, Lua, Table, Value};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -35,6 +37,7 @@ type Slot = Rc<RefCell<Option<Vec<u8>>>>;
 
 /// A running `host.luau`.
 struct HostVm {
+    messages: ScriptMessages,
     vm: Vm,
     slot: Slot,
     live: LiveOutbox,
@@ -73,6 +76,8 @@ pub struct Sources {
     pub send_limit: Option<usize>,
     /// Where `print` goes, instead of the process's own output
     pub print: Option<Print>,
+    /// `messages.luau`: what `host.luau` and the keyboard half send each other
+    pub messages: Option<String>,
 }
 
 static NO_OPTIONS: Panel = Panel { items: Vec::new() };
@@ -80,7 +85,7 @@ static NO_OPTIONS: Panel = Panel { items: Vec::new() };
 impl HostSide {
     /// `None` when there's nothing to run: no options and no `host.luau`.
     pub fn start(sources: Sources, system: &SharedSystem, now_playing: &SharedNowPlaying) -> Result<Option<Self>> {
-        let Sources { label, options, host, reader, send_limit, print } = sources;
+        let Sources { label, options, host, reader, send_limit, print, messages } = sources;
         if options.is_none() && host.is_none() {
             return Ok(None);
         }
@@ -93,7 +98,7 @@ impl HostSide {
             None => None,
         };
         let run = match host {
-            Some(script) => Run::Script(HostVm::start(&script, reader, send_limit, print, system, now_playing)?),
+            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), reader, send_limit, print, system, now_playing)?),
             None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
         };
         Ok(Some(Self { label, options, run }))
@@ -139,6 +144,22 @@ impl HostSide {
         slot.borrow_mut().take()
     }
 
+    /// What `host.luau` sent the keyboard half since the last call.
+    pub fn take_messages(&self) -> Vec<Sent> {
+        match &self.run {
+            Run::Script(host) => host.messages.take_sent(),
+            Run::Forward { .. } => Vec::new(),
+        }
+    }
+
+    /// A message from the keyboard half, to `host.luau`'s `script.on` callback.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        match &self.run {
+            Run::Script(host) => host.messages.deliver(&host.vm, message, payload),
+            Run::Forward { .. } => Ok(()),
+        }
+    }
+
     pub fn take_live(&self) -> BTreeMap<String, Vec<u8>> {
         match &self.run {
             Run::Script(host) => std::mem::take(&mut *host.live.borrow_mut()),
@@ -173,6 +194,7 @@ impl HostVm {
     /// `reader` serves `host.resource` and `keyboard.resource`; `send_limit` caps one `send()`.
     fn start(
         script: &str,
+        messages: Option<&str>,
         reader: Option<ResourceReader>,
         send_limit: Option<usize>,
         print: Option<Print>,
@@ -209,9 +231,10 @@ impl HostVm {
         }
         let on_options = Rc::new(RefCell::new(None));
         install_on_options(lua, &on_options)?;
+        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Host)?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
-        Ok(Self { vm, slot, live, on_options })
+        Ok(Self { messages, vm, slot, live, on_options })
     }
 }
 

@@ -290,6 +290,10 @@ pub fn parse(source: &str) -> Result<Messages, Vec<Problem>> {
                 problems.push(Parser::problem(at, format!("{name} is already a message")));
                 continue;
             }
+            if name == crate::OPTIONS {
+                problems.push(Parser::problem(at, "options is the message the options arrive in when host.luau is blank; name yours something else"));
+                continue;
+            }
             names.push(name);
             if let Some(shape) = resolver.resolve(written, &mut Vec::new()) {
                 messages.push(Message { name: name.clone(), kind: *kind, shape });
@@ -369,6 +373,12 @@ export type skip = HostEvent<{}>
     fn functions_and_unions_have_no_place() {
         assert!(parse("export type f = HostEvent<(number) -> ()>").is_err());
         assert!(parse("export type u = HostEvent<number | string>").is_err());
+    }
+
+    #[test]
+    fn options_is_kept_for_the_implicit_host() {
+        let problems = parse("export type options = KeyboardState<{}>").unwrap_err();
+        assert!(problems[0].message.starts_with("options is the message"));
     }
 
     #[test]

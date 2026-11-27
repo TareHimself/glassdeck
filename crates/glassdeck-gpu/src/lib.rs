@@ -29,7 +29,7 @@ mod tests {
             &read("../../canvases/gradient/deck.json"),
             &read("../glassdeck-slang/slang/glassdeck.slang"),
             &read("../../canvases/gradient/canvas.slang"),
-            CanvasScripts { keyboard: Some(&read("../../canvases/gradient/keyboard.luau")), options: None, host: None },
+            CanvasScripts { keyboard: Some(&read("../../canvases/gradient/keyboard.luau")), options: None, host: None, messages: None },
         );
         assert_eq!(
             sources, current,

@@ -1,6 +1,8 @@
 //! One placed widget: its own Luau VM running `keyboard.luau`, or the error that stopped it.
 //! The script registers its callbacks on the injected `widget` table and keeps its state in its own locals.
 
+use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
+use glassdeck_messages::Half;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -60,6 +62,7 @@ const CALLBACKS: [&str; 4] = ["on_draw", "on_data", "on_resize", "on_unload"];
 /// Field order matters: the Lua values drop before the VM that owns them.
 struct Live {
     callbacks: Rc<RefCell<Callbacks>>,
+    messages: ScriptMessages,
     ui: Ui,
     vm: Vm,
 }
@@ -95,9 +98,30 @@ impl Instance {
 
     pub fn on_data(&mut self, payload: &[u8]) {
         self.with_live(|live| {
+            if live.messages.deliver_options(&live.vm, payload)? {
+                live.ui.request_redraw();
+                return Ok(());
+            }
             let data = decode(live.vm.lua(), payload)?;
             let on_data = live.callbacks.borrow().on_data.clone().context("got data from its host half but never called script.on_data")?;
             live.vm.call::<()>(&on_data, data).context("in script.on_data")?;
+            live.ui.request_redraw();
+            Ok(())
+        });
+    }
+
+    /// What the script sent its host half since the last call.
+    pub fn take_messages(&mut self) -> Vec<Sent> {
+        match &self.run {
+            Run::Running(live) => live.messages.take_sent(),
+            Run::Failed(_) => Vec::new(),
+        }
+    }
+
+    /// A message from the host half, to its `script.on` callback; the widget redraws after.
+    pub fn deliver_message(&mut self, message: u16, payload: &[u8]) {
+        self.with_live(|live| {
+            live.messages.deliver(&live.vm, message, payload)?;
             live.ui.request_redraw();
             Ok(())
         });
@@ -269,11 +293,12 @@ impl Live {
         let callbacks = Rc::new(RefCell::new(Callbacks::default()));
         let api = widget_api(&vm, &ui, &callbacks, saved)?;
         vm.lua().globals().set("script", api).lua_context("injecting script")?;
+        let messages = ScriptMessages::install(vm.lua(), read_messages(package.messages_script()?.as_deref())?, Half::Keyboard)?;
         vm.load::<()>(&source, "keyboard.luau")?;
         if callbacks.borrow().on_draw.is_none() {
             bail!("keyboard.luau must register a draw function with script.on_draw");
         }
-        Ok(Self { callbacks, ui, vm })
+        Ok(Self { callbacks, messages, ui, vm })
     }
 
     fn draw(&self) -> Result<Vec<Command>> {

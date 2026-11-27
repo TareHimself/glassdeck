@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use glassdeck_luau::options::{OptionsScript, Panel};
 use glassdeck_luau_check::{LuauChecker, LuauFile, definitions};
 use glassdeck_package::{
-    CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
+    CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MESSAGES_SCRIPT, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
     SHADER, PackageType, canvas_sources,
 };
 
@@ -33,11 +33,12 @@ pub struct CanvasSources<'a> {
     pub keyboard: Option<&'a str>,
     pub options: Option<&'a str>,
     pub host: Option<&'a str>,
+    pub messages: Option<&'a str>,
 }
 
 impl CanvasSources<'_> {
     fn scripts(&self) -> CanvasScripts<'_> {
-        CanvasScripts { keyboard: self.keyboard, options: self.options, host: self.host }
+        CanvasScripts { keyboard: self.keyboard, options: self.options, host: self.host, messages: self.messages }
     }
 }
 
@@ -86,8 +87,16 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let keyboard = read_optional(folder, KEYBOARD_SCRIPT)?;
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
+    let messages = read_optional(folder, MESSAGES_SCRIPT)?;
     let path = source_path.to_string_lossy();
-    let sources = CanvasSources { shader: &shader, path: &path, keyboard: keyboard.as_deref(), options: options.as_deref(), host: host.as_deref() };
+    let sources = CanvasSources {
+        shader: &shader,
+        path: &path,
+        keyboard: keyboard.as_deref(),
+        options: options.as_deref(),
+        host: host.as_deref(),
+        messages: messages.as_deref(),
+    };
 
     let compiled = compile_canvas(slang, &sources)?;
     let ScriptCheck { problems, .. } = canvas_problems(luau, folder, &compiled, &sources)?;
@@ -99,7 +108,7 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let origin = Origin::Packed { from, sources: canvas_sources(&deck_text, API_MODULE, &shader, sources.scripts()) };
     let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(compiled.canvas))))?;
     writer.add_bytes(SHADER, compiled.fragment.as_bytes())?;
-    for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host)] {
+    for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host), (MESSAGES_SCRIPT, &messages)] {
         if let Some(text) = text {
             writer.add_bytes(entry, text.as_bytes())?;
         }

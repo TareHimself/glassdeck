@@ -31,6 +31,8 @@ pub const KEYBOARD_SCRIPT: &str = "keyboard.luau";
 pub const HOST_SCRIPT: &str = "host.luau";
 /// What the user can set, declared in Luau; only the host runs it, so it never reaches the keyboard.
 pub const OPTIONS_SCRIPT: &str = "options.luau";
+/// The messages between the package's two halves, as Luau types; read by both, so on both sides
+pub const MESSAGES_SCRIPT: &str = "messages.luau";
 /// A canvas's compiled GLSL ES 3.00 fragment shader
 pub const SHADER: &str = "shader.essl";
 pub const ASSETS_FOLDER: &str = "assets";
@@ -152,6 +154,10 @@ impl Package {
 
     pub fn keyboard_script(&self) -> Result<Option<String>> {
         self.text(KEYBOARD_SCRIPT)
+    }
+
+    pub fn messages_script(&self) -> Result<Option<String>> {
+        self.text(MESSAGES_SCRIPT)
     }
 
     pub fn options_script(&self) -> Result<Option<String>> {

@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 glassdeck-luau.workspace = true
+glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 glow = "0.16"
 serde_json.workspace = true

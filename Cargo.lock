@@ -1915,6 +1915,7 @@ dependencies = [
  "clap",
  "drm",
  "glassdeck-luau",
+ "glassdeck-messages",
  "glassdeck-package",
  "glassdeck-proto",
  "glow",
@@ -1933,6 +1934,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glassdeck-luau",
+ "glassdeck-messages",
  "glassdeck-package",
  "image",
  "mlua",
@@ -1950,6 +1952,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glassdeck-layout",
+ "glassdeck-messages",
  "glassdeck-package",
  "mlua",
  "rmpv",
@@ -2057,6 +2060,7 @@ dependencies = [
  "anyhow",
  "fontdue",
  "glassdeck-luau",
+ "glassdeck-messages",
  "glassdeck-package",
  "mlua",
  "resvg",

@@ -10,11 +10,17 @@
 //! are messages, local types are named shapes. Parsing it here, with no Luau library, lets the
 //! keyboard read a package's messages too. Order matters: a message's number is its place in the file.
 
+mod codec;
 mod definitions;
 mod parse;
 
+pub use codec::{Malformed, Value, decode, encode};
 pub use definitions::{Half, definitions, wrapper_definitions};
 pub use parse::parse;
+
+/// The keyboard half's built-in message: the options as they are, from the implicit host (a blank
+/// `host.luau`). Its shape comes from `options.luau`, so it isn't declared in `messages.luau`.
+pub const OPTIONS: &str = "options";
 
 /// How a message travels, by the half it goes to and whether only its latest value matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

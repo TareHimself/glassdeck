@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::resource::{Resource, ResourceKind, ResourceName, literal_resources};
 use crate::{
-    ASSETS_FOLDER, FORMAT_VERSION, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, Manifest, OPTIONS_SCRIPT, Origin, Package, PackageId, PackageType, PackageWriter,
+    ASSETS_FOLDER, FORMAT_VERSION, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MESSAGES_SCRIPT, Manifest, OPTIONS_SCRIPT, Origin, Package, PackageId, PackageType, PackageWriter,
     Version, WidgetSize, source_digest,
 };
 
@@ -91,7 +91,7 @@ pub fn pack_folder(folder: &Path, out: &Path) -> Result<Package> {
     let size: WidgetSize = serde_json::from_value(details).context("reading the widget's sizes")?;
     let resources = resource_files(&folder.join(ASSETS_FOLDER))?;
     let mut scripts = Vec::new();
-    for script in [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT] {
+    for script in [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, MESSAGES_SCRIPT] {
         if let Some(source) = read_script(folder, script)? {
             check_literal_resources(script, &source, &resources)?;
             scripts.push((script, folder.join(script), source));

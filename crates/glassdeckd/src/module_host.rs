@@ -242,7 +242,15 @@ impl Host {
                 Target::Background => (None, Some(MAX_DATA_LEN)),
                 Target::Widget(_) => (Some(Rc::new(move |resource| readable.resource(resource))), None),
             };
-            let sources = Sources { label: label.clone(), options: package.options_script()?, host: package.host_script()?, reader, send_limit, print: None };
+            let sources = Sources {
+                label: label.clone(),
+                options: package.options_script()?,
+                host: package.host_script()?,
+                reader,
+                send_limit,
+                print: None,
+                messages: package.messages_script()?,
+            };
             let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
             Ok(Some(side))

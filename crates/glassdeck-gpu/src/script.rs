@@ -8,7 +8,9 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_luau::color::color_api;
+use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
 use glassdeck_luau::{LuaResultExt, Print, Vm, decode};
+use glassdeck_messages::Half;
 use glassdeck_package::{InputField, InputKind};
 use mlua::{Function, Lua, Table, Value, Vector};
 
@@ -21,6 +23,7 @@ pub enum InputValue {
 }
 
 pub struct CanvasScript {
+    messages: ScriptMessages,
     vm: Vm,
     frame: Table,
     callbacks: Rc<RefCell<Callbacks>>,
@@ -43,8 +46,9 @@ struct Inputs {
 }
 
 impl CanvasScript {
-    /// `print`: where the script's `print` goes, instead of the process's own output.
-    pub fn load(source: &str, inputs: &[InputField], print: Option<Print>) -> Result<Self> {
+    /// `messages`: the canvas's `messages.luau`. `print`: where the script's `print` goes, instead of the
+    /// process's own output.
+    pub fn load(source: &str, messages: Option<&str>, inputs: &[InputField], print: Option<Print>) -> Result<Self> {
         let vm = Vm::new()?;
         install_library(vm.lua())?;
         if let Some(print) = print {
@@ -77,17 +81,31 @@ impl CanvasScript {
         let globals = lua.globals();
         globals.set("script", &canvas).lua_context("injecting script")?;
         globals.set("inputs", inputs_table(lua, Rc::clone(&state))?).lua_context("injecting inputs")?;
+        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Keyboard)?;
         vm.load::<()>(source, "keyboard.luau")?;
         let frame = lua.create_table().lua_context("creating frame")?;
-        Ok(Self { vm, frame, callbacks, inputs: state })
+        Ok(Self { messages, vm, frame, callbacks, inputs: state })
     }
 
     /// Hands the script what the host half sent: MessagePack-encoded plain data.
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+        if self.messages.deliver_options(&self.vm, payload)? {
+            return Ok(());
+        }
         let on_data = self.callbacks.borrow().on_data.clone();
         let Some(on_data) = on_data else { return Ok(()) };
         let data = decode(self.vm.lua(), payload)?;
         self.vm.call::<()>(&on_data, data).context("in script.on_data")
+    }
+
+    /// What the script sent its host half since the last call.
+    pub fn take_messages(&self) -> Vec<Sent> {
+        self.messages.take_sent()
+    }
+
+    /// A message from the host half, to its `script.on` callback.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        self.messages.deliver(&self.vm, message, payload)
     }
 
     pub fn frame(&self, time: f32, delta: f32, index: u32) -> Result<()> {
@@ -227,7 +245,7 @@ mod tests {
 
     #[test]
     fn writes_at_load_and_per_frame_are_recorded_and_data_changes_state() {
-        let script = CanvasScript::load(CANVAS, &fields(), None).unwrap();
+        let script = CanvasScript::load(CANVAS, None, &fields(), None).unwrap();
         let changes = script.take_changes();
         let InputValue::Float(night) = &changes["night"] else { panic!("{changes:?}") };
         assert!((night[0] - 1.0).abs() < 1e-6 && (night[1] - 128.0 / 255.0).abs() < 1e-6 && night[2] == 0.0);
@@ -243,25 +261,25 @@ mod tests {
 
     #[test]
     fn wrong_names_and_types_are_errors_naming_the_input() {
-        let script = CanvasScript::load("script.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", None, &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("the shader has no input nite"));
-        let script = CanvasScript::load("script.on_frame(function() inputs.night = 3 end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.night = 3 end)", None, &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("input night takes a vector"));
-        let script = CanvasScript::load("script.on_frame(function() inputs.bands = { 1 } end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.bands = { 1 } end)", None, &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("takes 2 numbers, not 1"));
     }
 
     #[test]
     fn an_array_input_reads_back_frozen_so_writes_into_it_error() {
-        let script = CanvasScript::load("inputs.bands = { 1, 2 } inputs.bands[1] = 5", &fields(), None);
+        let script = CanvasScript::load("inputs.bands = { 1, 2 } inputs.bands[1] = 5", None, &fields(), None);
         assert!(format!("{:#}", script.err().unwrap()).contains("readonly"));
-        let script = CanvasScript::load("local b = { 1, 2 } inputs.bands = b b[1] = 5 inputs.bands = inputs.bands", &fields(), None).unwrap();
+        let script = CanvasScript::load("local b = { 1, 2 } inputs.bands = b b[1] = 5 inputs.bands = inputs.bands", None, &fields(), None).unwrap();
         assert_eq!(script.take_changes()["bands"], InputValue::Array(vec![1.0, 2.0]));
     }
 
     #[test]
     fn a_script_without_callbacks_does_nothing_later() {
-        let script = CanvasScript::load("inputs.night = color.hex('#000')", &fields(), None).unwrap();
+        let script = CanvasScript::load("inputs.night = color.hex('#000')", None, &fields(), None).unwrap();
         script.take_changes();
         script.frame(1.0, 0.1, 1).unwrap();
         script.deliver(&payload("return { a = 1 }")).unwrap();
@@ -270,14 +288,14 @@ mod tests {
 
     #[test]
     fn callbacks_are_registered_once_with_a_function() {
-        assert!(CanvasScript::load("script.on_frame(3)", &fields(), None).is_err());
-        let twice = CanvasScript::load("script.on_data(function() end) script.on_data(function() end)", &fields(), None);
+        assert!(CanvasScript::load("script.on_frame(3)", None, &fields(), None).is_err());
+        let twice = CanvasScript::load("script.on_data(function() end) script.on_data(function() end)", None, &fields(), None);
         assert!(format!("{:#}", twice.err().unwrap()).contains("script.on_data was already called"));
     }
 
     #[test]
     fn colours_come_from_every_form() {
-        let script = CanvasScript::load("inputs.night = color.rgb(255, 0, 0)", &fields(), None).unwrap();
+        let script = CanvasScript::load("inputs.night = color.rgb(255, 0, 0)", None, &fields(), None).unwrap();
         assert_eq!(script.take_changes()["night"], InputValue::Float(vec![1.0, 0.0, 0.0]));
     }
 }

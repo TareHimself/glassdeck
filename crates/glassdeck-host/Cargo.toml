@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 glassdeck-luau.workspace = true
+glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 mlua = { version = "0.12.3", features = ["luau", "serde"] }
