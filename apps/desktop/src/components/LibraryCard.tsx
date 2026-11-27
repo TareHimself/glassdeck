@@ -26,6 +26,8 @@ type Props = {
   tags?: ReactNode;
   /** The tag for one in use, such as "Active", or none */
   inUse: string | null;
+  /** Where that tag shows: under the title, or left to `preview` to draw on the picture */
+  inUseTag?: "row" | "preview";
   use: CardUse;
 };
 
@@ -40,7 +42,7 @@ function DotsIcon() {
 }
 
 /** A widget or background in the library: its preview, title and tags; opened to edit, or picked. */
-export function LibraryCard({ id, title, version, preview, tags, inUse, use }: Props) {
+export function LibraryCard({ id, title, version, preview, tags, inUse, inUseTag = "row", use }: Props) {
   const { live, start, stop } = useHoverPlay();
   const [renaming, setRenaming] = useState(false);
   const renameField = useRef<HTMLInputElement>(null);
@@ -52,10 +54,12 @@ export function LibraryCard({ id, title, version, preview, tags, inUse, use }: P
           {name}
           <span className={styles.small}>{version}</span>
         </div>
-        <div className={styles.tags}>
-          {tags}
-          {inUse && <Tag tone="active">{inUse}</Tag>}
-        </div>
+        {(tags || (inUse && inUseTag === "row")) && (
+          <div className={styles.tags}>
+            {tags}
+            {inUse && inUseTag === "row" && <Tag tone="active">{inUse}</Tag>}
+          </div>
+        )}
       </div>
     </>
   );

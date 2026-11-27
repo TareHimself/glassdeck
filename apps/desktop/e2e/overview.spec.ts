@@ -18,7 +18,7 @@ test("Change opens the backgrounds in select mode, and a pick goes into the draf
   await backgroundCard(page).getByRole("link", { name: "Change" }).click();
   await expect(page.getByRole("heading", { name: "Choose a background" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Gradient.*Current/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Gradient/ })).toContainText("Current");
   await page.getByLabel("Search backgrounds").fill("aur");
   await expect(page.getByRole("button", { name: /Rain on glass/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Aurora/ }).click();

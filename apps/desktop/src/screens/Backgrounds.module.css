@@ -14,15 +14,31 @@
   aspect-ratio: 16 / 9;
 }
 
-.kind {
+.badges {
   position: absolute;
   left: 10px;
   top: 10px;
+  z-index: 1;
+  display: flex;
+  gap: 6px;
+}
+
+.kind,
+.inUse {
   padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(8, 10, 14, 0.72);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.kind {
+  background: rgba(8, 10, 14, 0.72);
+}
+
+.inUse {
+  background: rgba(23, 48, 31, 0.88);
+  color: #7fe0a8;
 }
 
 .kind[data-kind="canvas"] {

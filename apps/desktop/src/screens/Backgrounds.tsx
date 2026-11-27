@@ -34,12 +34,16 @@ function BackgroundCard({ background, inUse, use }: { background: BackgroundSumm
       title={background.title}
       version={background.version}
       inUse={inUse}
+      inUseTag="preview"
       use={use}
       preview={(live) => (
         <BackgroundThumb className={styles.thumb} background={background} live={live} badge>
-          <span className={styles.kind} data-kind={background.kind}>
-            {KIND_NAMES[background.kind]}
-          </span>
+          <div className={styles.badges}>
+            <span className={styles.kind} data-kind={background.kind}>
+              {KIND_NAMES[background.kind]}
+            </span>
+            {inUse && <span className={styles.inUse}>{inUse}</span>}
+          </div>
         </BackgroundThumb>
       )}
     />
