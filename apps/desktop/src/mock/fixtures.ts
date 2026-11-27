@@ -1,0 +1,72 @@
+import { BUILT_IN_BACKGROUND, type BackgroundSummary, type PanelLayout, type PanelRect, type SourceFile, type Status, type StreamEntry, type Theme, type WidgetSummary } from "../bindings";
+
+export const WIDGETS: WidgetSummary[] = [
+  { id: "widget.local.user.clock", title: "Clock", version: "1.0.0", sizing: { kind: "range", size: { w: 320, h: 160 }, min: { w: 160, h: 80 }, max: { w: 640, h: 248 } }, has_options: true, runs_on_host: false },
+  { id: "widget.local.user.now-playing", title: "Now playing", version: "1.0.0", sizing: { kind: "any", size: { w: 400, h: 160 } }, has_options: false, runs_on_host: true },
+  { id: "widget.local.user.pomodoro", title: "Pomodoro", version: "1.0.0", sizing: { kind: "fixed", size: { w: 160, h: 160 } }, has_options: false, runs_on_host: false },
+];
+
+export const BACKGROUNDS: BackgroundSummary[] = [
+  { id: "background.local.user.aurora", title: "Aurora", version: "1.0.0", kind: "canvas" },
+  { id: "background.local.user.rain", title: "Rain on glass", version: "1.0.0", kind: "video" },
+];
+
+export const THEME: Theme = {
+  format: 1,
+  background: { package: BUILT_IN_BACKGROUND, options: {} },
+  stream: null,
+  widgets: [{ package: "widget.local.user.clock", x: 0, y: 16, w: 320, h: 160, options: {} }],
+};
+
+export const STATUS: Status = {
+  link: { keyboard: "10.0.0.186:7878", connection: { state: "connected" } },
+  stream: { state: "idle", playing: null, worker: null, streaming: false, last_ended: null },
+};
+
+export const STREAMS: StreamEntry[] = [{ name: "monitor-1", mode: "live", from: "built in", shown: false }];
+
+export const CLOCK_OPTIONS = `return function(o)
+  o.toggle("seconds", { label = "Show seconds", default = true })
+end
+`;
+
+export const CANVAS_FILES: SourceFile[] = [
+  { name: "canvas.slang", text: "import glassdeck;\n" },
+  { name: "keyboard.luau", text: "" },
+  { name: "options.luau", text: "" },
+  { name: "host.luau", text: "" },
+];
+
+/** The ANSI keys, row by row, in the same units glassdeck-layout uses (mm, 17 mm keys, 2 mm gaps). */
+function ansiKeys(): PanelRect[] {
+  const PX = 1920 / 309.31;
+  const U = 17;
+  const GAP = 2;
+  const gapsBelow = [6.75, 2, 2, 2, 2, 3.07];
+  const rows = [
+    Array<number>(16).fill(U),
+    [U, U, U, U, U, U, U, U, U, U, U, U, U, 36, U],
+    [26.53, U, U, U, U, U, U, U, U, U, U, U, U, 26.53, U],
+    [31.29, U, U, U, U, U, U, U, U, U, U, U, 40.82, U],
+    [40.82, U, U, U, U, U, U, U, U, U, U, 31.29, U, U],
+    [21.77, U, U, U, 107.49, U, U, U, U, U, U],
+  ];
+  const tops: number[] = [];
+  let bottom = 1080 / PX;
+  for (let r = rows.length - 1; r >= 0; r--) {
+    bottom -= gapsBelow[r] ?? 0;
+    tops[r] = bottom - U;
+    bottom = tops[r] ?? 0;
+  }
+  return rows.flatMap((row, r) => {
+    const span = row.reduce((a, b) => a + b, 0) + (row.length - 1) * GAP;
+    let left = (309.31 - span) / 2;
+    return row.map((w) => {
+      const rect = { x: left * PX, y: (tops[r] ?? 0) * PX, w: w * PX, h: U * PX };
+      left += w + GAP;
+      return rect;
+    });
+  });
+}
+
+export const PANEL_LAYOUT: PanelLayout = { keys: ansiKeys(), widget_area: { x: 8.1, y: 5, w: 1903.8, h: 250 } };

@@ -26,6 +26,11 @@ const router = createBrowserRouter([
   },
 ]);
 
+if (import.meta.env.MODE === "mock") {
+  const { installMockBackend } = await import("./mock/backend");
+  installMockBackend();
+}
+
 followGlassdeckd().catch((error: unknown) => {
   console.error("following glassdeckd", error);
 });

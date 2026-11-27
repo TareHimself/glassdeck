@@ -28,6 +28,9 @@ const KEY_LABELS = [
   ["Ctrl", "Win", "Alt", "Fn", "", "Alt", "Fn", "Ctrl", "←", "↓", "→"],
 ].flat();
 
+/** What the background card says when the theme names a background that isn't in the library. */
+const MISSING_BACKGROUND = "Missing background";
+
 /** The built-in gradient, offered beside the library's backgrounds. */
 const BUILT_IN: BackgroundSummary = { id: BUILT_IN_BACKGROUND, title: "Gradient", version: "", kind: "canvas" };
 
@@ -166,7 +169,7 @@ export function Overview() {
 
   const pending = useMemo(() => !!draft && !!active && !sameTheme(draft, active), [draft, active]);
   const known = draft ? library.backgrounds.find((b) => b.id === draft.background.package) : undefined;
-  const background = known ?? { ...BUILT_IN, id: draft?.background.package ?? BUILT_IN_BACKGROUND, title: draft?.background.package ?? "" };
+  const background = known ?? { ...BUILT_IN, id: draft?.background.package ?? BUILT_IN_BACKGROUND, title: MISSING_BACKGROUND };
   const tiles = useWidgetTiles(draft?.widgets ?? []);
 
   const apply = async () => {
