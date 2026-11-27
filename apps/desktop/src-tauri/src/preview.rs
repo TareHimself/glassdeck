@@ -66,6 +66,10 @@ pub enum PreviewChange {
     /// Nothing to show: the widget didn't start, or stopped on an error
     Cleared,
     Log { source: LogSource, level: LogLevel, text: String },
+    /// The edit didn't start (it doesn't parse, or its top level failed); the last working run goes on
+    Held { error: crate::script_errors::ScriptError },
+    /// The run stopped on an error, also logged once
+    Failed { error: crate::script_errors::ScriptError },
 }
 
 pub enum Command {
@@ -134,12 +138,16 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
         match rx.recv_timeout(wait) {
             Ok(Command::Show { run, folder, files, size, values }) => {
                 current.set(run);
-                running = match show(&cx, EDITOR_SLOT, &folder, &files, size, &values) {
-                    Ok(started) => Some(started),
+                let working = running.as_ref().is_some_and(|r| r.instance.error().is_none());
+                match show(&cx, EDITOR_SLOT, &folder, &files, size, &values) {
+                    Ok(started) => match started.instance.error() {
+                        Some(error) if working => (cx.out)(PreviewChange::Held { error: crate::script_errors::located(error) }),
+                        _ => running = Some(started),
+                    },
+                    Err(e) if working => (cx.out)(PreviewChange::Held { error: crate::script_errors::located(&format!("{e:#}")) }),
                     Err(e) => {
                         cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
                         (cx.out)(PreviewChange::Cleared);
-                        None
                     }
                 }
             }
@@ -236,6 +244,7 @@ pub(crate) fn step(cx: &Session, r: &mut Running) -> Drawn {
         }
         r.reported = Some(error.to_owned());
         cx.log(LogSource::Keyboard, LogLevel::Error, error.to_owned());
+        (cx.out)(PreviewChange::Failed { error: crate::script_errors::located(error) });
         return Drawn::Stopped;
     }
     let Some(tile) = tile else { return Drawn::Nothing };

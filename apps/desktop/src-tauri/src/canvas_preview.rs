@@ -91,6 +91,11 @@ pub enum CanvasChange {
     Cleared,
     Inputs { inputs: Vec<InputReading> },
     Log { source: LogSource, level: LogLevel, text: String },
+    /// The edit didn't start (it doesn't compile, or its script's top level failed); the last working run
+    /// goes on, its program sent again for the new run
+    Held { error: crate::script_errors::ScriptError },
+    /// The run stopped on an error, also logged once
+    Failed { error: crate::script_errors::ScriptError },
 }
 
 pub enum Command {
@@ -171,6 +176,8 @@ struct Running {
     frame: Duration,
     next_frame: Instant,
     inputs_sent: Option<Instant>,
+    /// Send every input on the next frame, not only the ones just written: a held run's new viewer has none
+    resend: bool,
 }
 
 fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
@@ -193,21 +200,27 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
         match rx.recv_timeout(wait) {
             Ok(Command::Show { run, files, values }) => {
                 current.set(run);
-                let clock = running.take().map(|r| r.clock);
-                running = match show(&mut cx, &files, &values) {
+                match show(&mut cx, &files, &values) {
                     Ok(mut started) => {
-                        if let Some(clock) = clock {
-                            started.clock = clock;
+                        if let Some(r) = running.take() {
+                            started.clock = r.clock;
                         }
                         started.clock = started.clock.played(playing, Instant::now());
-                        Some(started)
+                        running = Some(started);
                     }
-                    Err(e) => {
-                        cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
-                        (cx.out)(CanvasChange::Cleared);
-                        None
-                    }
-                };
+                    Err(e) => match &mut running {
+                        Some(r) => {
+                            (cx.out)(CanvasChange::Held { error: crate::script_errors::located(&format!("{e:#}")) });
+                            let (width, height) = render_size(r.files.canvas.scale);
+                            (cx.out)(CanvasChange::Program { fragment: r.files.fragment.clone(), width, height });
+                            (r.started, r.resend, r.next_frame) = (false, true, Instant::now());
+                        }
+                        None => {
+                            cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
+                            (cx.out)(CanvasChange::Cleared);
+                        }
+                    },
+                }
             }
             Ok(Command::Options(values)) => {
                 if let Some(r) = &running {
@@ -239,6 +252,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
             && let Err(e) = step(&cx, r, playing)
         {
             cx.log(LogSource::Keyboard, LogLevel::Error, format!("{e:#}"));
+            (cx.out)(CanvasChange::Failed { error: crate::script_errors::located(&format!("{e:#}")) });
             (cx.out)(CanvasChange::Cleared);
             running = None;
         }
@@ -303,7 +317,8 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
         None => BTreeMap::new(),
     };
     if playing || !r.started || !changes.is_empty() {
-        let inputs = changes.iter().map(|(name, value)| InputUpdate::of(name, value)).collect();
+        let sent = if std::mem::take(&mut r.resend) { r.values.iter().chain(&changes).collect::<BTreeMap<_, _>>() } else { changes.iter().collect() };
+        let inputs = sent.into_iter().map(|(name, value)| InputUpdate::of(name, value)).collect();
         (cx.out)(CanvasChange::Frame { time, delta, index: r.index, inputs });
         r.last = Some(time);
         r.index = r.index.wrapping_add(1);
@@ -433,6 +448,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         frame: Duration::from_secs(1) / fps,
         next_frame: now,
         inputs_sent: None,
+        resend: false,
     };
     apply_options(cx, &running, values);
     Ok(running)

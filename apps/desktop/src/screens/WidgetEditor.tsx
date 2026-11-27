@@ -3,6 +3,8 @@ import { useParams } from "react-router";
 import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type PreviewRun, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
 import { nextPreviewRun } from "../previews";
 import { Button } from "../components/Button";
+import { RunNote } from "../components/RunNote";
+import { errorLine, markedError, RUNNING, type RunStatus } from "../runStatus";
 import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
@@ -73,6 +75,7 @@ export function WidgetEditor() {
   const [panel, setPanel] = useState<OptionsPanel | null>(null);
   const [sizeIndex, setSizeIndex] = useState(0);
   const [frame, setFrame] = useState<Frame>({ state: "none" });
+  const [runStatus, setRunStatus] = useState<RunStatus>(RUNNING);
   const log = useDebugLog();
   const addLog = log.add;
   const [problem, setProblem] = useState<LibraryError | null>(null);
@@ -118,6 +121,11 @@ export function WidgetEditor() {
           return setFrame({ state: "none" });
         case "log":
           return addLog(change.source, change.level, change.text);
+        case "held":
+          if (!change.error.syntax) addLog("keyboard", "error", errorLine(change.error));
+          return setRunStatus({ state: "held", error: change.error });
+        case "failed":
+          return setRunStatus({ state: "failed", error: change.error });
       }
     });
     return () => {
@@ -136,6 +144,7 @@ export function WidgetEditor() {
       () => {
         started.current = true;
         run.current = nextPreviewRun();
+        setRunStatus(RUNNING);
         void commands.previewWidget(id, listOf(files), size, chosen, run.current).then((result) => {
           if (result.status === "error") addLog("pack", "error", describeLibraryError(result.error));
         });
@@ -236,6 +245,7 @@ export function WidgetEditor() {
           log={log.lines}
           onClearLog={log.clear}
           language={{ packageId: id, definitions: check.state === "checking" ? null : check }}
+          runError={markedError(runStatus)}
         />
 
         <aside className={styles.aside}>
@@ -255,6 +265,7 @@ export function WidgetEditor() {
                   {frame.state === "frame" && <img alt={`${widget.title} preview`} src={`data:image/png;base64,${frame.png}`} />}
                 </div>
               )}
+              <RunNote status={runStatus} />
             </div>
             <div role="group" aria-label="Size" className={styles.sizes}>
               {sizes.map((s, i) => (

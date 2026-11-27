@@ -135,7 +135,14 @@ export type CanvasChange =
 /**  One frame: the clock, and the inputs `keyboard.luau` wrote since the last one */
 { state: "frame"; time: number | null; delta: number | null; index: number; inputs: InputUpdate[] } | 
 /**  Nothing to show: the canvas didn't compile, or stopped on an error */
-{ state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+{ state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string } | 
+/**
+ *  The edit didn't start (it doesn't compile, or its script's top level failed); the last working run
+ *  goes on, its program sent again for the new run
+ */
+{ state: "held"; error: ScriptError } | 
+/**  The run stopped on an error, also logged once */
+{ state: "failed"; error: ScriptError };
 
 /**  What checking a canvas as saved found: Slang's error, if it didn't compile, and the scripts' type problems. */
 export type CanvasCheck = {
@@ -389,7 +396,11 @@ export type PlacedSource = {
 
 export type PreviewChange = { state: "frame"; width: number; height: number; png: string } | 
 /**  Nothing to show: the widget didn't start, or stopped on an error */
-{ state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+{ state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string } | 
+/**  The edit didn't start (it doesn't parse, or its top level failed); the last working run goes on */
+{ state: "held"; error: ScriptError } | 
+/**  The run stopped on an error, also logged once */
+{ state: "failed"; error: ScriptError };
 
 /**
  *  Which start of a preview an update belongs to. The frontend picks it and passes it with the start,
@@ -401,6 +412,15 @@ export type PreviewRun = number;
 export type PreviewUpdate = {
 	run: PreviewRun,
 	change: PreviewChange,
+};
+
+export type ScriptError = {
+	/**  The script it's in, such as `keyboard.luau`, when Luau named it */
+	file: string | null,
+	line: number | null,
+	message: string,
+	/**  It doesn't parse; the language server already marks these in the editor */
+	syntax: boolean,
 };
 
 /**  Where a theme's stream got to by the time `PUT /theme` answered. */

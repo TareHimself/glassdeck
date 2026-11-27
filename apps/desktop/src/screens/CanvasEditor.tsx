@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
 import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
+import { RunNote } from "../components/RunNote";
+import { errorLine, markedError, RUNNING, type RunStatus } from "../runStatus";
 import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
@@ -92,6 +94,7 @@ export function CanvasEditor({ id }: { id: string }) {
   const [tab, setTab] = useState("canvas.slang");
   const [check, setCheck] = useState<Check>({ state: "checking" });
   const [frame, setFrame] = useState<Frame>({ state: "none" });
+  const [runStatus, setRunStatus] = useState<RunStatus>(RUNNING);
   const [inputs, setInputs] = useState<InputReading[]>([]);
   const [playing, setPlaying] = useState(true);
   const [showKeys, setShowKeys] = useState(true);
@@ -147,6 +150,11 @@ export function CanvasEditor({ id }: { id: string }) {
         return setInputs(change.inputs);
       case "log":
         return log.add(change.source, change.level, change.text);
+      case "held":
+        if (!change.error.syntax) log.add("keyboard", "error", errorLine(change.error));
+        return setRunStatus({ state: "held", error: change.error });
+      case "failed":
+        return setRunStatus({ state: "failed", error: change.error });
     }
   });
 
@@ -156,6 +164,7 @@ export function CanvasEditor({ id }: { id: string }) {
     const timer = setTimeout(
       () => {
         started.current = true;
+        setRunStatus(RUNNING);
         live.show(listOf(files), chosen);
       },
       started.current ? EDIT_SETTLE_MS : 0,
@@ -254,6 +263,7 @@ export function CanvasEditor({ id }: { id: string }) {
           log={log.lines}
           onClearLog={log.clear}
           language={{ packageId: id, definitions: check.state === "checking" ? null : check }}
+          runError={markedError(runStatus)}
         />
 
         <div className={styles.side}>
@@ -262,6 +272,7 @@ export function CanvasEditor({ id }: { id: string }) {
               <canvas ref={live.ref} className={styles.frame} aria-label={`${background.title} preview`} data-hidden={frame.state !== "frame" || undefined} />
               {showArea && layout && <div className={styles.area} style={placed(layout.widget_area)} />}
               {showKeys && layout?.keys.map((key, i) => <div key={i} className={styles.key} style={placed(key)} />)}
+              <RunNote status={runStatus} />
             </div>
             <div className={styles.controls}>
               <button type="button" className={styles.play} aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>

@@ -10,6 +10,7 @@ mod library;
 mod lsp;
 mod options;
 mod preview;
+mod script_errors;
 mod stills;
 
 use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};

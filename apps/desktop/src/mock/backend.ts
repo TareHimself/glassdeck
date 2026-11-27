@@ -111,8 +111,29 @@ function showLayout(widgets: PlacedSource[], run: number) {
   });
 }
 
-function showWidget(id: string, size: Dims, run: number) {
+/**
+ * What the preview makes of an edit, as the real one would: a line with `@@` doesn't parse, and one
+ * that indexes `nil.` fails when it runs; the first is held, the second stops the run.
+ */
+function scriptProblem(files: SourceFile[]): { held: boolean; error: { file: string; line: number; message: string; syntax: boolean } } | null {
+  for (const file of files) {
+    const lines = file.text.split("\n");
+    const syntax = lines.findIndex((line) => line.includes("@@"));
+    if (syntax >= 0) return { held: true, error: { file: file.name, line: syntax + 1, message: "Incomplete statement: expected assignment or a function call", syntax: true } };
+    const runtime = lines.findIndex((line) => line.includes("nil."));
+    if (runtime >= 0) return { held: false, error: { file: file.name, line: runtime + 1, message: "attempt to index nil", syntax: false } };
+  }
+  return null;
+}
+
+function showWidget(id: string, files: SourceFile[], size: Dims, run: number) {
+  const problem = scriptProblem(files);
+  if (problem?.held) return void emit("preview-update", { run, change: { state: "held", error: problem.error } });
   void emit("preview-update", { run, change: { state: "frame", width: size.w, height: size.h, png: widgetTile(widget(id).title, size.w, size.h, 0) } });
+  if (problem) {
+    void emit("preview-update", { run, change: { state: "log", source: "keyboard", level: "error", text: `running ${problem.error.file}: runtime error: line ${problem.error.line}: ${problem.error.message}` } });
+    void emit("preview-update", { run, change: { state: "failed", error: problem.error } });
+  }
 }
 
 function widgetFiles(id: string): SourceFile[] {
@@ -258,8 +279,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
   save_widget: ({ id }) => widget(id as string),
   check_widget: () => ({ problems: [], checked: 2 }),
   widget_options: ({ source, values }) => optionsPanel(source as string, values as Args),
-  preview_widget: ({ id, size, run }) => {
-    showWidget(id as string, size as Dims, run as number);
+  preview_widget: ({ id, files, size, run }) => {
+    showWidget(id as string, files as SourceFile[], size as Dims, run as number);
     return null;
   },
   preview_resize: () => undefined,

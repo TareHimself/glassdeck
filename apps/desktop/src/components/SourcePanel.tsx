@@ -1,7 +1,7 @@
 import Editor from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import { useEffect, useRef, useState } from "react";
-import type { LogLevel, LogSource } from "../bindings";
+import type { LogLevel, LogSource, ScriptError } from "../bindings";
 import { useLanguageServers, type LanguageSupport } from "../lsp/useLanguageServers";
 import { languageOf, THEME } from "../monaco";
 import { classes } from "./classes";
@@ -16,11 +16,16 @@ function clock(): string {
   return new Date().toLocaleTimeString("en-GB", { hour12: false });
 }
 
-/** The editor's debug log: what the scripts print and the errors that stop them, newest last. */
+/** The same error again right after itself: an edit that still fails the same way. */
+function repeats(last: LogLine | undefined, source: LogSource, level: LogLevel, text: string): boolean {
+  return level === "error" && last?.level === "error" && last.source === source && last.text === text;
+}
+
+/** The editor's debug log: what the scripts print and the errors that stop them, newest last; an error isn't repeated. */
 export function useDebugLog() {
   const [lines, setLines] = useState<LogLine[]>([]);
   const add = (source: LogSource, level: LogLevel, text: string) =>
-    setLines((all) => [...all, { n: (all.at(-1)?.n ?? 0) + 1, at: clock(), source, level, text }].slice(-LOG_LIMIT));
+    setLines((all) => (repeats(all.at(-1), source, level, text) ? all : [...all, { n: (all.at(-1)?.n ?? 0) + 1, at: clock(), source, level, text }].slice(-LOG_LIMIT)));
   return { lines, add, clear: () => setLines([]) };
 }
 
@@ -36,13 +41,31 @@ type Props = {
   onClearLog: () => void;
   /** Runs language servers for the files: errors as you type, completion, hover */
   language?: LanguageSupport;
+  /** An error the preview ran into, marked at its line */
+  runError?: ScriptError | null;
 };
 
+/** Marks `error` in its file's editor model, and clears the mark everywhere else. */
+function useRunErrorMarker(error: ScriptError | null, tab: string) {
+  useEffect(() => {
+    for (const model of monaco.editor.getModels()) {
+      const ours = error?.file && error.line !== null && model.uri.path.endsWith(`/${error.file}`);
+      const line = error?.line ?? 1;
+      monaco.editor.setModelMarkers(
+        model,
+        "preview",
+        ours && error ? [{ startLineNumber: line, endLineNumber: line, startColumn: 1, endColumn: model.getLineMaxColumn(Math.min(line, model.getLineCount())), severity: monaco.MarkerSeverity.Error, message: error.message, source: "preview" }] : [],
+      );
+    }
+  }, [error, tab]);
+}
+
 /** An editor's source: one tab per file, the code, the check's status, and the debug log. */
-export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language }: Props) {
+export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language, runError = null }: Props) {
   const logEnd = useRef<HTMLDivElement>(null);
   const [editorMounted, setEditorMounted] = useState(false);
   const languageUnavailable = useLanguageServers(language, tab, editorMounted);
+  useRunErrorMarker(runError, `${tab}:${editorMounted}`);
 
   useEffect(() => {
     void document.fonts.ready.then(() => monaco.editor.remeasureFonts());

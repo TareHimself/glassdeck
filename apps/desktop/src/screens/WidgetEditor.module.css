@@ -54,6 +54,7 @@
 }
 
 .stage {
+  position: relative;
   height: 220px;
   border-radius: 10px;
   display: flex;
