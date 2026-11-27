@@ -1,0 +1,124 @@
+#version 300 es
+precision highp float;
+precision highp int;
+
+#line 12 0
+uniform sampler2D ink_0;
+
+
+#line 8731 1
+struct Frame_std140_0
+{
+    float time_0;
+    float delta_0;
+    uint index_0;
+    vec2 resolution_0;
+    vec2 panel_0;
+};
+
+
+#line 11 2
+struct GdInputs_std140_0
+{
+    float bass_0;
+    float mid_0;
+    float treble_0;
+    float beat_0;
+    float beatAge_0;
+    float phase_0;
+    float hue_0;
+};
+
+
+#line 11
+struct GlobalParams_std140_0
+{
+    Frame_std140_0 frame_0;
+    GdInputs_std140_0 gd_inputs_0;
+};
+
+
+#line 11
+uniform Frame_std140_0 frame_0;
+uniform GdInputs_std140_0 gd_inputs_0;
+
+
+#line 4 0
+struct Inputs_0
+{
+    float bass_1;
+    float mid_1;
+    float treble_1;
+    float beat_1;
+    float beatAge_1;
+    float phase_1;
+    float hue_1;
+};
+
+
+#line 16 2
+Inputs_0 gd_load_0()
+{
+
+#line 17
+    Inputs_0 i_0;
+    i_0.bass_1 = gd_inputs_0.bass_0;
+    i_0.mid_1 = gd_inputs_0.mid_0;
+    i_0.treble_1 = gd_inputs_0.treble_0;
+    i_0.beat_1 = gd_inputs_0.beat_0;
+    i_0.beatAge_1 = gd_inputs_0.beatAge_0;
+    i_0.phase_1 = gd_inputs_0.phase_0;
+    i_0.hue_1 = gd_inputs_0.hue_0;
+    return i_0;
+}
+
+
+#line 48 3
+struct Pixel_0
+{
+    vec2 uv_0;
+    vec2 position_0;
+};
+
+
+#line 63
+mediump vec3 dither_0(mediump vec3 c_0, Pixel_0 p_0)
+{
+
+    return c_0 + float((fract(52.98291778564453125 * fract(dot(p_0.uv_0 * frame_0.resolution_0, vec2(0.06711056083440781, 0.00583714991807938)))) - 0.5) / 255.0);
+}
+
+
+#line 71 0
+mediump vec4 show_0(Pixel_0 p_1, Inputs_0 i_1)
+{
+
+
+    return vec4(dither_0(max(vec3(1.0) - exp(- (vec4(texture((ink_0), (p_1.uv_0)))).xyz * 1.599609375), mix(vec3(0.0200042724609375, 0.01000213623046875, 0.04998779296875), vec3(0.04998779296875, 0.0200042724609375, 0.09002685546875), vec3(float(p_1.uv_0.y)))), p_1), 1.0);
+}
+
+
+#line 2148 4
+layout(location = 0)
+out vec4 entryPointParam_gd_fragment_0;
+
+
+#line 29 2
+void main()
+{
+
+#line 30
+    Pixel_0 p_2;
+    vec2 _S1 = gl_FragCoord.xy / frame_0.resolution_0;
+
+#line 31
+    p_2.uv_0 = _S1;
+    p_2.position_0 = _S1 * frame_0.panel_0;
+
+#line 32
+    entryPointParam_gd_fragment_0 = vec4(show_0(p_2, gd_load_0()));
+
+#line 32
+    return;
+}
+

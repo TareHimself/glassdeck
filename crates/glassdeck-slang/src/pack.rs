@@ -9,7 +9,7 @@ use glassdeck_luau::options::{OptionsScript, Panel};
 use glassdeck_luau_check::{LuauChecker, LuauFile, definitions};
 use glassdeck_package::{
     CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, BRIDGE_SCRIPT, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
-    SHADER, PackageType, canvas_sources,
+    SHADER, PackageType, Pass, canvas_sources, pass_shader,
 };
 
 use crate::canvas::{CanvasShape, FRAGMENT_ENTRY};
@@ -42,10 +42,12 @@ impl CanvasSources<'_> {
     }
 }
 
-/// A compiled canvas: its manifest details, its GLSL ES fragment shader, and the types its scripts are checked against.
+/// A compiled canvas: its manifest details, its GLSL ES fragment shaders, and the types its scripts are checked against.
 pub struct CompiledCanvas {
     pub canvas: Canvas,
     pub fragment: String,
+    /// Each pass's fragment shader, in drawing order
+    pub passes: Vec<String>,
     types: Types,
 }
 
@@ -61,15 +63,28 @@ pub fn compile_canvas(slang: &Slang, sources: &CanvasSources) -> Result<Compiled
     if sources.keyboard.is_none() {
         shape.check_without_script()?;
     }
-    let glue = shape.glue("canvas", sources.keyboard.is_some());
-    let glue_module = Source { name: "gd_glue", path: "glue.slang", text: &glue };
-    let glsl = slang.compile(&[api, shader, glue_module], FRAGMENT_ENTRY, Target::Glsl, GLSL_PROFILE)?;
-    let fragment = essl::fragment_to_essl(&String::from_utf8(glsl).context("Slang's GLSL isn't UTF-8")?)?;
-    let canvas = Canvas { api: CANVAS_API, scale: shape.scale, frame_rate: shape.frame_rate, inputs: shape.input_fields() };
+    let mut fragments = shape
+        .functions()
+        .map(|function| {
+            let glue = shape.glue(function, "canvas", sources.keyboard.is_some());
+            let glue_module = Source { name: "gd_glue", path: "glue.slang", text: &glue };
+            let glsl = slang.compile(&[api, shader, glue_module], FRAGMENT_ENTRY, Target::Glsl, GLSL_PROFILE)?;
+            essl::fragment_to_essl(&String::from_utf8(glsl).context("Slang's GLSL isn't UTF-8")?).with_context(|| format!("compiling {function}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let fragment = fragments.pop().expect("the canvas function comes last");
+    let canvas = Canvas {
+        api: CANVAS_API,
+        scale: shape.scale,
+        frame_rate: shape.frame_rate,
+        inputs: shape.input_fields(),
+        targets: shape.targets.clone(),
+        passes: shape.passes.iter().map(|p| Pass { writes: p.writes.clone() }).collect(),
+    };
     canvas.validate()?;
     let messages = message_types(sources.messages, sources.host.is_none());
     let types = Types { inputs: shape.inputs_definitions(), options: panel.definitions(), messages };
-    Ok(CompiledCanvas { canvas, fragment, types })
+    Ok(CompiledCanvas { canvas, fragment, passes: fragments, types })
 }
 
 /// Writes `.glassdeck/` into `folder` and type-checks each script there is against its own API.
@@ -109,6 +124,9 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let origin = Origin::Packed { from, sources: canvas_sources(&deck_text, API_MODULE, &shader, sources.scripts()) };
     let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(compiled.canvas))))?;
     writer.add_bytes(SHADER, compiled.fragment.as_bytes())?;
+    for (n, pass) in compiled.passes.iter().enumerate() {
+        writer.add_bytes(&pass_shader(n), pass.as_bytes())?;
+    }
     for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host), (BRIDGE_SCRIPT, &messages)] {
         if let Some(text) = text {
             writer.add_bytes(entry, text.as_bytes())?;

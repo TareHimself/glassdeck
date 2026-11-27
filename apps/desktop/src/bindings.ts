@@ -143,8 +143,11 @@ export type BackgroundSummary = {
 };
 
 export type CanvasChange = 
-/**  A run's shader, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too), and its size */
-{ state: "program"; fragment: string; width: number; height: number } | 
+/**
+ *  A run's shaders, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too): the passes
+ *  drawn first into their targets, then the canvas at its size
+ */
+{ state: "program"; fragment: string; width: number; height: number; passes: PreviewPass[]; targets: PreviewTarget[] } | 
 /**  One frame: the clock, and the inputs `keyboard.luau` wrote since the last one */
 { state: "frame"; time: number | null; delta: number | null; index: number; inputs: InputUpdate[] } | 
 /**  Nothing to show: the canvas didn't compile, or stopped on an error */
@@ -424,11 +427,28 @@ export type PreviewChange = { state: "frame"; width: number; height: number; png
 /**  The run stopped on an error, also logged once */
 { state: "failed"; error: ScriptError };
 
+export type PreviewFormat = "rgba8" | "rgba16f";
+
+/**  A pass the preview draws before the canvas: its shader, and the target it draws into. */
+export type PreviewPass = {
+	fragment: string,
+	writes: string,
+};
+
 /**
  *  Which start of a preview an update belongs to. The frontend picks it and passes it with the start,
  *  and drops updates from any other, so a slow frame from the last widget never lands on the next. *\/
  */
 export type PreviewRun = number;
+
+/**  A target as the preview makes it, at its size in pixels. */
+export type PreviewTarget = {
+	name: string,
+	width: number,
+	height: number,
+	format: PreviewFormat,
+	feedback: boolean,
+};
 
 /**  Something the widget preview did, in the run it belongs to. */
 export type PreviewUpdate = {

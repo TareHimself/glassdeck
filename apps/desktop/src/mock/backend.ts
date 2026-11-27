@@ -79,11 +79,11 @@ function startCanvas(id: string, run: number) {
   const send = (forRun: number, change: object) => void emit("canvas-update", { run: forRun, change });
   if (replaced !== undefined) {
     window.setTimeout(() => {
-      send(replaced, { state: "program", fragment: STALE_SHADER, width: 64, height: 36 });
+      send(replaced, { state: "program", fragment: STALE_SHADER, width: 64, height: 36, passes: [], targets: [] });
       send(replaced, { state: "frame", time: 0, delta: 0, index: 0, inputs: [] });
     }, 150);
   }
-  send(run, { state: "program", fragment: MOCK_SHADER, width: 480, height: 270 });
+  send(run, { state: "program", fragment: MOCK_SHADER, width: 480, height: 270, passes: [], targets: [] });
   const started = performance.now();
   let index = 0;
   let last = 0;

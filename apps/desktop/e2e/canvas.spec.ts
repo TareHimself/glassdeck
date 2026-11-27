@@ -12,7 +12,7 @@ test("the gradient's real Slang shader draws in WebGL2 with its inputs", async (
     const canvas = document.createElement("canvas");
     document.body.append(canvas);
     const renderer = new CanvasRenderer(canvas);
-    renderer.useProgram(fragment, 960, 540);
+    renderer.useProgram({ fragment, width: 960, height: 540, passes: [], targets: [] });
     const float = (values: number[]) => ({ kind: "float" as const, values });
     renderer.frame({
       time: 1,
@@ -50,7 +50,7 @@ test("an array input reaches the shader", async ({ page }) => {
     const canvas = document.createElement("canvas");
     document.body.append(canvas);
     const renderer = new CanvasRenderer(canvas);
-    renderer.useProgram(fragment, 960, 540);
+    renderer.useProgram({ fragment, width: 960, height: 540, passes: [], targets: [] });
     const levels = Array.from({ length: 24 }, (_, i) => (i < 12 ? 0.9 : 0));
     renderer.frame({ time: 1, delta: 0, index: 0, inputs: [{ name: "levels", value: { kind: "array", values: levels } }] });
     await new Promise(requestAnimationFrame);
@@ -66,4 +66,42 @@ test("an array input reaches the shader", async ({ page }) => {
   });
   expect(low, "a band set to 0.9 draws a bar").toBeGreaterThan(200);
   expect(high, "a silent band draws none").toBeLessThan(80);
+});
+
+/** Flow's real shaders (e2e/fixtures/flow-pass.essl and flow.essl): its pass reads its own last frame. */
+test("a feedback target keeps last frame's picture", async ({ page }) => {
+  await page.goto("/");
+  const [after1, after20] = await page.evaluate(async () => {
+    const { CanvasRenderer } = await import("/src/canvasRenderer.ts");
+    const pass: string = (await import("/e2e/fixtures/flow-pass.essl?raw")).default;
+    const fragment: string = (await import("/e2e/fixtures/flow.essl?raw")).default;
+    const canvas = document.createElement("canvas");
+    document.body.append(canvas);
+    const renderer = new CanvasRenderer(canvas);
+    renderer.useProgram({
+      fragment,
+      width: 480,
+      height: 270,
+      passes: [{ fragment: pass, writes: "ink" }],
+      targets: [{ name: "ink", width: 480, height: 270, format: "rgba16f", feedback: true }],
+    });
+    const one = (name: string, value: number) => ({ name, value: { kind: "float" as const, values: [value] } });
+    const inputs = [one("bass", 0.5), one("mid", 0.8), one("treble", 0), one("beat", 0), one("beatAge", 10), one("phase", 0), one("hue", 0.2)];
+    const gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("no WebGL2");
+    const brightness = () => {
+      const pixels = new Uint8Array(480 * 270 * 4);
+      gl.readPixels(0, 0, 480, 270, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return pixels.reduce((sum, v, i) => (i % 4 === 3 ? sum : sum + v), 0);
+    };
+    const results: number[] = [];
+    for (let index = 0; index < 20; index++) {
+      renderer.frame({ time: index / 30, delta: 1 / 30, index, inputs: index === 0 ? inputs : [] });
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+      if (index === 0 || index === 19) results.push(brightness());
+    }
+    return results;
+  });
+  expect(after20, `ink builds up over frames: ${after1} then ${after20}`).toBeGreaterThan((after1 ?? 0) * 1.5);
 });

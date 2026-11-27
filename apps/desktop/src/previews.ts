@@ -131,7 +131,7 @@ export function useLiveCanvas(onChange?: (change: CanvasChange) => void) {
     }
     const own = claimCanvas((change) => {
       try {
-        if (change.state === "program") renderer.useProgram(change.fragment, change.width, change.height);
+        if (change.state === "program") renderer.useProgram(change);
         if (change.state === "frame") {
           renderer.frame({ time: change.time ?? 0, delta: change.delta ?? 0, index: change.index, inputs: change.inputs });
           setDrawing(true);

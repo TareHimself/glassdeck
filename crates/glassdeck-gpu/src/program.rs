@@ -1,6 +1,7 @@
-//! A canvas, built in or a background: the GLSL ES shader `glassdeck pack` compiled from Slang, and the script that
-//! writes its inputs. Only inputs written since the last draw are uploaded, and a frame where nothing
-//! changed and the shader ignores the clock isn't drawn at all.
+//! A canvas, built in or a background: the GLSL ES shaders `glassdeck pack` compiled from Slang, and the script that
+//! writes its inputs. Each pass draws into its target, then the canvas draws the screen, reading the
+//! targets as textures. Only inputs written since the last draw are uploaded, and a frame where nothing
+//! changed and nothing reads the clock or keeps a history isn't drawn at all.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow, bail, ensure};
 use glassdeck_luau::Print;
 use glassdeck_luau::messages::Sent;
-use glassdeck_package::{Canvas, CanvasFiles};
+use glassdeck_package::{Canvas, CanvasFiles, RenderTarget, TargetFormat};
 use glow::HasContext;
 
 use crate::script::{InputValue, CanvasScript};
@@ -30,12 +31,87 @@ pub fn render_size(scale: f32) -> (u32, u32) {
     (side(PANEL.0), side(PANEL.1))
 }
 
-pub struct CanvasProgram {
-    pub canvas: Canvas,
+/// One linked shader, a pass's or the canvas's.
+struct Stage {
     program: glow::Program,
     /// Active uniforms by their Slang names (`frame.time`), without the `_0` Slang adds to each part.
     uniforms: HashMap<String, glow::UniformLocation>,
-    /// The shader reads `frame`, so every frame looks different.
+}
+
+impl Stage {
+    fn new(gl: &glow::Context, fragment: &str) -> Result<Self> {
+        let program = compile(gl, fragment)?;
+        Ok(Self { program, uniforms: active_uniforms(gl, program) })
+    }
+
+    fn reads_the_clock(&self) -> bool {
+        ["frame.time", "frame.delta", "frame.index"].iter().any(|name| self.uniforms.contains_key(*name))
+    }
+}
+
+/// A target's texture, or with feedback the two it swaps between; `shown` is the one drawn last.
+struct Surface {
+    target: RenderTarget,
+    size: (u32, u32),
+    textures: Vec<glow::Texture>,
+    framebuffers: Vec<glow::Framebuffer>,
+    shown: usize,
+}
+
+impl Surface {
+    fn new(gl: &glow::Context, target: RenderTarget) -> Result<Self> {
+        let size = render_size(target.scale);
+        let (internal, kind) = match target.format {
+            TargetFormat::Rgba8 => (glow::RGBA8, glow::UNSIGNED_BYTE),
+            TargetFormat::Rgba16f => (glow::RGBA16F, glow::HALF_FLOAT),
+        };
+        let (mut textures, mut framebuffers) = (Vec::new(), Vec::new());
+        // SAFETY: the context is current; each object is checked as it's made.
+        unsafe {
+            for _ in 0..if target.feedback { 2 } else { 1 } {
+                let texture = gl.create_texture().map_err(|e| anyhow!("creating target {}: {e}", target.name))?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(glow::TEXTURE_2D, 0, internal as i32, size.0 as i32, size.1 as i32, 0, glow::RGBA, kind, glow::PixelUnpackData::Slice(None));
+                for (parameter, value) in [
+                    (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+                ] {
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
+                }
+                let framebuffer = gl.create_framebuffer().map_err(|e| anyhow!("creating target {}: {e}", target.name))?;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0);
+                ensure!(
+                    gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE,
+                    "this GPU can't draw into target {} ({:?})",
+                    target.name,
+                    target.format
+                );
+                gl.viewport(0, 0, size.0 as i32, size.1 as i32);
+                gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                textures.push(texture);
+                framebuffers.push(framebuffer);
+            }
+        }
+        Ok(Self { target, size, textures, framebuffers, shown: 0 })
+    }
+
+    /// Where the pass draws this frame: with feedback, the texture not shown, so it can read the one that is.
+    fn drawing(&self) -> usize {
+        (self.shown + 1) % self.textures.len()
+    }
+}
+
+pub struct CanvasProgram {
+    pub canvas: Canvas,
+    /// Each pass's stage, with the surface it draws into
+    passes: Vec<(Stage, usize)>,
+    screen: Stage,
+    surfaces: Vec<Surface>,
+    /// Some shader reads `frame`, or a target keeps a history, so every frame looks different.
     animated: bool,
     script: Option<CanvasScript>,
     /// Every input's latest value, as the script last wrote it
@@ -48,15 +124,25 @@ pub struct CanvasProgram {
 impl CanvasProgram {
     /// `print`: where `keyboard.luau`'s `print` goes, instead of the process's own output.
     pub fn new(gl: &glow::Context, files: CanvasFiles, print: Option<Print>) -> Result<Self> {
-        let CanvasFiles { canvas, fragment, script, messages, .. } = files;
-        let program = compile(gl, &fragment)?;
-        let uniforms = active_uniforms(gl, program);
-        let animated = ["frame.time", "frame.delta", "frame.index"].iter().any(|name| uniforms.contains_key(*name));
+        let CanvasFiles { canvas, fragment, passes, script, messages, .. } = files;
+        ensure!(passes.len() == canvas.passes.len(), "the canvas lists {} passes but has {} shaders", canvas.passes.len(), passes.len());
+        let surfaces = canvas.targets.iter().map(|target| Surface::new(gl, target.clone())).collect::<Result<Vec<_>>>()?;
+        let passes = canvas
+            .passes
+            .iter()
+            .zip(&passes)
+            .map(|(pass, fragment)| {
+                let surface = surfaces.iter().position(|s| s.target.name == pass.writes).ok_or_else(|| anyhow!("a pass writes {}, which isn't a target", pass.writes))?;
+                Ok((Stage::new(gl, fragment)?, surface))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let screen = Stage::new(gl, &fragment)?;
+        let animated = screen.reads_the_clock() || passes.iter().any(|(stage, _)| stage.reads_the_clock()) || surfaces.iter().any(|s| s.target.feedback);
         let script = match script {
             Some(source) => Some(CanvasScript::load(&source, messages.as_deref(), &canvas.inputs, print)?),
             None => None,
         };
-        Ok(Self { canvas, program, uniforms, animated, script, values: BTreeMap::new(), last: None, index: 0, drawn: false })
+        Ok(Self { canvas, passes, screen, surfaces, animated, script, values: BTreeMap::new(), last: None, index: 0, drawn: false })
     }
 
     /// The options from the implicit host; a canvas without a script has nothing to give them to.
@@ -104,19 +190,66 @@ impl CanvasProgram {
         if self.drawn && changes.is_empty() && !self.animated {
             return Ok(None);
         }
-        let (w, h) = (size.0 as f32, size.1 as f32);
+        let clock = Clock { seconds, delta, index: self.index };
         // SAFETY: the context is current and every object here is live.
+        unsafe {
+            for (pass, surface) in &self.passes {
+                let drawing = self.surfaces[*surface].drawing();
+                let size = self.surfaces[*surface].size;
+                self.draw_stage(gl, pass, self.surfaces[*surface].framebuffers[drawing], size, clock, &changes)?;
+                self.surfaces[*surface].shown = drawing;
+            }
+            self.draw_stage(gl, &self.screen, framebuffer, size, clock, &changes)?;
+            gl.finish();
+        }
+        self.values.extend(changes);
+        self.index = self.index.wrapping_add(1);
+        self.drawn = true;
+        Ok(Some(started.elapsed()))
+    }
+}
+
+/// What every stage of one frame is told about time.
+#[derive(Clone, Copy)]
+struct Clock {
+    seconds: f32,
+    delta: f32,
+    index: u32,
+}
+
+impl CanvasProgram {
+    /// One full-screen draw of `stage` into `framebuffer`, with the frame's uniforms, the inputs that
+    /// changed, and every target bound to the texture unit of its place in the list.
+    ///
+    /// # Safety
+    /// The context is current, and `framebuffer` is live and `size`.
+    unsafe fn draw_stage(
+        &self,
+        gl: &glow::Context,
+        stage: &Stage,
+        framebuffer: glow::Framebuffer,
+        size: (u32, u32),
+        clock: Clock,
+        changes: &BTreeMap<String, InputValue>,
+    ) -> Result<()> {
+        let (w, h) = (size.0 as f32, size.1 as f32);
+        // SAFETY: as the caller promised.
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
             gl.viewport(0, 0, w as i32, h as i32);
-            gl.use_program(Some(self.program));
-            let uniform = |name: &str| self.uniforms.get(name);
-            gl.uniform_1_f32(uniform("frame.time"), seconds);
-            gl.uniform_1_f32(uniform("frame.delta"), delta);
-            gl.uniform_1_u32(uniform("frame.index"), self.index);
+            gl.use_program(Some(stage.program));
+            let uniform = |name: &str| stage.uniforms.get(name);
+            gl.uniform_1_f32(uniform("frame.time"), clock.seconds);
+            gl.uniform_1_f32(uniform("frame.delta"), clock.delta);
+            gl.uniform_1_u32(uniform("frame.index"), clock.index);
             gl.uniform_2_f32(uniform("frame.resolution"), w, h);
             gl.uniform_2_f32(uniform("frame.panel"), PANEL.0, PANEL.1);
-            for (name, value) in &changes {
+            for (unit, surface) in self.surfaces.iter().enumerate() {
+                gl.active_texture(glow::TEXTURE0 + unit as u32);
+                gl.bind_texture(glow::TEXTURE_2D, Some(surface.textures[surface.shown]));
+                gl.uniform_1_i32(uniform(&surface.target.name), unit as i32);
+            }
+            for (name, value) in changes {
                 let location = uniform(&format!("{INPUTS_UNIFORM}.{name}"));
                 match value {
                     InputValue::Float(v) => match v.as_slice() {
@@ -131,12 +264,8 @@ impl CanvasProgram {
                 }
             }
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            gl.finish();
         }
-        self.values.extend(changes);
-        self.index = self.index.wrapping_add(1);
-        self.drawn = true;
-        Ok(Some(started.elapsed()))
+        Ok(())
     }
 }
 

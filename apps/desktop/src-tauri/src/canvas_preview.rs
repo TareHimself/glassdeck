@@ -19,7 +19,7 @@ use glassdeck_host::{HostSide, Services, SharedNowPlaying, Sources, Wake};
 use glassdeck_luau::Print;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 use glassdeck_luau::options::read_values;
-use glassdeck_package::{CanvasFiles, DeckSource, HOST_SCRIPT, InputField, KEYBOARD_SCRIPT, NetworkHost, OPTIONS_SCRIPT, Origin, is_blank_script};
+use glassdeck_package::{CanvasFiles, DeckSource, HOST_SCRIPT, InputField, KEYBOARD_SCRIPT, NetworkHost, OPTIONS_SCRIPT, Origin, TargetFormat, is_blank_script};
 use glassdeck_slang::Slang;
 use glassdeck_slang::pack::{CANVAS_SOURCE, CanvasSources, compile_canvas};
 use image::RgbImage;
@@ -68,6 +68,30 @@ impl InputUpdate {
     }
 }
 
+/// A pass the preview draws before the canvas: its shader, and the target it draws into.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct PreviewPass {
+    pub fragment: String,
+    pub writes: String,
+}
+
+/// A target as the preview makes it, at its size in pixels.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct PreviewTarget {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: PreviewFormat,
+    pub feedback: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewFormat {
+    Rgba8,
+    Rgba16f,
+}
+
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct InputReading {
     pub name: String,
@@ -84,8 +108,9 @@ pub struct CanvasUpdate {
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CanvasChange {
-    /// A run's shader, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too), and its size
-    Program { fragment: String, width: u32, height: u32 },
+    /// A run's shaders, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too): the passes
+    /// drawn first into their targets, then the canvas at its size
+    Program { fragment: String, width: u32, height: u32, passes: Vec<PreviewPass>, targets: Vec<PreviewTarget> },
     /// One frame: the clock, and the inputs `keyboard.luau` wrote since the last one
     Frame { time: f32, delta: f32, index: u32, inputs: Vec<InputUpdate> },
     /// Nothing to show: the canvas didn't compile, or stopped on an error
@@ -221,8 +246,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>, wake: Wak
                     Err(e) => match &mut running {
                         Some(r) => {
                             (cx.out)(CanvasChange::Held { error: crate::script_errors::located(&format!("{e:#}")) });
-                            let (width, height) = render_size(r.files.canvas.scale);
-                            (cx.out)(CanvasChange::Program { fragment: r.files.fragment.clone(), width, height });
+                            (cx.out)(program_change(&r.files));
                             (r.started, r.resend, r.next_frame) = (false, true, Instant::now());
                         }
                         None => {
@@ -405,14 +429,16 @@ fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
         origin: Origin::Packed { from: "preview".into(), sources: String::new() },
         canvas: compiled.canvas,
         fragment: compiled.fragment,
+        passes: compiled.passes,
         script: sources.keyboard.map(str::to_owned),
         messages: sources.messages.map(str::to_owned),
     };
     Ok(Compiled { files: canvas_files, options: sources.options, host: sources.host })
 }
 
-/// The canvas drawn once at `at` seconds, as a JPEG: options at their defaults, and nothing from the PC
-/// (no media, no timers), the way it first appears. Makes its own GL context, so any thread may call it.
+/// The canvas at `at` seconds, as a JPEG: options at their defaults, and nothing from the PC (no media,
+/// no timers), the way it first appears. A canvas with a history has it built up over the seconds
+/// before. Makes its own GL context, so any thread may call it.
 pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<u8>> {
     let compiled = compile(slang, files)?;
     let offscreen = Offscreen::new(render_size(compiled.files.canvas.scale))?;
@@ -437,8 +463,44 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
         }
     }
     let size = offscreen.size();
-    program.draw(&offscreen.gl, offscreen.framebuffer(), size, at)?;
+    for seconds in still_frames(&program.canvas, at) {
+        program.draw(&offscreen.gl, offscreen.framebuffer(), size, seconds)?;
+    }
     jpeg_bytes(&offscreen.read_rgb(), size, STILL_WIDTH)
+}
+
+/// How much history a still with feedback is drawn from: enough for trails to settle.
+const STILL_HISTORY: f32 = 3.0;
+
+/// The moments a still draws: just `at`, or with feedback each frame of the seconds leading up to it.
+fn still_frames(canvas: &glassdeck_package::Canvas, at: f32) -> Vec<f32> {
+    if !canvas.targets.iter().any(|t| t.feedback) {
+        return vec![at];
+    }
+    let period = 1.0 / canvas.frame_rate as f32;
+    let first = (at - STILL_HISTORY).max(0.0);
+    let count = ((at - first) / period).floor() as usize;
+    (0..count).map(|n| first + n as f32 * period).chain([at]).collect()
+}
+
+/// The canvas's shaders and targets, for the preview to draw.
+fn program_change(files: &CanvasFiles) -> CanvasChange {
+    let (width, height) = render_size(files.canvas.scale);
+    let passes = files.canvas.passes.iter().zip(&files.passes).map(|(pass, fragment)| PreviewPass { fragment: fragment.clone(), writes: pass.writes.clone() }).collect();
+    let targets = files
+        .canvas
+        .targets
+        .iter()
+        .map(|target| {
+            let (width, height) = render_size(target.scale);
+            let format = match target.format {
+                TargetFormat::Rgba8 => PreviewFormat::Rgba8,
+                TargetFormat::Rgba16f => PreviewFormat::Rgba16f,
+            };
+            PreviewTarget { name: target.name.clone(), width, height, format, feedback: target.feedback }
+        })
+        .collect();
+    CanvasChange::Program { fragment: files.fragment.clone(), width, height, passes, targets }
 }
 
 /// Compiles the editor's files and starts the canvas and its host half.
@@ -447,8 +509,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
     let sources = (compiled.options, compiled.host);
     let files = compiled.files;
     let script = load_script(cx, &files)?;
-    let (width, height) = render_size(files.canvas.scale);
-    (cx.out)(CanvasChange::Program { fragment: files.fragment.clone(), width, height });
+    (cx.out)(program_change(&files));
     let host_sources = Sources {
         label: "host.luau".into(),
         options: sources.0.map(str::to_owned),

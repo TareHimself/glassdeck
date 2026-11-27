@@ -1,10 +1,12 @@
-//! Reads a canvas's shape from Slang's reflection and writes the glue module around it: the real
-//! entry point, the `[Inputs]` uniforms (as 32-bit floats) and the conversion to the user's types.
+//! Reads a canvas's shape from Slang's reflection and writes the glue module around each of its
+//! functions: the real entry point, the `[Inputs]` uniforms (as 32-bit floats) and the conversion to
+//! the user's types. A canvas is its `[Canvas]` function, plus any `[Pass]` functions drawn first
+//! into `[Target]` textures.
 
 use std::fmt::Write;
 
 use anyhow::{Context, Result, bail, ensure};
-use glassdeck_package::{InputField, InputKind};
+use glassdeck_package::{InputField, InputKind, MAX_PASSES, MAX_TARGETS, Pass, RenderTarget, TargetFormat};
 
 use crate::{Attribute, Declaration, Field};
 
@@ -15,13 +17,25 @@ const DEFAULT_FRAME_RATE: u32 = 30;
 pub const INPUTS_UNIFORM: &str = "gd_inputs";
 pub const FRAGMENT_ENTRY: &str = "gd_fragment";
 
-/// The one `[Canvas]` function and the `[Inputs]` it reads.
+/// What a `[Target]`'s type must be: a texture with its sampler, so GLSL ES reads it as `sampler2D`.
+const TARGET_TYPES: [&str; 2] = ["Sampler2D<vector<half,4>>", "Sampler2D<vector<float,4>>"];
+
+/// The one `[Canvas]` function, the `[Pass]` functions drawn before it, their targets, and the `[Inputs]` they read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasShape {
     pub function: String,
     pub scale: f32,
     pub frame_rate: u32,
     pub inputs: Option<Inputs>,
+    pub targets: Vec<RenderTarget>,
+    /// In drawing order
+    pub passes: Vec<PassShape>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PassShape {
+    pub function: String,
+    pub writes: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,9 +65,7 @@ impl CanvasShape {
             .collect();
         for declaration in declarations {
             if let Declaration::Function { name, attributes, .. } = declaration {
-                for unsupported in ["Effect", "Pass"] {
-                    ensure!(!has(attributes, unsupported), "{name} is marked [{unsupported}], which isn't supported yet");
-                }
+                ensure!(!has(attributes, "Effect"), "{name} is marked [Effect], which isn't supported yet");
             }
         }
         let (name, returns, params, attributes) = match marked.as_slice() {
@@ -61,20 +73,8 @@ impl CanvasShape {
             [] => bail!("no function is marked [Canvas]"),
             many => bail!("several functions are marked [Canvas]: {}", many.iter().map(|m| m.0.as_str()).collect::<Vec<_>>().join(", ")),
         };
-        ensure!(
-            matches!(returns.as_str(), "half4" | "float4"),
-            "[Canvas] function {name} returns {returns}; it must return half4 or float4"
-        );
         let inputs = read_inputs(declarations)?;
-        match (params.as_slice(), &inputs) {
-            ([p], _) if p.r#type == "Pixel" => ensure!(inputs.is_none(), "the shader declares [Inputs] but {name} doesn't take them"),
-            ([p, i], Some(inputs)) if p.r#type == "Pixel" && i.r#type == inputs.name => {}
-            _ => bail!(
-                "[Canvas] function {name} must take (Pixel) or (Pixel, {}), not ({})",
-                inputs.as_ref().map_or("Inputs", |i| &i.name),
-                types(params)
-            ),
-        }
+        check_entry("Canvas", name, returns, params, inputs.as_ref())?;
         let (mut scale, mut frame_rate) = (DEFAULT_SCALE, DEFAULT_FRAME_RATE);
         for attribute in attributes {
             match attribute.name.as_str() {
@@ -86,7 +86,23 @@ impl CanvasShape {
         }
         ensure!(scale > 0.0 && scale <= 1.0, "[Scale({scale})] on {name} must be above 0 and at most 1");
         ensure!((1..=60).contains(&frame_rate), "[FrameRate({frame_rate})] on {name} must be 1 to 60");
-        Ok(Self { function: name.clone(), scale, frame_rate, inputs })
+        let targets = read_targets(declarations)?;
+        let passes = read_passes(declarations, inputs.as_ref())?;
+        let canvas = glassdeck_package::Canvas {
+            api: glassdeck_package::CANVAS_API,
+            scale,
+            frame_rate,
+            inputs: Vec::new(),
+            targets: targets.clone(),
+            passes: passes.iter().map(|p| Pass { writes: p.writes.clone() }).collect(),
+        };
+        canvas.validate()?;
+        Ok(Self { function: name.clone(), scale, frame_rate, inputs, targets, passes })
+    }
+
+    /// Every function to compile, the passes first in drawing order, then the canvas.
+    pub fn functions(&self) -> impl Iterator<Item = &str> {
+        self.passes.iter().map(|p| p.function.as_str()).chain([self.function.as_str()])
     }
 
     /// Without a script nothing writes the inputs, so every field needs an initializer.
@@ -118,14 +134,14 @@ impl CanvasShape {
         out
     }
 
-    /// The glue module, importing `module`; with no script the inputs come from their initializers.
-    pub fn glue(&self, module: &str, scripted: bool) -> String {
+    /// The glue module around `function`, importing `module`; with no script the inputs come from their initializers.
+    pub fn glue(&self, function: &str, module: &str, scripted: bool) -> String {
         let mut out = format!("import glassdeck;\nimport {module};\n\n");
         let call = match &self.inputs {
-            None => format!("{}(p)", self.function),
+            None => format!("{function}(p)"),
             Some(inputs) if !scripted => {
                 let _ = writeln!(out, "{0} gd_load() {{\n    {0} i = {{}};\n    return i;\n}}\n", inputs.name);
-                format!("{}(p, gd_load())", self.function)
+                format!("{function}(p, gd_load())")
             }
             Some(inputs) => {
                 out.push_str("struct GdInputs {\n");
@@ -137,7 +153,7 @@ impl CanvasShape {
                     let _ = writeln!(out, "    {}", load(slot));
                 }
                 out.push_str("    return i;\n}\n\n");
-                format!("{}(p, gd_load())", self.function)
+                format!("{function}(p, gd_load())")
             }
         };
         let _ = write!(
@@ -146,6 +162,89 @@ impl CanvasShape {
         );
         out
     }
+}
+
+/// A `[Canvas]` or `[Pass]` function: `(Pixel)`, or `(Pixel, Inputs)` when the shader has inputs; returns a colour.
+fn check_entry(mark: &str, name: &str, returns: &str, params: &[Field], inputs: Option<&Inputs>) -> Result<()> {
+    ensure!(matches!(returns, "half4" | "float4"), "[{mark}] function {name} returns {returns}; it must return half4 or float4");
+    match (params, inputs) {
+        ([p], _) if p.r#type == "Pixel" => ensure!(inputs.is_none(), "the shader declares [Inputs] but {name} doesn't take them"),
+        ([p, i], Some(inputs)) if p.r#type == "Pixel" && i.r#type == inputs.name => {}
+        _ => bail!(
+            "[{mark}] function {name} must take (Pixel) or (Pixel, {}), not ({})",
+            inputs.map_or("Inputs", |i| &i.name),
+            types(params)
+        ),
+    }
+    Ok(())
+}
+
+fn read_targets(declarations: &[Declaration]) -> Result<Vec<RenderTarget>> {
+    let mut targets = Vec::new();
+    for declaration in declarations {
+        let Declaration::Variable { name, r#type, attributes } = declaration else { continue };
+        if !has(attributes, "Target") {
+            for option in ["Feedback", "Format"] {
+                ensure!(!has(attributes, option), "[{option}] goes on a [Target], and {name} isn't one");
+            }
+            continue;
+        }
+        ensure!(TARGET_TYPES.contains(&r#type.as_str()), "[Target] {name} must be a Sampler2D<half4> or Sampler2D<float4>, not {}", r#type);
+        let mut target = RenderTarget { name: name.clone(), scale: DEFAULT_SCALE, format: TargetFormat::Rgba8, feedback: false };
+        for attribute in attributes {
+            match attribute.name.as_str() {
+                "Target" => {}
+                "Feedback" => target.feedback = true,
+                "Scale" => target.scale = number(attribute, name)? as f32,
+                "Format" => {
+                    target.format = match attribute.args.as_slice() {
+                        [serde_json::Value::String(f)] if f == "rgba8" => TargetFormat::Rgba8,
+                        [serde_json::Value::String(f)] if f == "rgba16f" => TargetFormat::Rgba16f,
+                        _ => bail!("[Format] on {name} takes \"rgba8\" or \"rgba16f\""),
+                    }
+                }
+                other => bail!("[{other}] doesn't go on a [Target] ({name})"),
+            }
+        }
+        targets.push(target);
+    }
+    ensure!(targets.len() <= MAX_TARGETS, "the shader has {} targets; at most {MAX_TARGETS}", targets.len());
+    Ok(targets)
+}
+
+fn read_passes(declarations: &[Declaration], inputs: Option<&Inputs>) -> Result<Vec<PassShape>> {
+    let mut passes = Vec::new();
+    for declaration in declarations {
+        let Declaration::Function { name, returns, params, attributes } = declaration else { continue };
+        if !has(attributes, "Pass") {
+            ensure!(!has(attributes, "Writes"), "[Writes] goes on a [Pass], and {name} isn't one");
+            continue;
+        }
+        check_entry("Pass", name, returns, params, inputs)?;
+        let (mut order, mut writes) = (None, None);
+        for attribute in attributes {
+            match attribute.name.as_str() {
+                "Pass" => order = Some(number(attribute, name)?),
+                "Writes" => {
+                    writes = match attribute.args.as_slice() {
+                        [serde_json::Value::String(target)] => Some(target.clone()),
+                        _ => bail!("[Writes] on {name} takes the name of a [Target]"),
+                    }
+                }
+                other => bail!("[{other}] doesn't go on a [Pass] ({name})"),
+            }
+        }
+        let order = order.expect("marked [Pass]");
+        let writes = writes.with_context(|| format!("[Pass] {name} needs [Writes(\"target\")] to say which [Target] it draws"))?;
+        ensure!(order >= 0.0 && order.fract() == 0.0, "[Pass({order})] on {name} must be 0, 1, 2 ...");
+        passes.push((order as u32, PassShape { function: name.clone(), writes }));
+    }
+    passes.sort_by_key(|(order, _)| *order);
+    if let Some(pair) = passes.windows(2).find(|w| w[0].0 == w[1].0) {
+        bail!("{} and {} are both [Pass({})]", pair[0].1.function, pair[1].1.function, pair[0].0);
+    }
+    ensure!(passes.len() <= MAX_PASSES, "the shader has {} passes; at most {MAX_PASSES}", passes.len());
+    Ok(passes.into_iter().map(|(_, pass)| pass).collect())
 }
 
 fn read_inputs(declarations: &[Declaration]) -> Result<Option<Inputs>> {
@@ -274,7 +373,7 @@ mod tests {
 
     #[test]
     fn the_glue_stores_floats_and_converts_to_the_users_types() {
-        let glue = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap().glue("canvas", true);
+        let glue = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap().glue("gradient", "canvas", true);
         assert!(glue.contains("    float3 night;\n    float2 roseAt;\n    float bands[8];\n"), "{glue}");
         assert!(glue.contains("uniform GdInputs gd_inputs;"));
         assert!(glue.contains("i.night = half3(gd_inputs.night);"));
@@ -296,10 +395,44 @@ mod tests {
     #[test]
     fn without_a_script_the_initializers_are_used_and_required() {
         let shape = CanvasShape::read(&gradient(vec![attribute("Canvas", vec![])])).unwrap();
-        let glue = shape.glue("canvas", false);
+        let glue = shape.glue("gradient", "canvas", false);
         assert!(glue.contains("Inputs i = {};") && !glue.contains("uniform"), "{glue}");
         let error = shape.check_without_script().unwrap_err().to_string();
         assert!(error.contains("night, roseAt") && !error.contains("bands"), "{error}");
+    }
+
+    fn trail(target: Vec<Attribute>, pass: Vec<Attribute>) -> Vec<Declaration> {
+        let mut declarations = gradient(vec![attribute("Canvas", vec![])]);
+        declarations.push(Declaration::Variable { name: "trail".into(), r#type: "Sampler2D<vector<half,4>>".into(), attributes: target });
+        declarations.push(Declaration::Function {
+            name: "smear".into(),
+            returns: "half4".into(),
+            params: vec![field("p", "Pixel", false), field("i", "Inputs", false)],
+            attributes: pass,
+        });
+        declarations
+    }
+
+    #[test]
+    fn targets_and_the_passes_that_write_them_are_read() {
+        let target = vec![attribute("Target", vec![]), attribute("Feedback", vec![]), attribute("Scale", vec![json!(0.25)]), attribute("Format", vec![json!("rgba16f")])];
+        let shape = CanvasShape::read(&trail(target, vec![attribute("Pass", vec![json!(0)]), attribute("Writes", vec![json!("trail")])])).unwrap();
+        assert_eq!(shape.targets, [RenderTarget { name: "trail".into(), scale: 0.25, format: TargetFormat::Rgba16f, feedback: true }]);
+        assert_eq!(shape.passes, [PassShape { function: "smear".into(), writes: "trail".into() }]);
+        assert_eq!(shape.functions().collect::<Vec<_>>(), ["smear", "gradient"]);
+        assert!(shape.glue("smear", "canvas", true).contains("return float4(smear(p, gd_load()));"));
+    }
+
+    #[test]
+    fn target_and_pass_mistakes_are_named() {
+        let error = |d: &[Declaration]| format!("{:#}", CanvasShape::read(d).unwrap_err());
+        let target = || vec![attribute("Target", vec![])];
+        assert!(error(&trail(target(), vec![attribute("Pass", vec![json!(0)])])).contains("needs [Writes(\"target\")]"));
+        assert!(error(&trail(target(), vec![attribute("Pass", vec![json!(0)]), attribute("Writes", vec![json!("smoke")])])).contains("smoke, which isn't a target"));
+        assert!(error(&trail(target(), vec![])).contains("written by 0 passes"));
+        assert!(error(&trail(vec![attribute("Feedback", vec![])], vec![])).contains("[Feedback] goes on a [Target]"));
+        let format = vec![attribute("Target", vec![]), attribute("Format", vec![json!("rgb565")])];
+        assert!(error(&trail(format, vec![attribute("Pass", vec![json!(0)]), attribute("Writes", vec![json!("trail")])])).contains("takes \"rgba8\" or \"rgba16f\""));
     }
 
     #[test]

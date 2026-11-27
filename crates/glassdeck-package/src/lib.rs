@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 
-pub use canvas::{CANVAS_API, Canvas, CanvasFiles, CanvasScripts, InputField, InputKind, canvas_sources, source_digest};
+pub use canvas::{
+    CANVAS_API, Canvas, CanvasFiles, CanvasScripts, InputField, InputKind, MAX_PASSES, MAX_TARGETS, Pass, RenderTarget, TargetFormat, canvas_sources,
+    source_digest,
+};
 pub use folder::{DECK_SOURCE, DeckSource, is_blank_script, pack_folder, read_script};
 pub use network::NetworkHost;
 pub use manifest::{
@@ -37,6 +40,11 @@ pub const OPTIONS_SCRIPT: &str = "options.luau";
 pub const BRIDGE_SCRIPT: &str = "bridge.luau";
 /// A canvas's compiled GLSL ES 3.00 fragment shader
 pub const SHADER: &str = "shader.essl";
+
+/// Pass `n`'s fragment shader in a canvas package.
+pub fn pass_shader(n: usize) -> String {
+    format!("pass{n}.essl")
+}
 pub const ASSETS_FOLDER: &str = "assets";
 /// The Flux panel; every background video is exactly this size, so nothing scales on the keyboard.
 pub const PANEL: (u16, u16) = (1920, 1080);
