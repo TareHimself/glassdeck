@@ -34,12 +34,34 @@ function settled<T>(last: Chosen<T> | null): Picking<T> {
 
 /**
  * `pick` opens the file dialog (null when cancelled) and `load` reads what was picked. A second
- * `choose` while one is under way is ignored, so the dialog never opens twice.
+ * `choose` while one is under way is ignored, so the dialog never opens twice. `take` loads a file
+ * that came some other way, such as dropped on the window.
  */
 export function usePicker<T>(pick: () => Promise<string | null>, load: (path: string) => Promise<Answer<T>>) {
   const [picking, setPicking] = useState<Picking<T>>({ state: "empty" });
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const busy = useRef(false);
+
+  const loadPath = async (path: string, last: Chosen<T> | null) => {
+    setPicking({ state: "loading", path, last });
+    const loaded = await load(path);
+    if (loaded.status === "error") {
+      setProblem(loaded.error);
+      return setPicking(settled(last));
+    }
+    setProblem(null);
+    setPicking({ state: "chosen", chosen: { path, value: loaded.data } });
+  };
+
+  const take = async (path: string) => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      await loadPath(path, lastChosen(picking));
+    } finally {
+      busy.current = false;
+    }
+  };
 
   const choose = async () => {
     if (busy.current) return;
@@ -49,20 +71,13 @@ export function usePicker<T>(pick: () => Promise<string | null>, load: (path: st
       setPicking({ state: "choosing", last });
       const path = await pick();
       if (!path) return setPicking(settled(last));
-      setPicking({ state: "loading", path, last });
-      const loaded = await load(path);
-      if (loaded.status === "error") {
-        setProblem(loaded.error);
-        return setPicking(settled(last));
-      }
-      setProblem(null);
-      setPicking({ state: "chosen", chosen: { path, value: loaded.data } });
+      await loadPath(path, last);
     } finally {
       busy.current = false;
     }
   };
 
-  return { picking, choose, problem, busy: picking.state === "choosing" || picking.state === "loading" };
+  return { picking, choose, take, problem, busy: picking.state === "choosing" || picking.state === "loading" };
 }
 
 /** What a Choose button says while picking is under way. */

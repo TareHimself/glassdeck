@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { commands, type BackgroundKind, type LibraryError, type NewContent, type VideoFacts } from "../bindings";
+import type { DroppedFile } from "../fileDrop";
 import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
 import { Dialog, DialogActions } from "../components/Dialog";
@@ -62,9 +63,10 @@ function useStartingCanvas() {
   return { ...live, error };
 }
 
-export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
+/** `file`: one dropped on the window, chosen already. */
+export function NewBackgroundDialog({ file, onClose }: { file?: DroppedFile; onClose: () => void }) {
   const navigate = useNavigate();
-  const [kind, setKind] = useState<BackgroundKind>("canvas");
+  const [kind, setKind] = useState<BackgroundKind>(file?.kind ?? "canvas");
   const [title, setTitle] = useState("");
   const [video, setVideo] = useState<{ path: string; facts: VideoFacts } | null>(null);
   const [cut, setCut] = useState<Cut | null>(null);
@@ -77,7 +79,10 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
 
   const chooseVideo = async () => {
     const path = await commands.pickVideo();
-    if (!path) return;
+    if (path) await takeVideo(path);
+  };
+
+  const takeVideo = async (path: string) => {
     const facts = await commands.videoFacts(path);
     if (facts.status === "error") {
       setProblem(facts.error);
@@ -88,6 +93,13 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
     setCut(facts.data.length === null ? null : { crop: 0.5, start: 0, end: facts.data.length });
     if (!title) setTitle(fileTitle(path));
   };
+
+  useEffect(() => {
+    if (file?.kind === "image") void pictures.take(file.path);
+    if (file?.kind === "video") void takeVideo(file.path);
+    // Only the file the dialog opened with; later choices go through Choose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file]);
 
   const pictureFile = picture?.path;
   useEffect(() => {

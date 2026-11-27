@@ -659,6 +659,8 @@ fn bindings() -> Builder<tauri::Wry> {
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .constant("BUILT_IN_BACKGROUND", glassdeck_proto::BUILT_IN_BACKGROUND)
+        .constant("IMAGE_EXTENSIONS", images::EXTENSIONS)
+        .constant("VIDEO_EXTENSIONS", VIDEO_EXTENSIONS)
         .error_handling(ErrorHandlingMode::Result)
         // Option values are serde_json::Value, whose numbers JavaScript parses as doubles anyway.
         .dangerously_cast_bigints_to_number()

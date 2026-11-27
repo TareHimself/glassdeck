@@ -113,6 +113,10 @@ export const BUILT_IN_BACKGROUND = "background.core.glassdeck.gradient" as const
 
 export const GRID = 8 as const;
 
+export const IMAGE_EXTENSIONS = ["jpg","jpeg","png","webp","gif","bmp","jfif"] as const;
+
+export const VIDEO_EXTENSIONS = ["mp4","m4v","mov","mkv","webm","wmv"] as const;
+
 export const WIDGET_AREA = {"h":248,"w":1896} as const;
 
 /* Types */

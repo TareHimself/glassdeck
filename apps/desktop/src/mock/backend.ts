@@ -1,5 +1,5 @@
 import { emit } from "@tauri-apps/api/event";
-import { mockConvertFileSrc, mockIPC } from "@tauri-apps/api/mocks";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { BUILT_IN_BACKGROUND } from "../bindings";
 import type {
   BackgroundSummary,
@@ -376,11 +376,17 @@ function setKeyboard(connection: KeyboardLink) {
 
 declare global {
   interface Window {
-    glassdeckMock?: { setKeyboard: typeof setKeyboard; staleFrame: string; watching: () => number };
+    glassdeckMock?: { setKeyboard: typeof setKeyboard; staleFrame: string; watching: () => number; dragFiles: typeof dragFiles };
   }
 }
 
+/** Files dragged over the window, as Tauri reports them: `enter`, then `drop` or `leave`. */
+function dragFiles(type: "enter" | "drop" | "leave", paths: string[] = []) {
+  void emit(`tauri://drag-${type}`, { paths, position: { x: 400, y: 300 } });
+}
+
 export function installMockBackend() {
+  mockWindows("main");
   mockConvertFileSrc("windows");
   mockIPC(
     (cmd, payload) => {
@@ -390,5 +396,5 @@ export function installMockBackend() {
     },
     { shouldMockEvents: true },
   );
-  window.glassdeckMock = { setKeyboard, staleFrame: STALE_FRAME, watching: () => watching.peers.size };
+  window.glassdeckMock = { setKeyboard, staleFrame: STALE_FRAME, watching: () => watching.peers.size, dragFiles };
 }

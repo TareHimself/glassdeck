@@ -4,6 +4,8 @@ import { commands, type BackgroundKind, type BackgroundSummary, type LibraryErro
 import { Button } from "../components/Button";
 import { LibraryCard, type CardActions, type CardUse } from "../components/LibraryCard";
 import { BackgroundThumb } from "../components/Thumbs";
+import { DropOverlay } from "../components/DropOverlay";
+import { useFileDrop, type DroppedFile } from "../fileDrop";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { SearchRow } from "../components/SearchRow";
@@ -19,6 +21,8 @@ import styles from "./Backgrounds.module.css";
 type Library = { state: "loading" } | { state: "ready"; backgrounds: BackgroundSummary[] } | { state: "failed"; error: LibraryError };
 type Answer<T> = { status: "ok"; data: T } | { status: "error"; error: LibraryError };
 type Filter = "all" | BackgroundKind;
+/** The New background dialog; `opened` starts it afresh when another file is dropped while it's open. */
+type Creating = { state: "closed" } | { state: "open"; file: DroppedFile | undefined; opened: number };
 
 const FILTERS: { value: Filter; name: string }[] = [
   { value: "all", name: "All" },
@@ -79,8 +83,10 @@ export function Backgrounds() {
   const theme = useGlassdeckd((s) => s.theme);
   const { library, reload } = useBackgrounds();
   const [problem, setProblem] = useState<LibraryError | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<Creating>({ state: "closed" });
+  const drag = useFileDrop((file) => setCreating({ state: "open", file, opened: Date.now() }));
   const { shown, search } = useShown(library.state === "ready" ? library.backgrounds : []);
+  const openNew = () => setCreating({ state: "open", file: undefined, opened: Date.now() });
 
   const run = async <T,>(call: Promise<Answer<T>>) => {
     const result = await call;
@@ -101,7 +107,7 @@ export function Backgrounds() {
       <PageHeader
         title="Backgrounds"
         actions={
-          <Button variant="primary" onClick={() => setCreating(true)}>
+          <Button variant="primary" onClick={openNew}>
             New background
           </Button>
         }
@@ -120,14 +126,15 @@ export function Backgrounds() {
             use={{ kind: "edit", href: `/backgrounds/${background.id}`, actions }}
           />
         ))}
-        <button type="button" className={styles.newTile} onClick={() => setCreating(true)}>
+        <button type="button" className={styles.newTile} onClick={openNew}>
           <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M14 6v16M6 14h16" />
           </svg>
           New background
         </button>
       </div>
-      {creating && <NewBackgroundDialog onClose={() => setCreating(false)} />}
+      {creating.state === "open" && <NewBackgroundDialog key={creating.opened} file={creating.file} onClose={() => setCreating({ state: "closed" })} />}
+      <DropOverlay drag={drag} />
     </div>
   );
 }
