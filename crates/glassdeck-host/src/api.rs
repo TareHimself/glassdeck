@@ -78,7 +78,7 @@ pub fn image_api(lua: &Lua) -> Result<Table> {
 }
 
 /// `media.current()`: nil when nothing is playing or paused, else
-/// `{ title, artist, album, playing, track, cover? }`. `track` changes with the track.
+/// `{ title, artist, album, playing, track, cover?, position?, duration? }`. `track` changes with the track.
 pub fn media_api(lua: &Lua, now_playing: &SharedNowPlaying) -> Result<Table> {
     let api = lua.create_table().lua_context("creating media")?;
     let reading = SharedNowPlaying::clone(now_playing);
@@ -93,6 +93,10 @@ pub fn media_api(lua: &Lua, now_playing: &SharedNowPlaying) -> Result<Table> {
             track.set("track", now.track_number)?;
             if let Some(cover) = now.cover {
                 track.set("cover", lua.create_string(cover.as_slice())?)?;
+            }
+            if let Some(timeline) = now.timeline {
+                track.set("position", timeline.position)?;
+                track.set("duration", timeline.duration)?;
             }
             Ok(Value::Table(track))
         })

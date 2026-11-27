@@ -56,6 +56,9 @@ export type NowPlaying = {
     track: number,
     -- the cover as the player gave it (usually JPEG or PNG); image.fit makes it fit for live.put
     cover: string?,
+    -- seconds into the track, and its length, when the player says
+    position: number?,
+    duration: number?,
 }
 
 declare media: {

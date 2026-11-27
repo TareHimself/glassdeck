@@ -123,8 +123,8 @@ impl UserData for Ui {
             ui.record("graph", command)
         });
         methods.add_method("image", |_, ui, (handle, opts): (AnyUserData, Option<Table>)| {
-            let o = Opts::new("image", opts, &["x", "y", "w", "h"])?;
-            ui.record("image", Command::Image { resource: resource_of(&handle)?, area: o.area(ui.size())? })
+            let o = Opts::new("image", opts, &["x", "y", "w", "h", "radius"])?;
+            ui.record("image", Command::Image { resource: resource_of(&handle)?, area: o.area(ui.size())?, radius: o.number("radius", 0.0)? })
         });
         methods.add_method("arc", |_, ui, (cx, cy, r, from, to, opts): (f32, f32, f32, f32, f32, Option<Table>)| {
             let o = Opts::new("arc", opts, &["width", "color"])?;

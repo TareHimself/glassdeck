@@ -21,5 +21,5 @@ every(1, function()
             live.clear("cover")
         end
     end
-    send({ title = now.title, artist = now.artist, playing = now.playing })
+    send({ title = now.title, artist = now.artist, playing = now.playing, position = now.position, duration = now.duration })
 end)

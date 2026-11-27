@@ -21,6 +21,8 @@ export type RectOptions = { fill: string?, stroke: string?, stroke_width: number
 -- x, y, w and h default to the whole module
 export type AreaOptions = { x: number?, y: number?, w: number?, h: number? }
 
+export type ImageOptions = { x: number?, y: number?, w: number?, h: number?, radius: number? }
+
 export type BarOptions = { x: number?, y: number?, w: number?, h: number?, color: string? }
 
 export type GraphOptions = { x: number?, y: number?, w: number?, h: number?, color: string?, min: number?, max: number? }
@@ -37,7 +39,7 @@ declare extern type Ui with
     function bar(self, fraction: number, options: BarOptions?): ()
     function graph(self, values: { number }, options: GraphOptions?): ()
     -- an .svg or .png: ui:image(keyboard.resource("icons/dot.svg"), ...)
-    function image(self, image: Resource, options: AreaOptions?): ()
+    function image(self, image: Resource, options: ImageOptions?): ()
     -- degrees, clockwise from 12 o'clock
     function arc(self, cx: number, cy: number, r: number, from: number, to: number, options: ArcOptions?): ()
 end

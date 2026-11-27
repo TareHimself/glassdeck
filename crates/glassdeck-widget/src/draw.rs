@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use fontdue::{Font, FontSettings, Metrics};
 use glassdeck_package::Resource;
 use glassdeck_luau::ResourceRef;
-use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
+use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use resvg::usvg;
 
 /// Text keeps the key labels' shadow, so it reads over any wallpaper or effect.
@@ -85,7 +85,8 @@ pub enum Command {
     Rect { area: Area, fill: Option<Color>, stroke: Option<(Color, f32)>, radius: f32 },
     Bar { fraction: f32, area: Area, color: Color },
     Graph { values: Vec<f32>, area: Area, color: Color, min: Option<f32>, max: Option<f32> },
-    Image { resource: ResourceRef, area: Area },
+    /// `radius` rounds the image's corners.
+    Image { resource: ResourceRef, area: Area, radius: f32 },
     /// Degrees, clockwise from 12 o'clock.
     Arc { cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, color: Color },
 }
@@ -214,19 +215,29 @@ pub fn render(
                     pixmap.stroke_path(&path, &color.paint(), &stroke, Transform::identity(), None);
                 }
             }
-            Command::Image { resource, area } => match images.get(resource, read_resource)? {
-                Some(Image::Raster(image)) => {
-                    let scale = Transform::from_row(area.w / image.width() as f32, 0.0, 0.0, area.h / image.height() as f32, area.x, area.y);
-                    let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
-                    pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, scale, None);
+            Command::Image { resource, area, radius } => {
+                let corners = rounded_corners(&pixmap, *area, *radius);
+                match images.get(resource, read_resource)? {
+                    Some(Image::Raster(image)) => {
+                        let scale = Transform::from_row(area.w / image.width() as f32, 0.0, 0.0, area.h / image.height() as f32, area.x, area.y);
+                        let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
+                        pixmap.draw_pixmap(0, 0, image.as_ref(), &paint, scale, corners.as_ref());
+                    }
+                    Some(Image::Vector(tree)) => {
+                        let natural = tree.size();
+                        let scale = Transform::from_row(area.w / natural.width(), 0.0, 0.0, area.h / natural.height(), area.x, area.y);
+                        match &corners {
+                            None => resvg::render(tree, scale, &mut pixmap.as_mut()),
+                            Some(corners) => {
+                                let mut layer = Pixmap::new(pixmap.width(), pixmap.height()).context("allocating an image layer")?;
+                                resvg::render(tree, scale, &mut layer.as_mut());
+                                pixmap.draw_pixmap(0, 0, layer.as_ref(), &PixmapPaint::default(), Transform::identity(), Some(corners));
+                            }
+                        }
+                    }
+                    None => {}
                 }
-                Some(Image::Vector(tree)) => {
-                    let natural = tree.size();
-                    let scale = Transform::from_row(area.w / natural.width(), 0.0, 0.0, area.h / natural.height(), area.x, area.y);
-                    resvg::render(tree, scale, &mut pixmap.as_mut());
-                }
-                None => {}
-            },
+            }
             Command::Arc { cx, cy, r, from, to, width, color } => {
                 if let Some(path) = arc_path(*cx, *cy, *r, *from, *to) {
                     let stroke = Stroke { width: *width, line_cap: LineCap::Round, ..Stroke::default() };
@@ -304,6 +315,16 @@ fn blend(pixmap: &mut Pixmap, x: i32, y: i32, color: Color, coverage: u8) {
         *channel = ((source as u32 * a + *channel as u32 * keep + 127) / 255) as u8;
     }
     pixel[3] = (a + (pixel[3] as u32 * keep + 127) / 255) as u8;
+}
+
+/// A mask that keeps `area` with rounded corners; `None` when nothing is rounded.
+fn rounded_corners(pixmap: &Pixmap, area: Area, radius: f32) -> Option<Mask> {
+    if radius <= 0.0 {
+        return None;
+    }
+    let mut mask = Mask::new(pixmap.width(), pixmap.height())?;
+    mask.fill_path(&rounded_rect(area, radius)?, FillRule::Winding, true, Transform::identity());
+    Some(mask)
 }
 
 fn rounded_rect(area: Area, radius: f32) -> Option<Path> {
@@ -392,7 +413,7 @@ mod tests {
     fn a_missing_resource_fails_loudly() {
         let name = glassdeck_package::ResourceName::parse("missing.png").unwrap();
         let missing = ResourceRef::Packaged(glassdeck_package::Resource { kind: glassdeck_package::ResourceKind::Keyboard, name });
-        let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
+        let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, radius: 0.0 }];
         let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
         assert!(render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets).is_err());
     }
@@ -400,7 +421,7 @@ mod tests {
     #[test]
     fn a_live_resource_not_sent_yet_draws_nothing() {
         let cover = ResourceRef::Live(glassdeck_luau::LiveName::parse("cover").unwrap());
-        let commands = [Command::Image { resource: cover, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 } }];
+        let commands = [Command::Image { resource: cover, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, radius: 0.0 }];
         let not_yet = |_: &ResourceRef| -> Result<Option<Vec<u8>>> { Ok(None) };
         let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &not_yet).unwrap();
         assert!(tile.pixels().iter().all(|p| p.alpha() == 0));

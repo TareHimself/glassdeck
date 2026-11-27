@@ -29,6 +29,14 @@ pub struct NowPlaying {
     pub cover: Option<Arc<Vec<u8>>>,
     /// Changes whenever the track does, so a script knows when to send a new cover.
     pub track_number: u64,
+    /// Where playback is and how long the track runs, when the player says.
+    pub timeline: Option<Timeline>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timeline {
+    pub position: f64,
+    pub duration: f64,
 }
 
 pub type SharedNowPlaying = Arc<Mutex<Option<NowPlaying>>>;
@@ -53,14 +61,15 @@ fn watch(shared: &SharedNowPlaying) -> Result<()> {
     loop {
         last = match read(&manager) {
             Ok(Some((track, playing, session))) => Some(match last {
-                Some(same) if same.track == track => NowPlaying { playing, ..same },
+                Some(same) if same.track == track => NowPlaying { playing, timeline: timeline_of(&session, playing), ..same },
                 _ => {
                     next_number += 1;
                     let cover = cover_of(&session).unwrap_or_else(|e| {
                         eprintln!("error: media: reading the cover of {:?}: {e:#}", track.title);
                         None
                     });
-                    NowPlaying { track, playing, cover, track_number: next_number }
+                    let timeline = timeline_of(&session, playing);
+                    NowPlaying { track, playing, cover, track_number: next_number, timeline }
                 }
             }),
             Ok(None) => None,
@@ -83,6 +92,30 @@ fn read(manager: &SessionManager) -> Result<Option<(Track, bool, Session)>> {
     let track = Track { title: properties.Title()?.to_string(), artist: properties.Artist()?.to_string(), album: properties.AlbumTitle()?.to_string() };
     let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == Status::Playing;
     Ok(Some((track, playing, session)))
+}
+
+/// Players update the position only now and then, so a playing track adds the time since.
+fn timeline_of(session: &Session, playing: bool) -> Option<Timeline> {
+    const TICKS_PER_SECOND: f64 = 10_000_000.0;
+    let timeline = session.GetTimelineProperties().ok()?;
+    let ticks = |span: windows::Foundation::TimeSpan| span.Duration as f64 / TICKS_PER_SECOND;
+    let duration = ticks(timeline.EndTime().ok()?) - ticks(timeline.StartTime().ok()?);
+    if duration <= 0.0 {
+        return None;
+    }
+    let mut position = ticks(timeline.Position().ok()?);
+    if playing {
+        let updated = timeline.LastUpdatedTime().ok()?.UniversalTime;
+        position += (filetime_now() - updated) as f64 / TICKS_PER_SECOND;
+    }
+    Some(Timeline { position: position.clamp(0.0, duration), duration })
+}
+
+/// Now, in the 100 ns ticks since 1601 that WinRT times use.
+fn filetime_now() -> i64 {
+    const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    let since_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    UNIX_EPOCH_TICKS + (since_unix.as_nanos() / 100) as i64
 }
 
 fn cover_of(session: &Session) -> Result<Option<Arc<Vec<u8>>>> {
