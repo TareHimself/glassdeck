@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Link } from "react-router";
 import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundKind, type BackgroundSummary, type PanelLayout, type PanelRect, type StreamEntry, type ThemeWidget, type Value, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
@@ -36,6 +36,35 @@ function placed(rect: PanelRect) {
 }
 
 type Box = { x: number; y: number; w: number; h: number };
+type Size = { w: number; h: number };
+
+/** How small and large a widget may be made, from its sizing in the library. */
+function boundsOf(widget: WidgetSummary | undefined, placedSize: Size): { min: Size; max: Size } {
+  const sizing = widget?.sizing;
+  switch (sizing?.kind) {
+    case "range":
+      return { min: sizing.min, max: sizing.max };
+    case "any":
+      return { min: { w: GRID, h: GRID }, max: WIDGET_AREA };
+    default:
+      return { min: placedSize, max: placedSize };
+  }
+}
+
+const snap = (value: number) => Math.round(value / GRID) * GRID;
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+
+/** Where a move or resize by (dx, dy) panel pixels lands: on the grid, inside the area and the widget's bounds. */
+function dragged(start: Box, mode: "move" | "resize", dx: number, dy: number, bounds: { min: Size; max: Size }): Box {
+  if (mode === "move") {
+    return { ...start, x: clamp(snap(start.x + dx), 0, WIDGET_AREA.w - start.w), y: clamp(snap(start.y + dy), 0, WIDGET_AREA.h - start.h) };
+  }
+  return {
+    ...start,
+    w: clamp(snap(start.w + dx), bounds.min.w, Math.min(bounds.max.w, WIDGET_AREA.w - start.x)),
+    h: clamp(snap(start.h + dy), bounds.min.h, Math.min(bounds.max.h, WIDGET_AREA.h - start.y)),
+  };
+}
 
 function overlaps(a: Box, b: Box): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -147,6 +176,10 @@ export function Overview() {
   const [creating, setCreating] = useState(false);
   const [creatingWidget, setCreatingWidget] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [selected, setSelected] = useState<number | null>(null);
+  /** The widget being dragged, where it is now; the draft changes only when the drag ends. */
+  const [ghost, setGhost] = useState<{ index: number; box: Box } | null>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const [applying, setApplying] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const backgroundCard = useRef<HTMLElement>(null);
@@ -200,6 +233,35 @@ export function Overview() {
   if (!draft) return <PageHeader title="Overview" />;
 
   const titleOf = (id: string) => library.widgets.find((w) => w.id === id)?.title ?? id;
+  const placedWidgets = draft.widgets ?? [];
+
+  const startDrag = (e: ReactPointerEvent, index: number, mode: "move" | "resize") => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelected(index);
+    const rect = panel.current?.getBoundingClientRect();
+    const widget = placedWidgets[index];
+    if (!rect || !widget) return;
+    const scale = PANEL.w / rect.width;
+    const start: Box = { x: widget.x, y: widget.y, w: widget.w, h: widget.h };
+    const bounds = boundsOf(library.widgets.find((w) => w.id === widget.package), start);
+    const others = placedWidgets.filter((_, i) => i !== index);
+    let last = start;
+    const move = (m: PointerEvent) => {
+      const next = dragged(start, mode, (m.clientX - e.clientX) * scale, (m.clientY - e.clientY) * scale, bounds);
+      if (others.some((o) => overlaps(next, o))) return;
+      last = next;
+      setGhost({ index, box: next });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setGhost(null);
+      if (last !== start) setDraft((d) => ({ ...d, widgets: (d.widgets ?? []).map((w, i) => (i === index ? { ...w, ...last } : w)) }));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const area = layout?.widget_area;
   const knownStream = !draft.stream || streams.some((s) => s.name === draft.stream);
   const live = streams.some((s) => s.name === draft.stream && s.shown);
@@ -222,20 +284,43 @@ export function Overview() {
 
       <div className={styles.columns}>
         <section aria-label="Keyboard preview" className={styles.preview}>
-          <div className={styles.panel}>
+          <div className={styles.panel} ref={panel} onPointerDown={() => setSelected(null)}>
             {backgroundLayer.kind === "canvas" && backgroundLayer.jpeg && <img className={styles.layer} alt="" src={`data:image/jpeg;base64,${backgroundLayer.jpeg}`} />}
             {backgroundLayer.kind === "video" && backgroundLayer.src && <video className={styles.layer} src={backgroundLayer.src} autoPlay loop muted playsInline />}
             {area && <div className={styles.area} style={placed(area)} />}
             {area &&
-              (draft.widgets ?? []).map((widget, i) => (
-                <div
-                  key={i}
-                  className={styles.widget}
-                  style={placed({ x: (area.x ?? 0) + widget.x, y: (area.y ?? 0) + widget.y, w: widget.w, h: widget.h })}
-                >
-                  {tileOf(tiles[i], titleOf(widget.package))}
-                </div>
-              ))}
+              placedWidgets.map((widget, i) => {
+                const box = ghost?.index === i ? ghost.box : widget;
+                const resizable = (() => {
+                  const { min, max } = boundsOf(library.widgets.find((w) => w.id === widget.package), widget);
+                  return min.w !== max.w || min.h !== max.h;
+                })();
+                return (
+                  <div
+                    key={i}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Select ${titleOf(widget.package)}`}
+                    aria-pressed={selected === i}
+                    className={styles.widget}
+                    style={placed({ x: (area.x ?? 0) + box.x, y: (area.y ?? 0) + box.y, w: box.w, h: box.h })}
+                    onPointerDown={(e) => startDrag(e, i, "move")}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") setSelected(i);
+                    }}
+                  >
+                    {tileOf(tiles[i], titleOf(widget.package))}
+                    {selected === i && (
+                      <>
+                        <span className={styles.geom}>
+                          {box.x}, {box.y} {box.w}×{box.h}
+                        </span>
+                        {resizable && <span className={styles.handle} aria-hidden="true" onPointerDown={(e) => startDrag(e, i, "resize")} />}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             {showKeys &&
               layout?.keys.map((key, i) => (
                 <div key={i} className={styles.key} style={placed(key)}>
@@ -363,13 +448,13 @@ export function Overview() {
               </Menu>
             )}
             <div className={styles.widgetList}>
-              {(draft.widgets ?? []).map((widget, i) => (
-                <div key={i} className={styles.widgetRow}>
+              {placedWidgets.map((widget, i) => (
+                <button key={i} type="button" className={styles.widgetRow} aria-pressed={selected === i} onClick={() => setSelected(i)}>
                   <span className={styles.widgetTitle}>{titleOf(widget.package)}</span>
                   <span className={styles.geometry}>
                     {widget.x}, {widget.y} {widget.w}×{widget.h}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           </section>

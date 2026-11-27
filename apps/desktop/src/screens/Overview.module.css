@@ -70,6 +70,8 @@
 
 .widget {
   position: absolute;
+  touch-action: none;
+  cursor: pointer;
   box-sizing: border-box;
   border-radius: 1cqw;
   background: rgba(8, 6, 24, 0.28);
@@ -80,6 +82,36 @@
   font-size: 1.2cqw;
   font-weight: 600;
   overflow: hidden;
+}
+
+.widget[aria-pressed="true"] {
+  cursor: move;
+  border: 2px solid var(--accent-soft);
+}
+
+.geom {
+  position: absolute;
+  left: 0.4cqw;
+  top: 0.3cqw;
+  z-index: 2;
+  font-family: var(--mono);
+  font-size: 0.8cqw;
+  color: #cfe2ff;
+  pointer-events: none;
+}
+
+.handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 1.4cqw;
+  height: 1.4cqw;
+  min-width: 12px;
+  min-height: 12px;
+  border-radius: 0.3cqw 0 0.8cqw 0;
+  background: var(--accent-soft);
+  cursor: nwse-resize;
 }
 
 .key {
@@ -244,6 +276,12 @@
 }
 
 .widgetRow {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -298,4 +336,8 @@
 .addItem {
   justify-content: space-between;
   gap: 10px;
+}
+
+.widgetRow[aria-pressed="true"] {
+  background: #1f2633;
 }
