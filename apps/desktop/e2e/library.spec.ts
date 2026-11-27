@@ -33,7 +33,11 @@ test("an image background is made from a picture, and the Image filter finds it"
   await dialog.getByRole("radio", { name: "Image" }).click();
   await expect(dialog.getByRole("button", { name: "Create" })).toBeDisabled();
   await dialog.getByRole("button", { name: "Choose" }).click();
+  await expect(dialog.getByRole("status")).toHaveText("Fitting the picture to the keyboard");
+  await expect(dialog.getByRole("button", { name: "Loading…" })).toBeDisabled();
   await expect(dialog.getByRole("img", { name: "How the picture fills the keyboard" })).toBeVisible();
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Choose" })).toBeEnabled();
   await expect(dialog.getByLabel("Title")).toHaveValue("mountain-dawn");
   await dialog.getByLabel("Title").fill("Peaks");
   await dialog.getByRole("button", { name: "Create" }).click();

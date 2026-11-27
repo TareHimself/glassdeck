@@ -19,6 +19,8 @@ import { BACKGROUNDS, CANVAS_FILES, CLOCK_KEYBOARD, CLOCK_OPTIONS, PANEL_LAYOUT,
 import { canvasFrame, monitorFrame, pictureFrame, staleFrame, widgetTile } from "./frames";
 
 const STALE_FRAME = staleFrame();
+/** How long the mock takes to fit a picked picture, as a big photo might. */
+const PICTURE_LOAD_MS = 600;
 
 /** A canvas's shader the way Slang names things (`frame_0.time_0`), drifting colour over time. */
 const MOCK_SHADER = `#version 300 es
@@ -219,7 +221,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   import_widget: () => null,
   pick_video: () => null,
   pick_image: () => "C:\\Pictures\\mountain-dawn.jpg",
-  preview_image: () => pictureFrame(),
+  preview_image: async () => {
+    await new Promise((done) => window.setTimeout(done, PICTURE_LOAD_MS));
+    return pictureFrame();
+  },
   read_image: ({ id }) => imageBackground(id as string, "mountain-dawn.jpg"),
   replace_image: ({ id, source }) => imageBackground(id as string, (source as string).split(/[\\/]/).pop() ?? ""),
   list_backgrounds: () => state.backgrounds,

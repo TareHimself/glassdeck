@@ -2,9 +2,11 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { commands, type ImageBackground, type LibraryError } from "../bindings";
 import { Button } from "../components/Button";
+import { Loading } from "../components/Loading";
 import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { describeLibraryError } from "../library";
+import { chooseLabel, usePicker } from "../picking";
 import styles from "./VideoPage.module.css";
 
 const LIBRARY = { to: "/backgrounds", label: "Backgrounds" };
@@ -14,7 +16,8 @@ export function ImagePage({ id }: { id: string }) {
   const back = useBack(LIBRARY);
   const [loaded, setLoaded] = useState<{ image: ImageBackground; at: number } | null>(null);
   const [problem, setProblem] = useState<LibraryError | null>(null);
-  const [replacing, setReplacing] = useState(false);
+  const replacing = usePicker(commands.pickImage, (source) => commands.replaceImage(id, source));
+  const replaced = replacing.picking.state === "chosen" ? replacing.picking.chosen.value : null;
 
   useEffect(() => {
     void commands.readImage(id).then((result) => {
@@ -23,30 +26,25 @@ export function ImagePage({ id }: { id: string }) {
     });
   }, [id]);
 
+  useEffect(() => {
+    if (replaced) setLoaded({ image: replaced, at: Date.now() });
+  }, [replaced]);
+
   if (!loaded) return problem ? <Problem>{describeLibraryError(problem)}</Problem> : <PageHeader back={back} title="" />;
   const { background, record, path, width, height } = loaded.image;
-
-  const replace = async () => {
-    const source = await commands.pickImage();
-    if (!source) return;
-    setReplacing(true);
-    const result = await commands.replaceImage(id, source);
-    setReplacing(false);
-    if (result.status === "error") return setProblem(result.error);
-    setProblem(null);
-    setLoaded({ image: result.data, at: Date.now() });
-  };
 
   return (
     <div className={styles.page}>
       <PageHeader back={back} title={background.title} id={`${background.id} ${background.version}, image background`} />
 
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+      {replacing.problem && <Problem>{describeLibraryError(replacing.problem)}</Problem>}
 
       <div className={styles.columns}>
         <section aria-label="Preview" className={styles.preview}>
           <div className={styles.stage}>
             <img className={styles.video} alt={background.title} src={`${convertFileSrc(path)}?at=${loaded.at}`} />
+            {replacing.picking.state === "loading" && <Loading label="Fitting the new picture to the keyboard" />}
           </div>
         </section>
 
@@ -54,8 +52,8 @@ export function ImagePage({ id }: { id: string }) {
           <section className={styles.card}>
             <div className={styles.cardHead}>
               <h2 className={styles.cardTitle}>Image</h2>
-              <Button className={styles.small} disabled={replacing} onClick={() => void replace()}>
-                Replace file
+              <Button className={styles.small} disabled={replacing.busy} onClick={() => void replacing.choose()}>
+                {chooseLabel(replacing.picking, "Replace file")}
               </Button>
             </div>
             <div className={styles.facts}>

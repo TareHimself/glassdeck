@@ -5,9 +5,11 @@ import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
 import { Dialog, DialogActions } from "../components/Dialog";
 import { Field, Input } from "../components/Input";
+import { Loading } from "../components/Loading";
 import { Problem } from "../components/Problem";
 import { Segments } from "../components/Segments";
 import { describeLibraryError, slug } from "../library";
+import { chooseLabel, lastChosen, usePicker } from "../picking";
 import { CanvasIcon, ImageIcon, KIND_NAMES, VideoIcon } from "./backgroundKinds";
 import { VideoCutter, type Chosen, type Cut } from "./VideoCutter";
 import styles from "./NewBackgroundDialog.module.css";
@@ -44,9 +46,6 @@ const KINDS: { value: BackgroundKind; name: ReactNode }[] = [
   },
 ];
 
-/** The picked picture, and how it will fill the panel (a base64 JPEG). */
-type Picture = { path: string; preview: string };
-
 /** The starting gradient, drawn live while Canvas is chosen, or why it stopped. */
 function useStartingCanvas() {
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +68,8 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [video, setVideo] = useState<{ path: string; facts: VideoFacts } | null>(null);
   const [cut, setCut] = useState<Cut | null>(null);
-  const [picture, setPicture] = useState<Picture | null>(null);
+  const pictures = usePicker(commands.pickImage, commands.previewImage);
+  const picture = lastChosen(pictures.picking);
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [creating, setCreating] = useState(false);
   const canvasFrame = useStartingCanvas();
@@ -89,18 +89,10 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
     if (!title) setTitle(fileTitle(path));
   };
 
-  const choosePicture = async () => {
-    const path = await commands.pickImage();
-    if (!path) return;
-    const preview = await commands.previewImage(path);
-    if (preview.status === "error") {
-      setProblem(preview.error);
-      return;
-    }
-    setProblem(null);
-    setPicture({ path, preview: preview.data });
-    if (!title) setTitle(fileTitle(path));
-  };
+  const pictureFile = picture?.path;
+  useEffect(() => {
+    if (pictureFile) setTitle((current) => current || fileTitle(pictureFile));
+  }, [pictureFile]);
 
   const content = (): NewContent | null => {
     switch (kind) {
@@ -109,7 +101,7 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
       case "video":
         return video && cut ? { kind: "video", source: video.path, cut } : null;
       case "image":
-        return picture && { kind: "image", source: picture.path };
+        return pictures.picking.state === "chosen" ? { kind: "image", source: pictures.picking.chosen.path } : null;
     }
   };
 
@@ -137,7 +129,10 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
           {kind === "canvas" && canvasFrame.error && <Problem>{canvasFrame.error}</Problem>}
           {kind === "video" && (chosenVideo ? <VideoCutter video={chosenVideo} onCut={setCut} /> : <div className={styles.stage} />)}
           {kind === "image" && (
-            <div className={styles.stage}>{picture && <img className={styles.canvas} alt="How the picture fills the keyboard" src={`data:image/jpeg;base64,${picture.preview}`} />}</div>
+            <div className={styles.stage}>
+              {picture && <img className={styles.canvas} alt="How the picture fills the keyboard" src={`data:image/jpeg;base64,${picture.value}`} />}
+              {pictures.picking.state === "loading" && <Loading label="Fitting the picture to the keyboard" />}
+            </div>
           )}
         </div>
 
@@ -160,9 +155,9 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
             <div className={styles.file}>
               <span className={styles.label}>Picture</span>
               <div className={styles.fileRow}>
-                <span className={styles.path}>{picture?.path}</span>
-                <Button className={styles.choose} onClick={() => void choosePicture()}>
-                  Choose
+                <span className={styles.path}>{pictures.picking.state === "loading" ? pictures.picking.path : picture?.path}</span>
+                <Button className={styles.choose} disabled={pictures.busy} onClick={() => void pictures.choose()}>
+                  {chooseLabel(pictures.picking, "Choose")}
                 </Button>
               </div>
             </div>
@@ -196,6 +191,7 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
       </div>
 
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+      {kind === "image" && pictures.problem && <Problem>{describeLibraryError(pictures.problem)}</Problem>}
 
       <DialogActions>
         <Button variant="quiet" onClick={onClose}>

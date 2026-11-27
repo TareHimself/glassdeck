@@ -45,8 +45,8 @@ pub struct PreparedImage {
     pub jpeg: Vec<u8>,
 }
 
-/// Reads any picture the app can decode, crops its middle to the panel's shape and scales it to the panel.
-pub fn prepare(source: &Path) -> Result<PreparedImage, LibraryError> {
+/// Reads any picture the app can decode; its file name and the decoded picture.
+fn open(source: &Path) -> Result<(String, image::DynamicImage), LibraryError> {
     let bad = |reason: String| LibraryError::BadImage { reason };
     let from = source.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| bad("Pick a picture file".into()))?;
     let picture = image::ImageReader::open(source)
@@ -55,22 +55,31 @@ pub fn prepare(source: &Path) -> Result<PreparedImage, LibraryError> {
         .map_err(|e| bad(format!("{from} can't be read: {e}")))?
         .decode()
         .map_err(|e| bad(format!("{from} isn't a picture the app can read: {e}")))?;
-    let filled = picture.resize_to_fill(PANEL.0, PANEL.1, FilterType::Lanczos3).to_rgb8();
-    let mut jpeg = Vec::new();
-    JpegEncoder::new_with_quality(Cursor::new(&mut jpeg), JPEG_QUALITY).encode_image(&filled).map_err(|e| bad(format!("encoding the picture: {e}")))?;
-    Ok(PreparedImage { record: ImageRecord { from }, jpeg })
+    Ok((from, picture))
 }
 
-/// How a picked picture will look on the panel, as a base64 JPEG half the panel's width.
+/// The picture's middle at the panel's shape, scaled to `size`, as a JPEG.
+fn filled_jpeg(picture: &image::DynamicImage, size: (u32, u32), filter: FilterType) -> Result<Vec<u8>, LibraryError> {
+    let filled = picture.resize_to_fill(size.0, size.1, filter).to_rgb8();
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(Cursor::new(&mut jpeg), JPEG_QUALITY)
+        .encode_image(&filled)
+        .map_err(|e| LibraryError::BadImage { reason: format!("encoding the picture: {e}") })?;
+    Ok(jpeg)
+}
+
+/// Reads any picture the app can decode, crops its middle to the panel's shape and scales it to the panel.
+pub fn prepare(source: &Path) -> Result<PreparedImage, LibraryError> {
+    let (from, picture) = open(source)?;
+    Ok(PreparedImage { record: ImageRecord { from }, jpeg: filled_jpeg(&picture, PANEL, FilterType::Lanczos3)? })
+}
+
+/// How a picked picture will look on the panel, as a base64 JPEG half the panel's size. Scaled with a
+/// quicker filter than the real one: it's shown at once, and small.
 pub fn preview(source: &Path) -> Result<String, LibraryError> {
     use base64::Engine;
-    let prepared = prepare(source)?;
-    let bad = |reason: String| LibraryError::BadImage { reason };
-    let full = image::load_from_memory(&prepared.jpeg).map_err(|e| bad(format!("reading the prepared picture: {e}")))?.to_rgb8();
-    let half = image::imageops::thumbnail(&full, PANEL.0 / 2, PANEL.1 / 2);
-    let mut jpeg = Vec::new();
-    JpegEncoder::new_with_quality(Cursor::new(&mut jpeg), JPEG_QUALITY).encode_image(&half).map_err(|e| bad(format!("encoding the preview: {e}")))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(jpeg))
+    let (_, picture) = open(source)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(filled_jpeg(&picture, (PANEL.0 / 2, PANEL.1 / 2), FilterType::Triangle)?))
 }
 
 /// The picture formats the app reads, for the file dialog.
