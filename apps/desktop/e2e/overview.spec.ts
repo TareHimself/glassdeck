@@ -80,3 +80,11 @@ test("the keyboard address stays hidden until asked for", async ({ page }) => {
   await page.getByRole("button", { name: "Hide address" }).click();
   await expect(page.getByText("10.0.0.186:7878")).toHaveCount(0);
 });
+
+test("Live shows only for a chosen stream, green while it's attached", async ({ page }) => {
+  const streamCard = page.locator("section", { has: page.getByRole("heading", { name: "Stream", exact: true }) });
+  await expect(streamCard.getByText("Live")).toHaveCount(0);
+  await streamCard.getByRole("combobox", { name: "Stream" }).click();
+  await page.getByRole("option", { name: "monitor-1" }).click();
+  await expect(streamCard.getByText("Live")).toHaveAttribute("data-live", "true");
+});

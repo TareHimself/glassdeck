@@ -226,7 +226,8 @@ export function Overview() {
   };
   const area = layout?.widget_area;
   const knownStream = !draft.stream || streams.some((s) => s.name === draft.stream);
-  const live = streams.some((s) => s.name === draft.stream && s.shown);
+  /** The chosen stream is attached right now, so the keyboard shows it instead of the background. */
+  const live = streams.some((s) => s.name === draft.stream);
 
   return (
     <div className={styles.page}>
@@ -317,9 +318,11 @@ export function Overview() {
           <section className={styles.card}>
             <div className={styles.cardHead}>
               <h2 className={styles.cardTitle}>Stream</h2>
-              <span className={styles.live} data-live={live || undefined}>
-                Live
-              </span>
+              {draft.stream && (
+                <span className={styles.live} data-live={live || undefined}>
+                  Live
+                </span>
+              )}
             </div>
             <Select
               label="Stream"
