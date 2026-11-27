@@ -28,6 +28,9 @@ use crate::preview::{self, Drawn, Session};
 const THUMBNAILS: &str = "thumbnails";
 /// Stills drawn by another version of the app are drawn again.
 const DRAWN_BY: &str = env!("CARGO_PKG_VERSION");
+/// Raised when the same files start drawing differently (2: canvases the keyboard's way up), so
+/// stills already cached are drawn again.
+const STILL_REVISION: u32 = 2;
 /// Widgets keep transparency; canvases and videos are opaque.
 const WIDGET_STILL: &str = "png";
 const OPAQUE_STILL: &str = "jpg";
@@ -68,6 +71,7 @@ fn placed(folder: &Path) -> Option<(&Path, String)> {
 fn cache_name(id: &str, folder: Option<&Path>) -> Result<String> {
     let mut hasher = DefaultHasher::new();
     DRAWN_BY.hash(&mut hasher);
+    STILL_REVISION.hash(&mut hasher);
     if let Some(folder) = folder {
         for file in source_files(folder)? {
             file.hash(&mut hasher);
