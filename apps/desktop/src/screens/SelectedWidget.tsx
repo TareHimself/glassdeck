@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
+import { BACK_TO_OVERVIEW } from "../components/PageHeader";
 import { commands, type OptionsPanel, type ThemeWidget, type Value, type WidgetSummary } from "../bindings";
 import { describeLibraryError } from "../library";
 import { OptionControls } from "./OptionControls";
@@ -62,7 +63,7 @@ export function SelectedWidget({
           <h2 className={styles.title}>{summary?.title ?? widget.package}</h2>
         </div>
         {summary && (
-          <Link className={styles.edit} to={`/widgets/${widget.package}`}>
+          <Link className={styles.edit} to={`/widgets/${widget.package}`} state={BACK_TO_OVERVIEW}>
             Edit
           </Link>
         )}

@@ -2,14 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
 import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
-import { PageHeader } from "../components/PageHeader";
+import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
 import { describeLibraryError } from "../library";
 import { OptionControls, type Chosen } from "./OptionControls";
 import styles from "./CanvasEditor.module.css";
 
-const BACK = { to: "/backgrounds", label: "Backgrounds" };
+const LIBRARY = { to: "/backgrounds", label: "Backgrounds" };
 const FILES = ["canvas.slang", "keyboard.luau", "options.luau", "host.luau"];
 const OPTIONS_SCRIPT = "options.luau";
 const PANEL = { w: 1920, h: 1080 };
@@ -82,6 +82,7 @@ function PlayIcon({ playing }: { playing: boolean }) {
 }
 
 export function CanvasEditor({ id }: { id: string }) {
+  const back = useBack(LIBRARY);
   const [background, setBackground] = useState<BackgroundSummary | null>(null);
   const [failed, setFailed] = useState<LibraryError | null>(null);
   const [files, setFiles] = useState<Files>({});
@@ -212,11 +213,11 @@ export function CanvasEditor({ id }: { id: string }) {
   if (failed)
     return (
       <div className={styles.page}>
-        <PageHeader back={BACK} title="" />
+        <PageHeader back={back} title="" />
         <Problem>{describeLibraryError(failed)}</Problem>
       </div>
     );
-  if (!background) return <PageHeader back={BACK} title="" />;
+  if (!background) return <PageHeader back={back} title="" />;
 
   const colors = inputs.filter(isColor);
   const numbers = inputs.filter((input) => !isColor(input));
@@ -225,7 +226,7 @@ export function CanvasEditor({ id }: { id: string }) {
   return (
     <div className={styles.page}>
       <PageHeader
-        back={BACK}
+        back={back}
         title={background.title}
         id={`${background.id} ${background.version}, canvas background`}
         actions={

@@ -3,13 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { commands, events, type LibraryError, type VideoBackground, type VideoFacts } from "../bindings";
 import { Button } from "../components/Button";
 import { Dialog, DialogActions } from "../components/Dialog";
-import { PageHeader } from "../components/PageHeader";
+import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { describeLibraryError } from "../library";
 import { VideoCutter, type Chosen } from "./VideoCutter";
 import styles from "./VideoPage.module.css";
 
-const BACK = { to: "/backgrounds", label: "Backgrounds" };
+const LIBRARY = { to: "/backgrounds", label: "Backgrounds" };
 
 function clock(seconds: number): string {
   const whole = Math.floor(seconds);
@@ -83,6 +83,7 @@ function Facts({ facts, from }: { facts: VideoFacts; from: string }) {
 }
 
 export function VideoPage({ id }: { id: string }) {
+  const back = useBack(LIBRARY);
   const [loaded, setLoaded] = useState<VideoBackground | null>(null);
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [playing, setPlaying] = useState(true);
@@ -109,7 +110,7 @@ export function VideoPage({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  if (!loaded) return problem ? <Problem>{describeLibraryError(problem)}</Problem> : <PageHeader back={BACK} title="" />;
+  if (!loaded) return problem ? <Problem>{describeLibraryError(problem)}</Problem> : <PageHeader back={back} title="" />;
 
   const { background, record, video, conversion } = loaded;
   const length = video?.facts.length ?? 0;
@@ -142,7 +143,7 @@ export function VideoPage({ id }: { id: string }) {
   return (
     <div className={styles.page}>
       <PageHeader
-        back={BACK}
+        back={back}
         title={background.title}
         id={`${background.id} ${background.version}, video background`}
         actions={

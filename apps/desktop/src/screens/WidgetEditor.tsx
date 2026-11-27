@@ -3,14 +3,14 @@ import { useParams } from "react-router";
 import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type PreviewRun, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
 import { nextPreviewRun } from "../previews";
 import { Button } from "../components/Button";
-import { PageHeader } from "../components/PageHeader";
+import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { SourcePanel, useDebugLog, type StatusTone } from "../components/SourcePanel";
 import { describeLibraryError } from "../library";
 import { OptionControls, type Chosen } from "./OptionControls";
 import styles from "./WidgetEditor.module.css";
 
-const BACK = { to: "/widgets", label: "Widgets" };
+const LIBRARY = { to: "/widgets", label: "Widgets" };
 const SCRIPT_ORDER = ["keyboard.luau", "options.luau", "host.luau"];
 const OPTIONS_SCRIPT = "options.luau";
 const PREVIEW_ROOM = { w: 300, h: 200 };
@@ -60,6 +60,7 @@ function checkLine(check: Check): string {
 }
 
 export function WidgetEditor() {
+  const back = useBack(LIBRARY);
   const { id = "" } = useParams();
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   const [files, setFiles] = useState<Files>({});
@@ -191,11 +192,11 @@ export function WidgetEditor() {
     void commands.previewOptions(next);
   };
 
-  if (loaded.state === "loading") return <PageHeader back={BACK} title="" />;
+  if (loaded.state === "loading") return <PageHeader back={back} title="" />;
   if (loaded.state === "failed")
     return (
       <div className={styles.page}>
-        <PageHeader back={BACK} title="" />
+        <PageHeader back={back} title="" />
         <Problem>{describeLibraryError(loaded.error)}</Problem>
       </div>
     );
@@ -207,7 +208,7 @@ export function WidgetEditor() {
   return (
     <div className={styles.page}>
       <PageHeader
-        back={BACK}
+        back={back}
         title={widget.title}
         id={`${widget.id} ${widget.version}`}
         actions={

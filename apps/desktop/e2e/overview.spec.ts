@@ -117,3 +117,14 @@ test("an attached stream plays live over WebRTC and the session ends with it", a
   await expect(video).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.glassdeckMock?.watching())).toBe(0);
 });
+
+test("an editor opened from the Overview goes back to the Overview", async ({ page }) => {
+  await page.getByRole("button", { name: "Change" }).click();
+  await page.getByRole("dialog", { name: "Change background" }).getByRole("button", { name: /Aurora/ }).click();
+  await page.getByRole("link", { name: "Edit" }).first().click();
+  await page.getByRole("link", { name: "← Overview" }).click();
+  await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+
+  await page.goto("/backgrounds/background.local.user.aurora");
+  await expect(page.getByRole("link", { name: "← Backgrounds" })).toBeVisible();
+});

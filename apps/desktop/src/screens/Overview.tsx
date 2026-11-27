@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { Link } from "react-router";
 import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type PreviewRun, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
-import { PageHeader } from "../components/PageHeader";
+import { BACK_TO_OVERVIEW, PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
 import { BackgroundThumb, StreamLayer } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
@@ -318,7 +318,7 @@ export function Overview() {
               {!known || background.id === BUILT_IN_BACKGROUND ? (
                 <Button disabled>Edit</Button>
               ) : (
-                <Link className={styles.linkButton} to={`/backgrounds/${background.id}`}>
+                <Link className={styles.linkButton} to={`/backgrounds/${background.id}`} state={BACK_TO_OVERVIEW}>
                   Edit
                 </Link>
               )}
