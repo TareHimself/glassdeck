@@ -170,6 +170,9 @@ pub(crate) fn compile(gl: &glow::Context, fragment: &str) -> Result<glow::Progra
     }
 }
 
+/// The member Slang's std140 wrapper struct keeps an array in.
+const STD140_ARRAY_MEMBER: &str = ".data_0";
+
 fn active_uniforms(gl: &glow::Context, program: glow::Program) -> HashMap<String, glow::UniformLocation> {
     let mut uniforms = HashMap::new();
     // SAFETY: the context is current and the program linked.
@@ -184,9 +187,12 @@ fn active_uniforms(gl: &glow::Context, program: glow::Program) -> HashMap<String
     uniforms
 }
 
-/// `gd_inputs_0.roseAt_0` to `gd_inputs.roseAt`, and `gd_inputs_0.bands_0[0]` to `gd_inputs.bands`.
+/// `gd_inputs_0.roseAt_0` to `gd_inputs.roseAt`, and an array, `gd_inputs_0.bands_0[0]` or as Slang
+/// wraps it for std140, `gd_inputs_0.bands_0.data_0[0]`, to `gd_inputs.bands`.
 fn slang_name(glsl: &str) -> String {
-    glsl.strip_suffix("[0]")
+    let unindexed = glsl.strip_suffix("[0]");
+    unindexed
+        .map(|array| array.strip_suffix(STD140_ARRAY_MEMBER).unwrap_or(array))
         .unwrap_or(glsl)
         .split('.')
         .map(|part| match part.rsplit_once('_') {
@@ -195,4 +201,17 @@ fn slang_name(glsl: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uniform_names_map_back_to_the_inputs_they_hold() {
+        assert_eq!(slang_name("gd_inputs_0.roseAt_0"), "gd_inputs.roseAt");
+        assert_eq!(slang_name("gd_inputs_0.bands_0[0]"), "gd_inputs.bands");
+        assert_eq!(slang_name("gd_inputs_0.levels_0.data_0[0]"), "gd_inputs.levels");
+        assert_eq!(slang_name("gd_inputs_0.data_0"), "gd_inputs.data");
+    }
 }

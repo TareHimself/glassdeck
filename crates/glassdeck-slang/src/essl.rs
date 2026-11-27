@@ -31,7 +31,7 @@ pub fn fragment_to_essl(glsl: &str) -> Result<String> {
         body.push_str(line);
         body.push('\n');
     }
-    let body = unblock_globals(&lower_half(&body))?;
+    let body = unblock_globals(&array_constructors(&lower_half(&body)))?;
     for unsupported in ["buffer ", "gl_VertexIndex", "layout(binding"] {
         if body.contains(unsupported) {
             bail!("the shader uses {unsupported:?}, which GLSL ES 3.00 can't express");
@@ -70,6 +70,27 @@ fn unblock_globals(source: &str) -> Result<String> {
         bail!("the shader declares more than one uniform block");
     }
     Ok(rest)
+}
+
+/// Slang copies an array (an array input, say) with a C-style `= { a, b };`, which GLSL ES refuses;
+/// it becomes the array constructor `= float[2](a, b);`.
+fn array_constructors(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            let Some((declared, rest)) = line.split_once(" = {") else { return line.to_owned() };
+            let Some(items) = rest.trim_end().strip_suffix("};") else { return line.to_owned() };
+            let mut words = declared.split_whitespace().rev();
+            let (Some(name), Some(element)) = (words.next(), words.next()) else { return line.to_owned() };
+            let Some(length) = name.split_once('[').and_then(|(_, n)| n.strip_suffix(']')) else { return line.to_owned() };
+            if items.contains('{') || !length.chars().all(|c| c.is_ascii_digit()) {
+                return line.to_owned();
+            }
+            format!("{declared} = {element}[{length}]({});", items.trim().trim_end_matches(',').trim_end())
+        })
+        .map(|line| line + "
+")
+        .collect()
 }
 
 fn is_binding(line: &str) -> bool {
@@ -166,6 +187,21 @@ mod tests {
     #[test]
     fn other_uniform_blocks_are_refused() {
         assert!(fragment_to_essl("#version 450\nlayout(std140) uniform block_Lights_0\n{\n    vec4 a;\n}lights_0;\n").is_err());
+    }
+
+    #[test]
+    fn c_style_array_copies_become_constructors() {
+        let slang = "    float  _S1[3] = { u.data_0[0], u.data_0[1], u.data_0[2] };
+    mediump float  h[2] = { 1.0, 2.0 };
+    S s = { 1 };
+";
+        assert_eq!(
+            array_constructors(slang),
+            "    float  _S1[3] = float[3](u.data_0[0], u.data_0[1], u.data_0[2]);
+    mediump float  h[2] = float[2](1.0, 2.0);
+    S s = { 1 };
+"
+        );
     }
 
     #[test]
