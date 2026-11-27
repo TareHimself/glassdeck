@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use glassdeck_layout::{Layout, Variant};
-use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, PackageType, QualifiedId, Version, check_name};
+use glassdeck_package::{DECK_SOURCE, DeckSource, HOST_SCRIPT, read_script, KEYBOARD_SCRIPT, Kind, MANIFEST, OPTIONS_SCRIPT, Package, PackageId, PackageType, QualifiedId, Version, check_name};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use specta::Type;
@@ -153,6 +153,10 @@ fn luau_string(text: &str) -> String {
 }
 
 /// The files a new widget starts with, by name.
+fn options_script(title: &str) -> String {
+    format!("option(\"label\", \"Label\", text({}))\n", luau_string(title))
+}
+
 fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
     let deck = json!({
         "id": new.id.as_str(),
@@ -165,12 +169,8 @@ fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
         (DECK_SOURCE, format!("{}\n", serde_json::to_string_pretty(&deck).expect("a JSON value serializes"))),
         (KEYBOARD_SCRIPT, keyboard_script(new)),
     ];
-    if new.options {
-        files.push((OPTIONS_SCRIPT, format!("option(\"label\", \"Label\", text({}))\n", luau_string(&new.title))));
-    }
-    if new.runs_on_host {
-        files.push((HOST_SCRIPT, host_script(new.options)));
-    }
+    files.push((OPTIONS_SCRIPT, if new.options { options_script(&new.title) } else { String::new() }));
+    files.push((HOST_SCRIPT, if new.runs_on_host { host_script(new.options) } else { String::new() }));
     files
 }
 
@@ -211,9 +211,15 @@ fn summarize(folder: &Path) -> Result<Option<WidgetSummary>, LibraryError> {
         title: deck.title.clone(),
         version: deck.version.to_string(),
         sizing,
-        has_options: folder.join(OPTIONS_SCRIPT).is_file(),
-        runs_on_host: folder.join(HOST_SCRIPT).is_file(),
+        has_options: has_script(folder, OPTIONS_SCRIPT)?,
+        runs_on_host: has_script(folder, HOST_SCRIPT)?,
     }))
+}
+
+/// A missing or blank script is the same as none.
+fn has_script(folder: &Path, name: &str) -> Result<bool, LibraryError> {
+    let unreadable = |e: anyhow::Error| LibraryError::Unreadable { folder: folder.display().to_string(), reason: format!("{e:#}") };
+    Ok(read_script(folder, name).map_err(unreadable)?.is_some())
 }
 
 pub fn list_widgets(root: &Path) -> Result<Vec<WidgetSummary>, LibraryError> {
@@ -383,13 +389,11 @@ pub struct SourceFile {
     pub text: String,
 }
 
-/// A widget as the editor opens it: its summary, the scripts it has, and the `host.luau` to start
-/// from if it adds one.
+/// A widget as the editor opens it: its summary and every script, a missing one as empty.
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct WidgetSource {
     pub widget: WidgetSummary,
     pub files: Vec<SourceFile>,
-    pub host_template: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Type)]
@@ -413,12 +417,10 @@ pub fn read_widget(root: &Path, id: &str) -> Result<WidgetSource, LibraryError> 
     let mut files = Vec::new();
     for name in SCRIPTS {
         let path = folder.join(name);
-        if path.is_file() {
-            let text = fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))?;
-            files.push(SourceFile { name: name.to_owned(), text });
-        }
+        let text = if path.is_file() { fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))? } else { String::new() };
+        files.push(SourceFile { name: name.to_owned(), text });
     }
-    Ok(WidgetSource { host_template: host_script(widget.has_options), widget, files })
+    Ok(WidgetSource { widget, files })
 }
 
 /// Writes the editor's scripts and the title and version into `deck.json`.
@@ -487,7 +489,7 @@ mod tests {
         let names = |options, host| -> Vec<&str> {
             starting_files(&parse_new(new(Sizing::Fixed { size: SIZE }, options, host)).unwrap()).into_iter().map(|(n, _)| n).collect()
         };
-        assert_eq!(names(false, false), [DECK_SOURCE, KEYBOARD_SCRIPT]);
+        assert_eq!(names(false, false), [DECK_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
         assert_eq!(names(true, true), [DECK_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
         let files = starting_files(&parse_new(new(Sizing::Any { size: SIZE }, true, false)).unwrap());
         let deck: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
@@ -534,8 +536,8 @@ mod tests {
         create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, false)).unwrap();
         let source = read_widget(&root, "widget.local.me.weather").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT]);
-        assert!(source.host_template.contains("host.on_options"));
+        assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
+        assert!((source.widget.has_options, source.widget.runs_on_host) == (true, false), "an empty host.luau is no host half");
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
         let saved = save_widget(&root, "widget.local.me.weather", WidgetEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));

@@ -14,7 +14,6 @@ import styles from "./WidgetEditor.module.css";
 const BACK = { to: "/widgets", label: "Widgets" };
 const SCRIPT_ORDER = ["keyboard.luau", "options.luau", "host.luau"];
 const OPTIONS_SCRIPT = "options.luau";
-const HOST_SCRIPT = "host.luau";
 const PREVIEW_ROOM = { w: 300, h: 200 };
 const EDIT_SETTLE_MS = 400;
 
@@ -56,10 +55,6 @@ function sizesOf(sizing: Sizing): { name: string; dims: Dims }[] {
   }
 }
 
-function checkedCount(files: Files): number {
-  return [OPTIONS_SCRIPT, HOST_SCRIPT].filter((name) => name in files).length;
-}
-
 function checkLine(check: Check): string {
   switch (check.state) {
     case "checking":
@@ -95,7 +90,7 @@ export function WidgetEditor() {
   const runCheck = async () => {
     setCheck({ state: "checking" });
     const result = await commands.checkWidget(id);
-    if (result.status === "ok") setCheck({ state: "done", problems: result.data, files: checkedCount(files) });
+    if (result.status === "ok") setCheck({ state: "done", problems: result.data.problems, files: result.data.checked });
     else setCheck({ state: "unavailable", reason: describeLibraryError(result.error) });
   };
 
@@ -113,7 +108,7 @@ export function WidgetEditor() {
       void commands.checkWidget(id).then((checked) =>
         setCheck(
           checked.status === "ok"
-            ? { state: "done", problems: checked.data, files: checkedCount(initial) }
+            ? { state: "done", problems: checked.data.problems, files: checked.data.checked }
             : { state: "unavailable", reason: describeLibraryError(checked.error) },
         ),
       );
@@ -169,13 +164,9 @@ export function WidgetEditor() {
   const chosenKey = JSON.stringify(chosen);
   const lastOptionsSource = useRef(optionsSource);
   useEffect(() => {
-    if (optionsSource === undefined) {
-      setPanel(null);
-      return;
-    }
     const edited = lastOptionsSource.current !== optionsSource;
     lastOptionsSource.current = optionsSource;
-    const timer = setTimeout(() => void commands.widgetOptions(optionsSource, chosen).then(setPanel), edited ? EDIT_SETTLE_MS : 0);
+    const timer = setTimeout(() => void commands.widgetOptions(optionsSource ?? "", chosen).then(setPanel), edited ? EDIT_SETTLE_MS : 0);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [optionsSource, chosenKey]);
@@ -223,9 +214,9 @@ export function WidgetEditor() {
       </div>
     );
 
-  const { widget, host_template } = loaded.source;
+  const { widget } = loaded.source;
   const scale = size ? Math.min(1, PREVIEW_ROOM.w / size.w, PREVIEW_ROOM.h / size.h) : 1;
-  const tabs = SCRIPT_ORDER.filter((name) => name in files);
+  const tabs = SCRIPT_ORDER;
   const tone = check.state === "done" ? (check.problems.length > 0 ? "problem" : "ok") : check.state === "unavailable" ? "problem" : undefined;
 
   return (
@@ -255,18 +246,6 @@ export function WidgetEditor() {
                 {name}
               </button>
             ))}
-            {!(HOST_SCRIPT in files) && (
-              <button
-                type="button"
-                className={styles.addFile}
-                onClick={() => {
-                  setFiles({ ...files, [HOST_SCRIPT]: host_template });
-                  setTab(HOST_SCRIPT);
-                }}
-              >
-                + host.luau
-              </button>
-            )}
           </div>
           <div className={styles.code}>
             <Editor
@@ -365,7 +344,7 @@ export function WidgetEditor() {
             <input id="we-version" type="text" data-mono value={version} spellCheck={false} onChange={(e) => setVersion(e.target.value)} />
           </section>
 
-          {panel && (
+          {panel && !(panel.state === "ready" && panel.items.length === 0) && (
             <section aria-label="Options" className={styles.options}>
               <div className={styles.cardHead}>
                 <h2 className={styles.cardTitle}>Options</h2>

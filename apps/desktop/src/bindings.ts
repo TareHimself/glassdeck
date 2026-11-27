@@ -20,8 +20,8 @@ export const commands = {
 	importWidget: (options?: InvokeOptions) => typedError<WidgetSummary | null, LibraryError>(__TAURI_INVOKE("import_widget", undefined, options)),
 	readWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSource, LibraryError>(__TAURI_INVOKE("read_widget", { id }, options)),
 	saveWidget: (id: string, edit: WidgetEdit, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("save_widget", { id, edit }, options)),
-	/**  Type-checks the widget's `options.luau` and `host.luau` as saved; each problem is "name:line:column: message". */
-	checkWidget: (id: string, options?: InvokeOptions) => typedError<string[], LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
+	/**  Type-checks the widget's `options.luau` and `host.luau` as saved, skipping blank ones. */
+	checkWidget: (id: string, options?: InvokeOptions) => typedError<WidgetCheck, LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
 	widgetOptions: (source: string, values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<OptionsPanel>("widget_options", { source, values }, options),
 	/**  Starts the preview of a widget with the editor's unsaved scripts; frames arrive as `PreviewUpdate`s. */
 	previewWidget: (id: string, files: SourceFile[], size: Dims, values: { [key in string]: Value }, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_widget", { id, files, size, values }, options)),
@@ -212,20 +212,22 @@ export type ThemeWidget = {
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
 
+/**  What checking a widget found, each problem as "name:line:column: message", and how many scripts it checked. */
+export type WidgetCheck = {
+	problems: string[],
+	checked: number,
+};
+
 export type WidgetEdit = {
 	title: string,
 	version: string,
 	files: SourceFile[],
 };
 
-/**
- *  A widget as the editor opens it: its summary, the scripts it has, and the `host.luau` to start
- *  from if it adds one.
- */
+/**  A widget as the editor opens it: its summary and every script, a missing one as empty. */
 export type WidgetSource = {
 	widget: WidgetSummary,
 	files: SourceFile[],
-	host_template: string,
 };
 
 export type WidgetSummary = {

@@ -10,6 +10,8 @@ use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
 use library::{Dims, LibraryError, NewWidget, SourceFile, WidgetEdit, WidgetSource, WidgetSummary};
 use options::OptionsPanel;
 use preview::{Preview, PreviewUpdate};
+use serde::Serialize;
+use specta::Type;
 use specta_typescript::Typescript;
 use std::path::{Path, PathBuf};
 
@@ -107,15 +109,23 @@ fn native_libraries() -> Result<PathBuf, LibraryError> {
     Ok(if dev.is_dir() { dev } else { beside })
 }
 
-/// Type-checks the widget's `options.luau` and `host.luau` as saved; each problem is "name:line:column: message".
+/// What checking a widget found, each problem as "name:line:column: message", and how many scripts it checked.
+#[derive(Clone, Debug, Serialize, Type)]
+struct WidgetCheck {
+    problems: Vec<String>,
+    checked: u32,
+}
+
+/// Type-checks the widget's `options.luau` and `host.luau` as saved, skipping blank ones.
 #[tauri::command]
 #[specta::specta]
-async fn check_widget(id: String) -> Result<Vec<String>, LibraryError> {
+async fn check_widget(id: String) -> Result<WidgetCheck, LibraryError> {
     in_library(move |root| {
         let folder = library::widget_folder(root, &id)?;
         let unavailable = |reason: String| LibraryError::CheckerUnavailable { reason };
         let luau = glassdeck_luau_check::LuauChecker::load(&native_libraries()?).map_err(|e| unavailable(format!("{e:#}")))?;
-        glassdeck_slang::pack::widget_problems(&luau, &folder).map_err(|e| unavailable(format!("{e:#}")))
+        let check = glassdeck_slang::pack::widget_problems(&luau, &folder).map_err(|e| unavailable(format!("{e:#}")))?;
+        Ok(WidgetCheck { problems: check.problems, checked: check.checked.len() as u32 })
     })
     .await
 }

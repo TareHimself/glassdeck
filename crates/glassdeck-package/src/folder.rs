@@ -47,6 +47,37 @@ impl DeckSource {
     }
 }
 
+/// A script in a source folder; one that is missing or blank (only whitespace and comments) is `None`,
+/// so an empty `options.luau` or `host.luau` means the same as none.
+pub fn read_script(folder: &Path, name: &str) -> Result<Option<String>> {
+    let path = folder.join(name);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok((!is_blank_script(&source)).then_some(source))
+}
+
+/// Only whitespace and Luau comments: `-- line` and `--[[ block ]]`, with any number of `=`.
+pub fn is_blank_script(source: &str) -> bool {
+    let mut rest = source.trim_start();
+    while let Some(comment) = rest.strip_prefix("--") {
+        let level = comment.strip_prefix('[').map(|open| open.bytes().take_while(|b| *b == b'=').count());
+        rest = match level {
+            Some(level) if comment[1 + level..].starts_with('[') => {
+                let close = format!("]{}]", "=".repeat(level));
+                match comment.find(&close) {
+                    Some(end) => &comment[end + close.len()..],
+                    None => return false,
+                }
+            }
+            _ => comment.find('\n').map_or("", |end| &comment[end..]),
+        }
+        .trim_start();
+    }
+    rest.is_empty()
+}
+
 /// Packs a widget folder: `deck.json`, `keyboard.luau`, `options.luau` and `host.luau` if present, and
 /// the assets. Every resource a script names as a literal must be in the folder, on a side that script can use.
 pub fn pack_folder(folder: &Path, out: &Path) -> Result<Package> {
@@ -57,11 +88,9 @@ pub fn pack_folder(folder: &Path, out: &Path) -> Result<Package> {
     let resources = resource_files(&folder.join(ASSETS_FOLDER))?;
     let mut scripts = Vec::new();
     for script in [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT] {
-        let path = folder.join(script);
-        if path.exists() {
-            let source = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        if let Some(source) = read_script(folder, script)? {
             check_literal_resources(script, &source, &resources)?;
-            scripts.push((script, path, source));
+            scripts.push((script, folder.join(script), source));
         }
     }
     let sources = source_digest(std::iter::once(deck_text.as_str()).chain(scripts.iter().map(|(_, _, source)| source.as_str())));
@@ -151,6 +180,16 @@ mod tests {
             fs::write(path, contents).unwrap();
         }
         folder
+    }
+
+    #[test]
+    fn whitespace_and_comments_are_a_blank_script() {
+        for blank in ["", "  \n\t", "-- nothing yet\n", "--[[ a\nblock ]]\n-- and a line", "--[==[ ]] still ]==]"] {
+            assert!(is_blank_script(blank), "{blank:?}");
+        }
+        for code in ["x = 1", "-- note\nsend({})", "--[[ open", "--[==[ ]] ]==] y()"] {
+            assert!(!is_blank_script(code), "{code:?}");
+        }
     }
 
     #[test]

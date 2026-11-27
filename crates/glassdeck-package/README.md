@@ -37,6 +37,7 @@ A canvas `.deck` holds what `glassdeck pack` produced, so the keyboard runs it w
 |---|---|
 | `DeckSource` | The hand-written `deck.json` (`DECK_SOURCE`): `id`, `title`, `version`, `type`, and a widget's `details` |
 | `pack_folder` | Pack a widget folder |
+| `read_script`, `is_blank_script` | A script from a source folder; a blank one (only whitespace and comments) is the same as a missing one |
 
 `glassdeck pack` fills in the rest of the manifest, so a canvas's `deck.json` has no details. The JSON schema for `deck.json` is in `schemas/deck.schema.json`.
 

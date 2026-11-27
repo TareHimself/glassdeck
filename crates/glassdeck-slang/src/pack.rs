@@ -71,8 +71,7 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
 }
 
 fn read_optional(folder: &Path, name: &str) -> Result<Option<String>> {
-    let path = folder.join(name);
-    path.is_file().then(|| fs::read_to_string(&path)).transpose().with_context(|| format!("reading {}", path.display()))
+    glassdeck_package::read_script(folder, name)
 }
 
 /// The generated definitions a canvas's scripts are checked against.
@@ -123,17 +122,22 @@ fn check_scripts(luau: &LuauChecker, types: &Types, keyboard: Option<&str>, opti
 
 /// Fails with every problem `widget_problems` finds.
 pub fn check_widget(luau: &LuauChecker, folder: &Path) -> Result<()> {
-    let problems = widget_problems(luau, folder)?;
+    let WidgetCheck { problems, .. } = widget_problems(luau, folder)?;
     if !problems.is_empty() {
         bail!("the widget's scripts don't type-check:\n  {}", problems.join("\n  "));
     }
     Ok(())
 }
 
-/// A widget's `options.luau` and `host.luau`: run the first pass, write their types into
-/// `.glassdeck/`, and type-check both, as "name:line:column: message". `keyboard.luau` keeps the
-/// widget API's own rules.
-pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<Vec<String>> {
+/// What checking a widget found, as "name:line:column: message", and the scripts it checked.
+pub struct WidgetCheck {
+    pub problems: Vec<String>,
+    pub checked: Vec<&'static str>,
+}
+
+/// A widget's `options.luau` and `host.luau`, unless blank: run the first pass, write their types into
+/// `.glassdeck/`, and type-check both. `keyboard.luau` keeps the widget API's own rules.
+pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<WidgetCheck> {
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
     let panel = match &options {
@@ -153,11 +157,14 @@ pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<Vec<String>>
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     }
     let mut problems = Vec::new();
+    let mut checked = Vec::new();
     if let Some(options) = &options {
         problems.extend(luau.check_options(options, &generated)?);
+        checked.push(OPTIONS_SCRIPT);
     }
     if let Some(host) = &host {
         problems.extend(luau.check_host(host, &generated)?);
+        checked.push(HOST_SCRIPT);
     }
-    Ok(problems)
+    Ok(WidgetCheck { problems, checked })
 }
