@@ -38,3 +38,12 @@ test("Slang highlights attributes, vector types and suffixed numbers", async ({ 
   await expectColour(page, "0.75h", COLOURS.number);
   await expectColour(page, "// Fade from night at the top to rose", COLOURS.comment);
 });
+
+test("each file tab says what it's for on hover", async ({ page }) => {
+  await page.goto("/widgets/widget.local.user.clock");
+  await page.getByRole("tab", { name: "host.luau" }).hover();
+  await expect(page.getByRole("tooltip")).toHaveText("Runs on this device");
+  await page.goto("/backgrounds/background.local.user.aurora");
+  await page.getByRole("tab", { name: "canvas.slang" }).hover();
+  await expect(page.getByRole("tooltip")).toHaveText("Shader");
+});

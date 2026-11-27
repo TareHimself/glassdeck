@@ -6,6 +6,7 @@ import { useLanguageServers, type LanguageSupport } from "../lsp/useLanguageServ
 import { languageOf, THEME } from "../monaco";
 import { classes } from "./classes";
 import styles from "./SourcePanel.module.css";
+import { Tooltip } from "./Tooltip";
 
 const LOG_LIMIT = 500;
 
@@ -77,6 +78,15 @@ function useRunErrorMarker(error: ScriptError | null, tab: string) {
 }
 
 /** An editor's source: one tab per file, the code, the check's status, and the debug log. */
+/** What each file is for, shown when hovering its tab */
+const TAB_TIPS: Record<string, string> = {
+  "canvas.slang": "Shader",
+  "keyboard.luau": "Runs on the keyboard",
+  "options.luau": "Options",
+  "host.luau": "Runs on this device",
+  "bridge.luau": "Messages",
+};
+
 export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language, runError = null, problems }: Props) {
   const logEnd = useRef<HTMLDivElement>(null);
   const [editorMounted, setEditorMounted] = useState(false);
@@ -95,11 +105,21 @@ export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status
   return (
     <section aria-label="Source" className={classes(styles.source, className)}>
       <div role="tablist" className={styles.tabs}>
-        {tabs.map((name) => (
-          <button key={name} type="button" role="tab" aria-selected={name === tab} className={styles.tab} onClick={() => onTab(name)}>
-            {name}
-          </button>
-        ))}
+        {tabs.map((name) => {
+          const button = (
+            <button key={name} type="button" role="tab" aria-selected={name === tab} className={styles.tab} onClick={() => onTab(name)}>
+              {name}
+            </button>
+          );
+          const tip = TAB_TIPS[name];
+          return tip ? (
+            <Tooltip key={name} label={tip}>
+              {button}
+            </Tooltip>
+          ) : (
+            button
+          );
+        })}
       </div>
       <div className={styles.code}>
         <Editor
