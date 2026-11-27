@@ -4,6 +4,7 @@ mod backgrounds;
 mod canvas_preview;
 mod videos;
 mod glassdeckd;
+mod images;
 mod layout_preview;
 mod library;
 mod lsp;
@@ -234,6 +235,21 @@ async fn read_video(app: AppHandle, conversions: State<'_, Conversions>, id: Str
 #[specta::specta]
 async fn set_video_preview(id: String, seconds: f64) -> Result<String, LibraryError> {
     in_library(move |root| videos::set_preview(root, &id, seconds)).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn read_image(id: String) -> Result<images::ImageBackground, LibraryError> {
+    in_library(move |root| images::read_image(root, &id)).await
+}
+
+/// Puts a new picture in place of the background's, cropped and scaled to the panel; its still is redrawn.
+#[tauri::command]
+#[specta::specta]
+async fn replace_image(stills: State<'_, stills::Stills>, id: String, source: String) -> Result<images::ImageBackground, LibraryError> {
+    let replaced = in_library(move |root| images::replace(root, &id, Path::new(&source))).await?;
+    stills.request(replaced.background.id.clone());
+    Ok(replaced)
 }
 
 /// Converts a new file into the background, cut as given.
@@ -510,6 +526,28 @@ async fn pick_video(app: AppHandle) -> Option<String> {
     .flatten()
 }
 
+/// Asks for a picture to make an image background from. `None` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+async fn pick_image(app: AppHandle) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().add_filter("Picture", &images::EXTENSIONS).blocking_pick_file();
+        picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// A picked picture as it will fill the panel, as a base64 JPEG.
+#[tauri::command]
+#[specta::specta]
+async fn preview_image(path: String) -> Result<String, LibraryError> {
+    tauri::async_runtime::spawn_blocking(move || images::preview(Path::new(&path)))
+        .await
+        .map_err(|e| LibraryError::Io { reason: format!("previewing the picture: {e}") })?
+}
+
 /// What Media Foundation reads on Windows without extra codecs.
 const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "m4v", "mov", "mkv", "webm", "wmv"];
 
@@ -552,6 +590,10 @@ fn bindings() -> Builder<tauri::Wry> {
             video_frame,
             read_video,
             set_video_preview,
+            read_image,
+            pick_image,
+            preview_image,
+            replace_image,
             replace_video,
             read_canvas,
             save_canvas,

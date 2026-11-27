@@ -1,5 +1,6 @@
 //! glassdeck-gpu: the keyboard's own GPU renderer. It draws the built-in canvas, shown whenever
-//! nothing else owns the screen, or a canvas background, into buffers it hands the receiver's compositor.
+//! nothing else owns the screen, a canvas background, or an image background, into buffers it hands
+//! the receiver's compositor.
 
 #[cfg(target_os = "linux")]
 mod compositor;
@@ -15,8 +16,11 @@ struct Cli {
     #[arg(long)]
     compositor_fd: Option<i32>,
     /// Draw this canvas background (.deck) instead of the built-in gradient
-    #[arg(long)]
+    #[arg(long, conflicts_with = "image")]
     canvas: Option<std::path::PathBuf>,
+    /// Show this image background (.deck): drawn once, then left on screen
+    #[arg(long)]
+    image: Option<std::path::PathBuf>,
     /// Draw this many frames with no receiver, then print what they cost
     #[arg(long)]
     bench: Option<u32>,
@@ -35,6 +39,15 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let path = cli.snapshot.context("on the PC, glassdeck-gpu only takes --snapshot")?;
+    if let Some(image) = &cli.image {
+        use glassdeck_gpu::image::{ImageProgram, Picture};
+        let picture = Picture::read(&Package::open(image)?)?;
+        let size = (picture.width, picture.height);
+        let offscreen = Offscreen::new(size)?;
+        ImageProgram::new(&offscreen.gl, &picture)?.draw(&offscreen.gl, offscreen.framebuffer(), size);
+        let rgba: Vec<u8> = offscreen.read_rgb().chunks_exact(size.0 as usize).rev().flatten().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+        return std::fs::write(&path, rgba).with_context(|| format!("writing {}", path.display()));
+    }
     let files = match &cli.canvas {
         Some(canvas) => CanvasFiles::read(&Package::open(canvas)?)?,
         None => glassdeck_gpu::built_in()?,
@@ -77,11 +90,17 @@ mod linux {
 
     pub fn run(cli: Cli) -> Result<()> {
         let gpu = Gpu::open()?;
+        if let Some(path) = &cli.image {
+            let fd = cli.compositor_fd.context("an image background needs --compositor-fd (from the receiver)")?;
+            // SAFETY: the receiver hands us this socket at this number and nothing else owns it.
+            let compositor = unsafe { Compositor::from_fd(fd) };
+            return show_image(&gpu, &compositor, path);
+        }
         let files = match &cli.canvas {
             Some(path) => CanvasFiles::read(&Package::open(path)?).with_context(|| format!("opening the canvas {}", path.display()))?,
             None => glassdeck_gpu::built_in()?,
         };
-        let mut canvas = Canvas::new(&gpu.gl, files)?;
+        let mut canvas = Canvas::new(&gpu.gl, files, None)?;
         let (scale, fps) = (canvas.canvas.scale, canvas.canvas.frame_rate);
         let size = glassdeck_gpu::program::render_size(scale);
         let targets = (0..BUFFERS).map(|_| gpu.target(size.0, size.1)).collect::<Result<Vec<_>>>()?;
@@ -139,6 +158,25 @@ mod linux {
                     compositor.present(ids[index])?;
                 }
                 None => free.push(index),
+            }
+        }
+    }
+
+    /// Draws the picture once into one buffer and presents it; the compositor keeps showing it, so all
+    /// that's left is to answer until the receiver closes the socket.
+    fn show_image(gpu: &Gpu, compositor: &Compositor, path: &std::path::Path) -> Result<()> {
+        use glassdeck_gpu::image::{ImageProgram, Picture};
+        let picture = Picture::read(&Package::open(path)?).with_context(|| format!("opening the image {}", path.display()))?;
+        let target = gpu.target(picture.width, picture.height)?;
+        ImageProgram::new(&gpu.gl, &picture)?.draw(&gpu.gl, target.framebuffer, size_of(&target));
+        let id = compositor.register(target.dma_buf.as_fd(), target.layout)?;
+        compositor.present(id)?;
+        println!("glassdeck-gpu: image {}x{} shown", picture.width, picture.height);
+        loop {
+            match compositor.receive(true)? {
+                Received::Closed => return Ok(()),
+                Received::Message(FromCompositor::Released(_) | FromCompositor::Data(_)) | Received::Nothing => {}
+                Received::Message(other) => bail!("the receiver sent {other:?} outside registration"),
             }
         }
     }

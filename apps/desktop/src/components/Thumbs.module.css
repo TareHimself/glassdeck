@@ -16,6 +16,10 @@
     linear-gradient(160deg, #20303d, #0e1a24 60%, #2b3b48);
 }
 
+.background[data-kind="image"] {
+  background: linear-gradient(180deg, #2b3a67, #f0a26b 55%, #f7d6a0);
+}
+
 .fill {
   position: absolute;
   inset: 0;

@@ -9,6 +9,7 @@ export const WIDGETS: WidgetSummary[] = [
 export const BACKGROUNDS: BackgroundSummary[] = [
   { id: "background.local.user.aurora", title: "Aurora", version: "1.0.0", kind: "canvas", preview: null },
   { id: "background.local.user.rain", title: "Rain on glass", version: "1.0.0", kind: "video", preview: null },
+  { id: "background.local.user.mountain-dawn", title: "Mountain dawn", version: "1.0.0", kind: "image", preview: null },
 ];
 
 export const THEME: Theme = {

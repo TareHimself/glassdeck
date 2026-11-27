@@ -30,6 +30,7 @@ pub fn open(background: Package, looping: bool, web: WebEncoding) -> Result<Sour
             Ok(Source::Encoded(Box::new(FileSource::open(Media::BackgroundEntry { background, entry }, looping)?)))
         }
         Kind::Background(Content::Canvas(_)) => bail!("{} is a canvas, which the keyboard draws itself; it can't be streamed", background.manifest().title),
+        Kind::Background(Content::Image { .. }) => bail!("{} is an image, which the keyboard shows itself; it can't be streamed", background.manifest().title),
         Kind::Background(Content::Web { entry, properties }) => {
             let settings = EncoderSettings {
                 width: PANEL.0 as u32,

@@ -33,6 +33,9 @@ const WIDGET_STILL: &str = "png";
 const OPAQUE_STILL: &str = "jpg";
 /// Files a package folder holds while it's being written, which don't change what it draws
 const IN_PROGRESS: [&str; 2] = [".tmp", ".converting.mp4"];
+/// A picture's still: as wide as the canvas and video ones
+const STILL_WIDTH: u32 = 480;
+const STILL_QUALITY: u8 = 85;
 /// How long a widget may take to draw its first frame for a still
 const FIRST_DRAW_LIMIT: Duration = Duration::from_secs(3);
 
@@ -131,6 +134,17 @@ fn store(root: &Path, id: &str, folder: Option<&Path>, ext: &str, bytes: &[u8]) 
     still_at(&path).context("the still wasn't written")
 }
 
+/// An image background's still: its picture, scaled down.
+pub fn draw_image(folder: &Path) -> Result<Still> {
+    let (root, id) = placed(folder).context("a package folder in the library")?;
+    let picture = image::open(folder.join(crate::images::IMAGE_FILE)).context("reading the picture")?.to_rgb8();
+    let (w, h) = picture.dimensions();
+    let small = image::imageops::thumbnail(&picture, STILL_WIDTH, h * STILL_WIDTH / w.max(1));
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, STILL_QUALITY).encode_image(&small).context("encoding the still")?;
+    store(root, &id, Some(folder), OPAQUE_STILL, &jpeg)
+}
+
 /// Draws a video background's still from its converted video, at its `preview_at`.
 pub fn draw_video(folder: &Path) -> Result<Still> {
     let (root, id) = placed(folder).context("a package folder in the library")?;
@@ -199,6 +213,7 @@ fn render(id: &str, native: Option<&Path>, slang: &mut Option<Slang>) -> Result<
                 store(&root, id, Some(&folder), OPAQUE_STILL, &crate::canvas_preview::render_still(loaded(slang, native)?, &files, at)?)
             }
             Some(BackgroundKind::Video) => draw_video(&folder),
+            Some(BackgroundKind::Image) => draw_image(&folder),
             None => bail!("{id} is neither a canvas nor a video"),
         },
     }

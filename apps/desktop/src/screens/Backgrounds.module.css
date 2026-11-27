@@ -33,6 +33,10 @@
   color: #f5b678;
 }
 
+.kind[data-kind="image"] {
+  color: #7fd4a8;
+}
+
 .newTile {
   min-height: 240px;
   background: transparent;

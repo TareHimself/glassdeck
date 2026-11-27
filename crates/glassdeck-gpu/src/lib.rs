@@ -1,6 +1,7 @@
 //! The canvas renderer's core, shared by glassdeck-gpu on the keyboard and the receiver's preview on
-//! the PC: the shader program, the script that drives it, and the built-in gradient.
+//! the PC: the shader program, the script that drives it, the built-in gradient, and image backgrounds.
 
+pub mod image;
 #[cfg(windows)]
 pub mod offscreen;
 pub mod program;

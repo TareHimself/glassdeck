@@ -65,3 +65,23 @@ export function monitorFrame(): string {
   g.fillRect(0, 257, 480, 13);
   return base64Of(canvas, "image/jpeg");
 }
+
+/** A picture for an image background: mountains at dawn, as base64 JPEG. */
+export function pictureFrame(): string {
+  const [canvas, g] = canvasOf(480, 270);
+  const sky = g.createLinearGradient(0, 0, 0, 270);
+  sky.addColorStop(0, "#2b3a67");
+  sky.addColorStop(0.55, "#f0a26b");
+  sky.addColorStop(1, "#f7d6a0");
+  g.fillStyle = sky;
+  g.fillRect(0, 0, 480, 270);
+  g.fillStyle = "#3b3f6b";
+  g.beginPath();
+  g.moveTo(0, 190);
+  const peaks: [number, number][] = [[80, 120], [150, 160], [230, 95], [310, 170], [390, 130], [480, 180]];
+  for (const [x, y] of peaks) g.lineTo(x, y);
+  g.lineTo(480, 270);
+  g.lineTo(0, 270);
+  g.fill();
+  return base64Of(canvas, "image/jpeg");
+}

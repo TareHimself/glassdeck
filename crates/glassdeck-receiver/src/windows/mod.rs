@@ -8,7 +8,7 @@ mod yuv;
 pub use compositor::Compositor;
 pub use doorbell::Doorbell;
 pub use decode::{Decoder, Picture, init_decoder_thread};
-pub use canvas::{FallbackCanvas, CanvasBackground};
+pub use canvas::{CanvasBackground, FallbackCanvas, ImageBackground};
 pub use web::{Registrar, WebBackground};
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7878";

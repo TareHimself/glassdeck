@@ -37,6 +37,13 @@ export const commands = {
 	readVideo: (id: string, options?: InvokeOptions) => typedError<VideoBackground, LibraryError>(__TAURI_INVOKE("read_video", { id }, options)),
 	/**  Sets the preview image to the converted video's frame at `seconds`; the new image, as a base64 JPEG. */
 	setVideoPreview: (id: string, seconds: number | null, options?: InvokeOptions) => typedError<string, LibraryError>(__TAURI_INVOKE("set_video_preview", { id, seconds }, options)),
+	readImage: (id: string, options?: InvokeOptions) => typedError<ImageBackground, LibraryError>(__TAURI_INVOKE("read_image", { id }, options)),
+	/**  Asks for a picture to make an image background from. `None` when the dialog is cancelled. */
+	pickImage: (options?: InvokeOptions) => __TAURI_INVOKE<string | null>("pick_image", undefined, options),
+	/**  A picked picture as it will fill the panel, as a base64 JPEG. */
+	previewImage: (path: string, options?: InvokeOptions) => typedError<string, LibraryError>(__TAURI_INVOKE("preview_image", { path }, options)),
+	/**  Puts a new picture in place of the background's, cropped and scaled to the panel; its still is redrawn. */
+	replaceImage: (id: string, source: string, options?: InvokeOptions) => typedError<ImageBackground, LibraryError>(__TAURI_INVOKE("replace_image", { id, source }, options)),
 	/**  Converts a new file into the background, cut as given. */
 	replaceVideo: (id: string, source: string, cut: VideoCut, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("replace_video", { id, source, cut }, options)),
 	readCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasSource, LibraryError>(__TAURI_INVOKE("read_canvas", { id }, options)),
@@ -111,7 +118,7 @@ export type ApplyError =
 /**  A package couldn't be packed from the library */
 { kind: "library"; error: LibraryError } | { kind: "glassdeckd"; error: GlassdeckdError };
 
-export type BackgroundKind = "canvas" | "video";
+export type BackgroundKind = "canvas" | "video" | "image";
 
 export type BackgroundSummary = {
 	id: string,
@@ -206,6 +213,22 @@ export type GlassdeckdError =
 /**  What the frontend hears about the connection to glassdeckd and what it sends. */
 export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; event: Event } | { state: "lost"; error: GlassdeckdError };
 
+/**  An image background as its page shows it. */
+export type ImageBackground = {
+	background: BackgroundSummary,
+	record: ImageRecord,
+	/**  The picture as the keyboard shows it */
+	path: string,
+	width: number,
+	height: number,
+};
+
+/**  Where an image background's picture came from. */
+export type ImageRecord = {
+	/**  The file's name, as it was picked */
+	from: string,
+};
+
 /**  An input's new value, the way the shader takes it. */
 export type InputPayload = 
 /**  One to four floats: a float or a vector */
@@ -242,6 +265,8 @@ export type LayoutUpdate = {
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
 /**  A background's video file that can't be used */
 { kind: "bad_video"; reason: string } | 
+/**  A picture for an image background that can't be read */
+{ kind: "bad_image"; reason: string } | 
 /**  A `.deck` to import that isn't a widget package this build reads */
 { kind: "not_a_widget"; reason: string } | { kind: "invalid_version"; reason: string } | 
 /**  A preview time that isn't a number of seconds from 0 on */
@@ -309,7 +334,9 @@ export type NewBackground = {
 
 export type NewContent = { kind: "canvas" } | 
 /**  `source`: the video file to crop, trim and convert */
-{ kind: "video"; source: string; cut: VideoCut };
+{ kind: "video"; source: string; cut: VideoCut } | 
+/**  `source`: the picture to crop and scale to the panel */
+{ kind: "image"; source: string };
 
 export type NewWidget = {
 	title: string,

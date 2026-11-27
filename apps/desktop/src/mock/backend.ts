@@ -16,7 +16,7 @@ import type {
   WidgetSummary,
 } from "../bindings";
 import { BACKGROUNDS, CANVAS_FILES, CLOCK_KEYBOARD, CLOCK_OPTIONS, PANEL_LAYOUT, STATUS, STREAMS, THEME, WIDGETS } from "./fixtures";
-import { canvasFrame, monitorFrame, staleFrame, widgetTile } from "./frames";
+import { canvasFrame, monitorFrame, pictureFrame, staleFrame, widgetTile } from "./frames";
 
 const STALE_FRAME = staleFrame();
 
@@ -218,6 +218,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   export_package: () => null,
   import_widget: () => null,
   pick_video: () => null,
+  pick_image: () => "C:\\Pictures\\mountain-dawn.jpg",
+  preview_image: () => pictureFrame(),
+  read_image: ({ id }) => imageBackground(id as string, "mountain-dawn.jpg"),
+  replace_image: ({ id, source }) => imageBackground(id as string, (source as string).split(/[\\/]/).pop() ?? ""),
   list_backgrounds: () => state.backgrounds,
   create_background: ({ background: created }) => {
     const { title, id, content } = created as NewBackground;
@@ -310,14 +314,21 @@ function fakeLanguageServer(session: number, request: LspRequest) {
 /** A still the way the real worker draws one: a widget's first tile, or a canvas at time 0. Videos have none until converted. */
 function drawStill(id: string) {
   const found = state.widgets.find((w) => w.id === id);
-  const canvas = id === BUILT_IN_BACKGROUND || state.backgrounds.some((b) => b.id === id && b.kind === "canvas");
+  const kind = id === BUILT_IN_BACKGROUND ? "canvas" : state.backgrounds.find((b) => b.id === id)?.kind;
   const path = found
     ? `data:image/png;base64,${widgetTile(found.title, found.sizing.size.w, found.sizing.size.h, 0)}`
-    : canvas
+    : kind === "canvas"
       ? `data:image/jpeg;base64,${canvasFrame(id, 0)}`
-      : null;
+      : kind === "image"
+        ? `data:image/jpeg;base64,${pictureFrame()}`
+        : null;
   const update = path ? { state: "ready", id, still: { path, stamp: Date.now() } } : { state: "failed", id, reason: "a video's still comes from converting it" };
   void emit("still-update", update);
+}
+
+/** An image background as its page reads it; `from`: the picture's file name. */
+function imageBackground(id: string, from: string) {
+  return { background: background(id), record: { from }, path: `C:\\mock\\${id}\\image.jpg`, width: 1920, height: 1080 };
 }
 
 /** Lets a test put the fake keyboard in another state, as glassdeckd would report it. */

@@ -11,7 +11,7 @@ use anyhow::Result;
 pub use compositor::{Compositor, Registrar};
 pub use doorbell::Doorbell;
 pub use mpp::Decoder;
-pub use canvas::{FallbackCanvas, CanvasBackground};
+pub use canvas::{CanvasBackground, FallbackCanvas, ImageBackground};
 pub use web::WebBackground;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";

@@ -93,6 +93,8 @@ pub enum Content {
     },
     /// Drawn on the keyboard's GPU by glassdeck-gpu, from `shader.essl` and an optional `keyboard.luau`
     Canvas(Canvas),
+    /// One still picture, a JPEG at the panel's size, shown by glassdeck-gpu
+    Image { file: String },
 }
 
 /// `{tld}.{entity}.{name}` in lowercase, such as `local.user.clock`: what a package calls itself.
@@ -323,6 +325,7 @@ impl Manifest {
                 vec![file]
             }
             Kind::Background(Content::Web { entry, .. }) => vec![entry],
+            Kind::Background(Content::Image { file }) => vec![file],
             Kind::Background(Content::Canvas(canvas)) => {
                 canvas.validate()?;
                 vec![SHADER]

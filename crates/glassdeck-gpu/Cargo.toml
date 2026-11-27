@@ -12,6 +12,7 @@ glassdeck-package.workspace = true
 glow = "0.16"
 serde_json.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "luau-vector4"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 drm = "0.15.0"

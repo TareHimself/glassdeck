@@ -8,7 +8,7 @@ import { Field, Input } from "../components/Input";
 import { Problem } from "../components/Problem";
 import { Segments } from "../components/Segments";
 import { describeLibraryError, slug } from "../library";
-import { CanvasIcon, KIND_NAMES, VideoIcon } from "./backgroundKinds";
+import { CanvasIcon, ImageIcon, KIND_NAMES, VideoIcon } from "./backgroundKinds";
 import { VideoCutter, type Chosen, type Cut } from "./VideoCutter";
 import styles from "./NewBackgroundDialog.module.css";
 
@@ -33,7 +33,19 @@ const KINDS: { value: BackgroundKind; name: ReactNode }[] = [
       </>
     ),
   },
+  {
+    value: "image",
+    name: (
+      <>
+        <ImageIcon />
+        {KIND_NAMES.image}
+      </>
+    ),
+  },
 ];
+
+/** The picked picture, and how it will fill the panel (a base64 JPEG). */
+type Picture = { path: string; preview: string };
 
 /** The starting gradient, drawn live while Canvas is chosen, or why it stopped. */
 function useStartingCanvas() {
@@ -57,6 +69,7 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [video, setVideo] = useState<{ path: string; facts: VideoFacts } | null>(null);
   const [cut, setCut] = useState<Cut | null>(null);
+  const [picture, setPicture] = useState<Picture | null>(null);
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [creating, setCreating] = useState(false);
   const canvasFrame = useStartingCanvas();
@@ -73,12 +86,31 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
     setProblem(null);
     setVideo({ path, facts: facts.data });
     setCut(facts.data.length === null ? null : { crop: 0.5, start: 0, end: facts.data.length });
-    if (!title) setTitle(path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "");
+    if (!title) setTitle(fileTitle(path));
+  };
+
+  const choosePicture = async () => {
+    const path = await commands.pickImage();
+    if (!path) return;
+    const preview = await commands.previewImage(path);
+    if (preview.status === "error") {
+      setProblem(preview.error);
+      return;
+    }
+    setProblem(null);
+    setPicture({ path, preview: preview.data });
+    if (!title) setTitle(fileTitle(path));
   };
 
   const content = (): NewContent | null => {
-    if (kind === "canvas") return { kind: "canvas" };
-    return video && cut ? { kind: "video", source: video.path, cut } : null;
+    switch (kind) {
+      case "canvas":
+        return { kind: "canvas" };
+      case "video":
+        return video && cut ? { kind: "video", source: video.path, cut } : null;
+      case "image":
+        return picture && { kind: "image", source: picture.path };
+    }
   };
 
   const create = async () => {
@@ -104,6 +136,9 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
           )}
           {kind === "canvas" && canvasFrame.error && <Problem>{canvasFrame.error}</Problem>}
           {kind === "video" && (chosenVideo ? <VideoCutter video={chosenVideo} onCut={setCut} /> : <div className={styles.stage} />)}
+          {kind === "image" && (
+            <div className={styles.stage}>{picture && <img className={styles.canvas} alt="How the picture fills the keyboard" src={`data:image/jpeg;base64,${picture.preview}`} />}</div>
+          )}
         </div>
 
         <div className={styles.form}>
@@ -120,6 +155,18 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
             />
             <span className={styles.id}>background.{id}</span>
           </Field>
+
+          {kind === "image" && (
+            <div className={styles.file}>
+              <span className={styles.label}>Picture</span>
+              <div className={styles.fileRow}>
+                <span className={styles.path}>{picture?.path}</span>
+                <Button className={styles.choose} onClick={() => void choosePicture()}>
+                  Choose
+                </Button>
+              </div>
+            </div>
+          )}
 
           {kind === "video" && (
             <div className={styles.file}>
@@ -155,7 +202,7 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button variant="primary" disabled={creating || content() === null} onClick={() => void create()}>
-          {kind === "canvas" ? "Create" : "Convert"}
+          {kind === "video" ? "Convert" : "Create"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -166,6 +213,11 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
 function reencodes(facts: VideoFacts, cut: Cut): boolean {
   const whole = cut.start <= 0 && facts.length !== null && cut.end >= facts.length;
   return !(facts.fits_panel && whole);
+}
+
+/** A file's name without its folder or extension, as a starting title. */
+function fileTitle(path: string): string {
+  return path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
 }
 
 function clock(seconds: number): string {

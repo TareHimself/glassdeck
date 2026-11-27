@@ -1,4 +1,4 @@
-//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web, canvases through glassdeck-gpu.
+//! Backgrounds played on the keyboard itself, with no PC: video through our own decoder, web pages through glassdeck-local-web, canvases and images through glassdeck-gpu.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use glassdeck_proto::{Mode, StreamInfo, unix_micros};
 
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
-use crate::platform::{self, Decoder, Registrar, CanvasBackground, WebBackground};
+use crate::platform::{self, CanvasBackground, Decoder, ImageBackground, Registrar, WebBackground};
 use crate::playout::{PlayoutClock, wait_until};
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
@@ -25,6 +25,8 @@ pub enum LocalBackground {
     Web(WebBackground),
     /// Drawn by glassdeck-gpu
     Canvas(CanvasBackground),
+    /// Drawn once by glassdeck-gpu
+    Image(ImageBackground),
 }
 
 impl LocalBackground {
@@ -41,6 +43,7 @@ impl LocalBackground {
             Kind::Background(Content::Video { file, .. }) => background.entry(file).context("the background's video is missing")?,
             Kind::Background(Content::Web { .. }) => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
             Kind::Background(Content::Canvas(_)) => return CanvasBackground::start(path, registrar, mailbox, stopped).map(Self::Canvas),
+            Kind::Background(Content::Image { .. }) => return ImageBackground::start(path, registrar, mailbox, stopped).map(Self::Image),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
@@ -60,7 +63,7 @@ impl LocalBackground {
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
         match self {
             Self::Canvas(canvas) => canvas.deliver(payload),
-            Self::Video { .. } | Self::Web(_) => Ok(()),
+            Self::Video { .. } | Self::Web(_) | Self::Image(_) => Ok(()),
         }
     }
 
@@ -74,6 +77,7 @@ impl LocalBackground {
             }
             Self::Web(web) => web.stop(),
             Self::Canvas(canvas) => canvas.stop(),
+            Self::Image(image) => image.stop(),
         }
     }
 }

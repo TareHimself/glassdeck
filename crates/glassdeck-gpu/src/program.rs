@@ -126,7 +126,8 @@ impl CanvasProgram {
     }
 }
 
-fn compile(gl: &glow::Context, fragment: &str) -> Result<glow::Program> {
+/// Links the full-screen triangle with `fragment`, and binds the empty vertex array it draws from.
+pub(crate) fn compile(gl: &glow::Context, fragment: &str) -> Result<glow::Program> {
     // SAFETY: the context is current; compile and link results are checked.
     unsafe {
         let program = gl.create_program().map_err(|e| anyhow!("creating a program: {e}"))?;
@@ -136,14 +137,14 @@ fn compile(gl: &glow::Context, fragment: &str) -> Result<glow::Program> {
             gl.shader_source(shader, source);
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
-                bail!("compiling the canvas: {}", gl.get_shader_info_log(shader));
+                bail!("compiling a shader: {}", gl.get_shader_info_log(shader));
             }
             gl.attach_shader(program, shader);
             shaders.push(shader);
         }
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
-            bail!("linking the canvas: {}", gl.get_program_info_log(program));
+            bail!("linking a shader: {}", gl.get_program_info_log(program));
         }
         for shader in shaders {
             gl.detach_shader(program, shader);

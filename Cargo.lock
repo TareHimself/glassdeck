@@ -1918,6 +1918,7 @@ dependencies = [
  "glassdeck-package",
  "glassdeck-proto",
  "glow",
+ "image",
  "khronos-egl",
  "libloading 0.8.9",
  "mlua",
@@ -2531,6 +2532,9 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",

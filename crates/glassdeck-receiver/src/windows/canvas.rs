@@ -118,3 +118,24 @@ fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, da
     }
     Ok(())
 }
+
+/// An image background in the preview: its picture, shown once.
+pub struct ImageBackground;
+
+impl ImageBackground {
+    pub fn start(
+        background: &Path,
+        _registrar: Registrar,
+        mailbox: Arc<Mailbox>,
+        _stopped: impl FnOnce(anyhow::Error) + Send + 'static,
+    ) -> Result<Self> {
+        println!("Local background {}: image", background.display());
+        let picture = glassdeck_gpu::image::Picture::read(&Package::open(background)?)?;
+        let pixels = picture.rgb.as_chunks::<3>().0.iter().map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]])).collect();
+        let picture = Picture { pixels, width: picture.width as usize, height: picture.height as usize, time_us: unix_micros() };
+        mailbox.put(ShownFrame { picture, timing: Timing::Paced { late_us: 0 } });
+        Ok(Self)
+    }
+
+    pub fn stop(self) {}
+}

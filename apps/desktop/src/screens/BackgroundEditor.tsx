@@ -5,6 +5,7 @@ import { PageHeader, useBack } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { describeLibraryError } from "../library";
 import { CanvasEditor } from "./CanvasEditor";
+import { ImagePage } from "./ImagePage";
 import { VideoPage } from "./VideoPage";
 
 type Loaded = { state: "loading" } | { state: "ready"; background: BackgroundSummary } | { state: "failed"; error: LibraryError };
@@ -36,9 +37,14 @@ export function BackgroundEditor() {
         </>
       );
     case "ready": {
-      const { background } = loaded;
-      if (background.kind === "canvas") return <CanvasEditor id={id} />;
-      return <VideoPage id={id} />;
+      switch (loaded.background.kind) {
+        case "canvas":
+          return <CanvasEditor id={id} />;
+        case "video":
+          return <VideoPage id={id} />;
+        case "image":
+          return <ImagePage id={id} />;
+      }
     }
   }
 }

@@ -49,3 +49,24 @@ impl CanvasBackground {
         self.0.stop();
     }
 }
+
+/// An image background, drawn once by glassdeck-gpu and left on screen.
+pub struct ImageBackground(RendererProcess);
+
+impl ImageBackground {
+    pub fn start(
+        background: &Path,
+        registrar: Registrar,
+        mailbox: Arc<Mailbox>,
+        stopped: impl FnOnce(anyhow::Error) + Send + 'static,
+    ) -> Result<Self> {
+        println!("Local background {}: image", background.display());
+        let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
+        let args = [format!("--image={}", background.display())];
+        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, stopped).map(Self)
+    }
+
+    pub fn stop(self) {
+        self.0.stop();
+    }
+}

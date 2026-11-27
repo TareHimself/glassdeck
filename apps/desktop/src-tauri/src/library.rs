@@ -55,6 +55,8 @@ pub enum LibraryError {
     NotFound { id: String },
     /// A background's video file that can't be used
     BadVideo { reason: String },
+    /// A picture for an image background that can't be read
+    BadImage { reason: String },
     /// A `.deck` to import that isn't a widget package this build reads
     NotAWidget { reason: String },
     InvalidVersion { reason: String },

@@ -36,6 +36,12 @@ function CanvasFrame({ background, live, values, badge }: FrameProps & { values?
   );
 }
 
+/** A picture doesn't move, so its still is all there is to show. */
+function ImageFrame({ background }: Pick<FrameProps, "background">) {
+  const still = useStill(background.id, background.preview);
+  return still && <img className={styles.fill} alt="" src={still} />;
+}
+
 function VideoFrame({ background, live, badge }: FrameProps) {
   const source = useVideoSource(background.id);
   const still = useStill(background.id, background.preview);
@@ -96,11 +102,9 @@ export function BackgroundThumb({
 }) {
   return (
     <div className={classes(styles.background, className)} data-kind={background.kind}>
-      {background.kind === "canvas" ? (
-        <CanvasFrame background={background} live={live} values={values} badge={badge} />
-      ) : (
-        <VideoFrame background={background} live={live} badge={badge} />
-      )}
+      {background.kind === "canvas" && <CanvasFrame background={background} live={live} values={values} badge={badge} />}
+      {background.kind === "video" && <VideoFrame background={background} live={live} badge={badge} />}
+      {background.kind === "image" && <ImageFrame background={background} />}
       {children}
     </div>
   );

@@ -25,6 +25,7 @@ const CANVAS_SCRIPT_TEMPLATE: &str = include_str!("../../../../canvases/gradient
 pub enum BackgroundKind {
     Canvas,
     Video,
+    Image,
 }
 
 #[derive(Clone, Debug, Serialize, Type)]
@@ -43,6 +44,8 @@ pub enum NewContent {
     Canvas,
     /// `source`: the video file to crop, trim and convert
     Video { source: String, cut: VideoCut },
+    /// `source`: the picture to crop and scale to the panel
+    Image { source: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Type)]
@@ -63,6 +66,7 @@ struct ValidNewBackground {
 enum ValidContent {
     Canvas,
     Video { record: VideoRecord, conversion: Conversion },
+    Image(crate::images::PreparedImage),
 }
 
 fn parse_new(root: &Path, new: NewBackground) -> Result<ValidNewBackground, LibraryError> {
@@ -78,6 +82,7 @@ fn parse_new(root: &Path, new: NewBackground) -> Result<ValidNewBackground, Libr
             let (record, conversion) = videos::plan(&qualified, &root.join(qualified.as_str()), &PathBuf::from(source.trim()), cut)?;
             ValidContent::Video { record, conversion }
         }
+        NewContent::Image { source } => ValidContent::Image(crate::images::prepare(&PathBuf::from(source.trim()))?),
     };
     Ok(ValidNewBackground { title, id, qualified, content })
 }
@@ -94,6 +99,7 @@ fn starting_files(new: &ValidNewBackground) -> Vec<(&'static str, String)> {
             (HOST_SCRIPT, String::new()),
         ]),
         ValidContent::Video { record, .. } => files.push((VIDEO_RECORD, videos::record_text(record))),
+        ValidContent::Image(_) => {}
     }
     files
 }
@@ -104,6 +110,8 @@ pub(crate) fn kind_of(folder: &Path) -> Option<BackgroundKind> {
         Some(BackgroundKind::Canvas)
     } else if folder.join(VIDEO_RECORD).is_file() {
         Some(BackgroundKind::Video)
+    } else if folder.join(crate::images::IMAGE_RECORD).is_file() {
+        Some(BackgroundKind::Image)
     } else {
         None
     }
@@ -160,9 +168,12 @@ pub fn create_background(root: &Path, new: NewBackground) -> Result<(BackgroundS
         let path = staging.join(name);
         fs::write(&path, text).map_err(io(format!("writing {}", path.display())))?;
     }
+    if let ValidContent::Image(image) = &new.content {
+        crate::images::write(&staging, image)?;
+    }
     fs::rename(&staging, &folder).map_err(io(format!("moving {} into place", folder.display())))?;
     let conversion = match new.content {
-        ValidContent::Canvas => None,
+        ValidContent::Canvas | ValidContent::Image(_) => None,
         ValidContent::Video { conversion, .. } => Some(conversion),
     };
     Ok((background_summary(&folder)?, conversion))
@@ -256,7 +267,7 @@ pub fn check_canvas(root: &Path, id: &str, native: &Path) -> Result<CanvasCheck,
     Ok(CanvasCheck { shader_error: None, problems: check.problems, checked: check.checked.len() as u32 })
 }
 
-/// Packs a canvas with Slang, or a converted video, to `out`. `native`: where Slang and the
+/// Packs a canvas with Slang, a converted video, or a picture, to `out`. `native`: where Slang and the
 /// Luau checker are.
 pub fn export_background(root: &Path, id: &str, out: &Path, native: &Path) -> Result<(), LibraryError> {
     let folder = typed_folder(root, id, PackageType::Background)?;
@@ -269,6 +280,7 @@ pub fn export_background(root: &Path, id: &str, out: &Path, native: &Path) -> Re
             glassdeck_slang::pack::pack_canvas(&slang, &luau, &folder, out).map(drop).map_err(failed)
         }
         Some(BackgroundKind::Video) => videos::export(&folder, out),
+        Some(BackgroundKind::Image) => crate::images::export(&folder, out),
         None => Err(LibraryError::NotFound { id: id.to_owned() }),
     }
 }

@@ -24,6 +24,7 @@ const FILTERS: { value: Filter; name: string }[] = [
   { value: "all", name: "All" },
   { value: "canvas", name: KIND_NAMES.canvas },
   { value: "video", name: KIND_NAMES.video },
+  { value: "image", name: KIND_NAMES.image },
 ];
 
 function BackgroundCard({ background, inUse, use }: { background: BackgroundSummary; inUse: string | null; use: CardUse }) {
