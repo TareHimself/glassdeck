@@ -157,9 +157,40 @@ impl Pipe for UsbPipe {
     }
 }
 
+/// Every answer ends with a zero-length packet, and Flux's own firmware takes no new request
+/// until that packet has been read.
 fn request(pipe: &mut impl Pipe, command: Command, payload: &[u8]) -> Result<(Reply, Vec<u8>)> {
-    usb_command::request(pipe, command as u8, payload)
+    let answer = usb_command::request(pipe, command as u8, payload)?;
+    let end = pipe
+        .receive()
+        .context("reading the zero-length packet that ends the answer")?;
+    if !end.is_empty() {
+        bail!("the answer ran {} bytes past its packets", end.len());
+    }
+    Ok(answer)
 }
+
+/// The commands a key scanner's firmware knows. Flux's own firmware (versions like `1.4.9.D`)
+/// has no runtime-state or press-refinement commands and doesn't answer them at all, so they're
+/// never asked of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandSet {
+    Flux,
+    Keyglass,
+}
+
+impl CommandSet {
+    fn of(version: &str) -> Self {
+        if version.starts_with(|c: char| c.is_ascii_digit()) {
+            Self::Flux
+        } else {
+            Self::Keyglass
+        }
+    }
+}
+
+/// The profile file's number. Flux's own firmware refuses `FILE_TO_HOST` without it.
+const PROFILE_FILE: [u8; 4] = 0u32.to_le_bytes();
 
 /// The answer's payload, or an error naming the command it refused.
 fn acked(pipe: &mut impl Pipe, command: Command, payload: &[u8]) -> Result<Vec<u8>> {
@@ -190,7 +221,12 @@ fn runtime_state(pipe: &mut impl Pipe) -> Result<Option<RuntimeState>> {
 }
 
 fn version(pipe: &mut impl Pipe) -> Result<()> {
-    println!("firmware: {}", firmware_version(pipe)?);
+    let firmware = firmware_version(pipe)?;
+    println!("firmware: {firmware}");
+    if CommandSet::of(&firmware) == CommandSet::Flux {
+        println!("Flux's own firmware");
+        return Ok(());
+    }
     match runtime_state(pipe)? {
         Some(s) => println!(
             "profile {}, actuation mode {}, platform {}",
@@ -317,7 +353,7 @@ fn write_new(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 /// Saves what the firmware answers for into the new folder `dir`, returning a line per file.
-fn save_settings(pipe: &mut impl Pipe, dir: &Path) -> Result<String> {
+fn save_settings(pipe: &mut impl Pipe, commands: CommandSet, dir: &Path) -> Result<String> {
     fs::create_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut summary = String::new();
     let mut save = |name: &str, data: &[u8], what: &str| -> Result<()> {
@@ -325,7 +361,11 @@ fn save_settings(pipe: &mut impl Pipe, dir: &Path) -> Result<String> {
         writeln!(summary, "{SETTINGS}/{name}: {what}").expect("writing to a String");
         Ok(())
     };
-    if let Some(state) = runtime_state(pipe)? {
+    let state = match commands {
+        CommandSet::Flux => None,
+        CommandSet::Keyglass => runtime_state(pipe)?,
+    };
+    if let Some(state) = state {
         let text = format!(
             "active_profile {}\nactuation_mode {}\nplatform_code {}\n",
             state.active_profile, state.actuation_mode, state.platform_code
@@ -336,8 +376,12 @@ fn save_settings(pipe: &mut impl Pipe, dir: &Path) -> Result<String> {
         Some(blob) => save("keymap.bin", &blob, "GET_KEYMAP; restore with SEND_KEYMAP")?,
         None => println!("no keymap stored"),
     }
-    let profiles = acked(pipe, Command::FileToHost, &[])?;
-    if let Err(e) = ProfileSettings::parse_export(&profiles) {
+    let profiles = acked(pipe, Command::FileToHost, &PROFILE_FILE)?;
+    let parsed = match commands {
+        CommandSet::Flux => ProfileSettings::parse_flux_export(&profiles),
+        CommandSet::Keyglass => ProfileSettings::parse_export(&profiles),
+    };
+    if let Err(e) = parsed {
         bail!("the profile settings don't parse: {e:?}");
     }
     save(
@@ -345,7 +389,11 @@ fn save_settings(pipe: &mut impl Pipe, dir: &Path) -> Result<String> {
         &profiles,
         "FILE_TO_HOST export form",
     )?;
-    let refinement = optional(pipe, Command::PressRefinementStatus)?
+    let status = match commands {
+        CommandSet::Flux => None,
+        CommandSet::Keyglass => optional(pipe, Command::PressRefinementStatus)?,
+    };
+    let refinement = status
         .map(|s| RefinementState::parse(&s).context("an unreadable refinement status"))
         .transpose()?;
     match refinement {
@@ -390,7 +438,7 @@ fn backup(dir: &Path) -> Result<()> {
     let usb_serial = pipe.serial.clone();
     fs::create_dir(dir)
         .with_context(|| format!("creating {} (it must not exist yet)", dir.display()))?;
-    let mut summary = save_settings(&mut pipe, &dir.join(SETTINGS))?;
+    let mut summary = save_settings(&mut pipe, CommandSet::of(&firmware), &dir.join(SETTINGS))?;
 
     enter_bootloader(&mut pipe)?;
     drop(pipe);
@@ -622,6 +670,9 @@ mod tests {
                     self.answers.push_back(vec![]);
                 }
             }
+            if !zlp_after_each {
+                self.answers.push_back(vec![]);
+            }
         }
     }
 
@@ -668,10 +719,9 @@ mod tests {
             request(&mut pipe, Command::GetKeymap, &[]).unwrap(),
             (Reply::Ack, keymap)
         );
-        assert_eq!(
-            pipe.answers.len(),
-            1,
-            "only the trailing zero-length packet is left"
+        assert!(
+            pipe.answers.is_empty(),
+            "the trailing zero-length packet is read too"
         );
     }
 

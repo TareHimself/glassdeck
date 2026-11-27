@@ -401,6 +401,7 @@ pub struct ProfileSettings {
 }
 
 const UPLOAD_HEADER: usize = 16;
+const FLUX_EXPORT_HEADER: usize = 16;
 const TABLE_HEADER: usize = 16;
 const PROFILE_LEN: usize = 8;
 
@@ -436,6 +437,22 @@ impl ProfileSettings {
         }
         Self::parse_table(&payload[UPLOAD_HEADER..]).map_err(|e| match e {
             ProfileError::Length(len) => ProfileError::Length(len + UPLOAD_HEADER),
+            other => other,
+        })
+    }
+
+    /// Flux's own firmware's `FILE_TO_HOST` answer: a 16-byte file header (the file number, then
+    /// the table's length), then the table.
+    pub fn parse_flux_export(payload: &[u8]) -> Result<Self, ProfileError> {
+        if payload.len() < FLUX_EXPORT_HEADER + TABLE_HEADER {
+            return Err(ProfileError::Length(payload.len()));
+        }
+        let table = &payload[FLUX_EXPORT_HEADER..];
+        if word(payload, 1) as usize != table.len() {
+            return Err(ProfileError::Length(payload.len()));
+        }
+        Self::parse_table(table).map_err(|e| match e {
+            ProfileError::Length(len) => ProfileError::Length(len + FLUX_EXPORT_HEADER),
             other => other,
         })
     }
@@ -497,6 +514,25 @@ fn word(bytes: &[u8], index: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_the_export_of_fluxs_own_firmware() {
+        // FILE_TO_HOST from firmware 1.4.9.D: one profile, actuation mode 0, default layers 1.
+        let mut answer = [0u8; 40];
+        answer[4] = 24;
+        answer[16] = 1;
+        answer[36] = 1;
+        let settings = super::ProfileSettings::parse_flux_export(&answer).unwrap();
+        assert_eq!(
+            settings.profiles(),
+            [super::Profile {
+                actuation_mode: 0,
+                default_layers: 1
+            }]
+        );
+        answer[4] = 32;
+        assert!(super::ProfileSettings::parse_flux_export(&answer).is_err());
+    }
+
     use super::*;
     use crate::testing::{Vectors, hex, unhex};
 
