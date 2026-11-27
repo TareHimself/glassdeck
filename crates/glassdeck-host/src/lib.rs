@@ -76,7 +76,7 @@ pub struct Sources {
     pub send_limit: Option<usize>,
     /// Where `print` goes, instead of the process's own output
     pub print: Option<Print>,
-    /// `messages.luau`: what `host.luau` and the keyboard half send each other
+    /// `bridge.luau`: what `host.luau` and the keyboard half send each other
     pub messages: Option<String>,
 }
 
@@ -152,7 +152,7 @@ impl HostSide {
         }
     }
 
-    /// A message from the keyboard half, to `host.luau`'s `script.on` callback.
+    /// A message from the keyboard half, to `host.luau`'s `bridge.on` callback.
     pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
         match &self.run {
             Run::Script(host) => host.messages.deliver(&host.vm, message, payload),

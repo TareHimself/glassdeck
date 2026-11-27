@@ -46,8 +46,8 @@ test("an error while running is marked at its line and logged once", async ({ pa
   await expect(page.getByRole("log").getByText(/attempt to index nil/)).toHaveCount(1);
 });
 
-test("messages.luau has its own tab, and a kind that isn't one is marked at its place", async ({ page }) => {
-  await page.getByRole("tab", { name: "messages.luau" }).click();
+test("bridge.luau has its own tab, and a kind that isn't one is marked at its place", async ({ page }) => {
+  await page.getByRole("tab", { name: "bridge.luau" }).click();
   await page.locator(".monaco-editor .view-lines").click();
   await page.keyboard.type("export type tapped = Signal<{ key: number }>", { delay: 20 });
   await expect(page.locator(".monaco-editor .squiggly-error").first()).toBeVisible();

@@ -143,6 +143,10 @@ mod linux {
                     canvas.deliver(&payload)?;
                     continue;
                 }
+                Received::Message(FromCompositor::ScriptMessage { message, payload, .. }) => {
+                    canvas.deliver_message(message, &payload)?;
+                    continue;
+                }
                 Received::Message(other) => bail!("the receiver sent {other:?} outside registration"),
                 Received::Nothing => {}
             }
@@ -152,7 +156,11 @@ mod linux {
             }
             due = (due + period).max(Instant::now());
             let index = free.pop().expect("a free buffer, waited for above");
-            match canvas.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())? {
+            let drawn = canvas.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())?;
+            for sent in canvas.take_messages() {
+                compositor.send_script_message(sent.message, sent.payload)?;
+            }
+            match drawn {
                 Some(took) => {
                     stats.add(took, targets[index].layout.width, targets[index].layout.height);
                     compositor.present(ids[index])?;
@@ -175,7 +183,7 @@ mod linux {
         loop {
             match compositor.receive(true)? {
                 Received::Closed => return Ok(()),
-                Received::Message(FromCompositor::Released(_) | FromCompositor::Data(_)) | Received::Nothing => {}
+                Received::Message(FromCompositor::Released(_) | FromCompositor::Data(_) | FromCompositor::ScriptMessage { .. }) | Received::Nothing => {}
                 Received::Message(other) => bail!("the receiver sent {other:?} outside registration"),
             }
         }

@@ -436,7 +436,7 @@ struct WidgetCheck {
     checked: u32,
 }
 
-/// A problem in `messages.luau`, at its place (1-based).
+/// A problem in `bridge.luau`, at its place (1-based).
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
 pub struct MessageProblem {
     pub line: u32,

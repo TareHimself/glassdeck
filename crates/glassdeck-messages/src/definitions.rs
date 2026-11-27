@@ -1,4 +1,4 @@
-//! Luau type definitions from a package's messages: for writing `messages.luau` itself, and for each
+//! Luau type definitions from a package's messages: for writing `bridge.luau` itself, and for each
 //! half's script, what it hears and what it can send to the other half.
 
 use crate::{Messages, Shape};
@@ -12,9 +12,9 @@ pub enum Half {
     Host,
 }
 
-/// The kinds `messages.luau` is written with, so the language server knows them and explains them on hover.
+/// The kinds `bridge.luau` is written with, so the language server knows them and explains them on hover.
 pub fn wrapper_definitions() -> &'static str {
-    r"-- messages.luau: one line per message, `export type name = Kind<shape>`. The name is the message's;
+    r"-- bridge.luau: one line per message, `export type name = Kind<shape>`. The name is the message's;
 -- local `type` lines name shapes to reuse. A message carries numbers, booleans, strings, Color, vector,
 -- lists `{ T }`, tables of those, and `?` for optional.
 
@@ -43,7 +43,7 @@ fn luau(shape: &Shape) -> String {
     }
 }
 
-/// What `half`'s script gets from `messages.luau`: `MessagesHeard`, the callbacks it can register for
+/// What `half`'s script gets from `bridge.luau`: `MessagesHeard`, the callbacks it can register for
 /// the messages that come to it, and `MessagesSent`, the calls that send to the other half.
 /// `implicit_options`: `host.luau` is blank, so the keyboard half hears the built-in `options`, typed
 /// by the generated `Options`.
@@ -55,7 +55,7 @@ pub fn definitions(messages: &Messages, half: Half, implicit_options: bool) -> S
     }
     let sent: Vec<String> = messages.0.iter().filter(|m| m.kind.to() != half).map(|m| format!("    {}: (value: {}) -> (),\n", m.name, luau(&m.shape))).collect();
     format!(
-        "-- From messages.luau. Made by Glassdeck; edits here are lost.\n\n-- What this half hears: script.on.<message>(callback)\nexport type MessagesHeard = {{\n{}}}\n\n-- What this half sends to the other: {}.script.<message>(value)\nexport type MessagesSent = {{\n{}}}\n",
+        "-- From bridge.luau. Made by Glassdeck; edits here are lost.\n\n-- What this half hears: bridge.on.<message>(callback)\nexport type MessagesHeard = {{\n{}}}\n\n-- What this half sends to the other: {}.script.<message>(value)\nexport type MessagesSent = {{\n{}}}\n",
         heard.concat(),
         match half {
             Half::Keyboard => "host",

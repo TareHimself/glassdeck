@@ -7,9 +7,11 @@ use std::fmt;
 use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use glassdeck_messages::Kind;
+
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 13;
+pub const VERSION: u8 = 14;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// The built-in canvas's package id: the default background, always on the keyboard and never a file.
@@ -39,12 +41,17 @@ const KIND_BACKGROUND_DATA: u8 = 12;
 const KIND_SET_WIDGETS: u8 = 13;
 const KIND_INVENTORY: u8 = 14;
 const KIND_REMOVE_PACKAGES: u8 = 15;
+const KIND_SCRIPT_MESSAGE: u8 = 16;
 const STREAM_START_LEN: usize = 20;
 const FRAME_FIXED_LEN: usize = 20;
 const STREAM_END_LEN: usize = 4;
 const CLOCK_PROBE_LEN: usize = 8;
 const CLOCK_REPLY_LEN: usize = 16;
 const MODULE_DATA_FIXED_LEN: usize = 4;
+/// tag (target and kind), instance, message number
+const SCRIPT_MESSAGE_FIXED_LEN: usize = 5;
+const SCRIPT_TO_WIDGET: u8 = 1;
+const SCRIPT_KIND_SHIFT: u8 = 1;
 const MODULE_RESOURCE_FIXED_LEN: usize = 4;
 const TARGET_FIXED_LEN: usize = 4;
 const PUT_FILE_FIXED_LEN: usize = TARGET_FIXED_LEN + 16;
@@ -143,6 +150,13 @@ impl PutFile {
     }
 }
 
+/// Whose script a script message is for: a widget by its place in the widget list, or the background.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScriptTarget {
+    Background,
+    Widget(u16),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     StreamStart(StreamInfo),
@@ -207,7 +221,39 @@ pub enum Message {
     BackgroundData {
         payload: Vec<u8>,
     },
+    /// Either way: a message from `bridge.luau` between a package's two halves. `message` is its place
+    /// in the file; `payload` its values, packed by position (`glassdeck_messages::encode`).
+    ScriptMessage {
+        to: ScriptTarget,
+        kind: Kind,
+        message: u16,
+        payload: Vec<u8>,
+    },
 }
+
+/// A script message's first bytes: whose it is, how it travels, and its number in `bridge.luau`.
+pub(crate) fn encode_script_header(out: &mut Vec<u8>, to: ScriptTarget, kind: Kind, message: u16) {
+    let (target, instance) = match to {
+        ScriptTarget::Background => (0, 0),
+        ScriptTarget::Widget(instance) => (SCRIPT_TO_WIDGET, instance),
+    };
+    let kind_bits = Kind::ALL.iter().position(|k| *k == kind).expect("Kind::ALL lists every kind") as u8;
+    out.push(target | kind_bits << SCRIPT_KIND_SHIFT);
+    out.extend_from_slice(&instance.to_le_bytes());
+    out.extend_from_slice(&message.to_le_bytes());
+}
+
+/// Reads what `encode_script_header` wrote: `header` is its `SCRIPT_MESSAGE_FIXED_LEN` bytes.
+pub(crate) fn decode_script_header(header: &[u8]) -> Result<(ScriptTarget, Kind, u16), ProtoError> {
+    let tag = header[0];
+    let to = match tag & SCRIPT_TO_WIDGET {
+        0 => ScriptTarget::Background,
+        _ => ScriptTarget::Widget(u16::from_le_bytes([header[1], header[2]])),
+    };
+    let kind = *Kind::ALL.get(usize::from(tag >> SCRIPT_KIND_SHIFT)).ok_or(ProtoError::BadScriptKind)?;
+    Ok((to, kind, u16::from_le_bytes([header[3], header[4]])))
+}
+
 
 #[derive(Debug)]
 pub enum ProtoError {
@@ -221,6 +267,7 @@ pub enum ProtoError {
     BadFileTarget,
     BadWidgetList,
     BadList,
+    BadScriptKind,
     TextNotUtf8,
     Io(io::Error),
 }
@@ -238,6 +285,7 @@ impl fmt::Display for ProtoError {
             Self::BadFileTarget => write!(f, "malformed file target"),
             Self::BadWidgetList => write!(f, "malformed widget list"),
             Self::BadList => write!(f, "malformed package list"),
+            Self::BadScriptKind => write!(f, "a script message of no known kind"),
             Self::TextNotUtf8 => write!(f, "text is not UTF-8"),
             Self::Io(e) => write!(f, "{e}"),
         }
@@ -302,6 +350,7 @@ impl Message {
             Self::Frame(frame) => FRAME_FIXED_LEN + frame.payload.len(),
             Self::PutFile(put) => put.data.len() + 64,
             Self::ModuleData { payload, .. } | Self::BackgroundData { payload } => payload.len() + 4,
+            Self::ScriptMessage { payload, .. } => payload.len() + SCRIPT_MESSAGE_FIXED_LEN,
             Self::ModuleResource { name, data, .. } => name.len() + data.len() + 4,
             Self::SetWidgets { widgets } => SET_WIDGETS_FIXED_LEN + widgets.iter().map(|w| WIDGET_SLOT_FIXED_LEN + w.package.len()).sum::<usize>(),
             Self::Inventory { packages } => LIST_FIXED_LEN + packages.iter().map(|p| HELD_FIXED_LEN + p.name.len()).sum::<usize>(),
@@ -359,6 +408,11 @@ impl Message {
             Self::BackgroundData { payload } => {
                 out.extend_from_slice(payload);
                 KIND_BACKGROUND_DATA
+            }
+            Self::ScriptMessage { to, kind, message, payload } => {
+                encode_script_header(out, *to, *kind, *message);
+                out.extend_from_slice(payload);
+                KIND_SCRIPT_MESSAGE
             }
             Self::SetWidgets { widgets } => {
                 let count = u16::try_from(widgets.len()).expect("a layout holds at most u16::MAX widgets");
@@ -470,6 +524,12 @@ impl Message {
                 Ok(Self::ModuleData { instance: u16::from_le_bytes([body[0], body[1]]), payload })
             }
             KIND_BACKGROUND_DATA => Ok(Self::BackgroundData { payload: body }),
+            KIND_SCRIPT_MESSAGE if body.len() >= SCRIPT_MESSAGE_FIXED_LEN => {
+                let mut body = body;
+                let payload = body.split_off(SCRIPT_MESSAGE_FIXED_LEN);
+                let (to, kind, message) = decode_script_header(&body)?;
+                Ok(Self::ScriptMessage { to, kind, message, payload })
+            }
             KIND_SET_WIDGETS if body.len() >= SET_WIDGETS_FIXED_LEN => decode_widgets(&body).map(|widgets| Self::SetWidgets { widgets }),
             KIND_INVENTORY if body.len() >= LIST_FIXED_LEN => decode_inventory(&body).map(|packages| Self::Inventory { packages }),
             KIND_REMOVE_PACKAGES if body.len() >= LIST_FIXED_LEN => decode_names(&body).map(|names| Self::RemovePackages { names }),
@@ -660,6 +720,9 @@ mod tests {
         round_trip(Message::Inventory { packages: vec![] });
         round_trip(Message::RemovePackages { names: vec!["a.b.deck".into(), "c.d.deck".into()] });
         round_trip(Message::ModuleData { instance: 3, payload: vec![0x81, 0xa3, b'c', b'p', b'u', 0x2a] });
+        round_trip(Message::ScriptMessage { to: ScriptTarget::Widget(2), kind: Kind::KeyboardEvent, message: 7, payload: vec![1, 6] });
+        round_trip(Message::ScriptMessage { to: ScriptTarget::Background, kind: Kind::HostEvent, message: 0, payload: Vec::new() });
+        round_trip(Message::ScriptMessage { to: ScriptTarget::Widget(u16::MAX), kind: Kind::KeyboardState, message: 3, payload: vec![9] });
         round_trip(Message::PutFile(PutFile {
             target: FileTarget::Package("background.local.converted.late-night.deck".into()),
             offset: 262_144,

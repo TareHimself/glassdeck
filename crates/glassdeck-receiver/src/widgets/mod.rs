@@ -20,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use glassdeck_luau::LiveName;
 use glassdeck_widget::{Installed, Installing, Instance, LiveCache};
 
+use glassdeck_proto::ScriptTarget;
+
 use crate::platform::Doorbell;
+use crate::upstream::Upstream;
 
 /// How often the profile and module folder are checked for changes.
 const RESCAN: Duration = Duration::from_secs(1);
@@ -67,6 +70,12 @@ pub enum Input {
         instance: u16,
         payload: Vec<u8>,
     },
+    /// A message from the instance's host half, for its `bridge.on`.
+    Message {
+        instance: u16,
+        message: u16,
+        payload: Vec<u8>,
+    },
     /// A resource the instance's host half made; empty `data` removes it.
     Resource {
         instance: u16,
@@ -90,9 +99,9 @@ pub struct Config {
     pub font: Font,
 }
 
-pub fn start(config: Config, tiles: Arc<Tiles>) -> Result<Sender<Input>> {
+pub fn start(config: Config, tiles: Arc<Tiles>, upstream: Arc<Upstream>) -> Result<Sender<Input>> {
     let (inbox, inputs) = mpsc::channel();
-    thread::Builder::new().name("widgets".into()).spawn(move || Host::new(config, tiles).run(inputs))?;
+    thread::Builder::new().name("widgets".into()).spawn(move || Host::new(config, tiles, upstream).run(inputs))?;
     Ok(inbox)
 }
 
@@ -100,6 +109,7 @@ struct Host {
     config: Config,
     area: WidgetArea,
     tiles: Arc<Tiles>,
+    upstream: Arc<Upstream>,
     instances: Vec<Instance>,
     /// What the host last asked for, kept across restarts
     layout: Vec<PlacedWidget>,
@@ -117,7 +127,7 @@ struct Host {
 }
 
 impl Host {
-    fn new(config: Config, tiles: Arc<Tiles>) -> Self {
+    fn new(config: Config, tiles: Arc<Tiles>, upstream: Arc<Upstream>) -> Self {
         let layout = read_layout(&config.state).unwrap_or_else(|e| {
             eprintln!("error: forgetting the saved widget layout: {e:#}");
             Vec::new()
@@ -126,6 +136,7 @@ impl Host {
             config,
             area: WidgetArea::of_panel(),
             tiles,
+            upstream,
             instances: Vec::new(),
             layout,
             seen: None,
@@ -166,6 +177,17 @@ impl Host {
                 self.last_publish = Some(now);
                 self.draw_due = false;
             }
+            self.send_messages();
+        }
+    }
+
+    /// What each widget's script sent its host half.
+    fn send_messages(&mut self) {
+        for (number, instance) in self.instances.iter_mut().enumerate() {
+            let number = u16::try_from(number).expect("layouts hold at most u16::MAX widgets");
+            for sent in instance.take_messages() {
+                self.upstream.script_message(ScriptTarget::Widget(number), sent.message, sent.payload);
+            }
         }
     }
 
@@ -174,6 +196,10 @@ impl Host {
             Input::Data { instance, payload } => match self.instances.get_mut(usize::from(instance)) {
                 Some(target) => target.on_data(&payload),
                 None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
+            },
+            Input::Message { instance, message, payload } => match self.instances.get_mut(usize::from(instance)) {
+                Some(target) => target.deliver_message(message, &payload),
+                None => eprintln!("error: a message for widget {instance}, but the profile has {}", self.instances.len()),
             },
             Input::Resource { instance, name, data } => self.store_live(instance, &name, data),
             Input::InstallProgress { what, fraction } => match &mut self.installing {

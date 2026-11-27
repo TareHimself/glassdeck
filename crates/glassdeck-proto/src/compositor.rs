@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use crate::Kind;
+
 pub const VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 4;
 /// Room for the longest message: `Data` at its largest.
@@ -18,8 +20,13 @@ const KIND_REGISTERED: u8 = 3;
 const KIND_REFUSED: u8 = 4;
 const KIND_RELEASED: u8 = 5;
 const KIND_DATA: u8 = 6;
+const KIND_SCRIPT_MESSAGE: u8 = 7;
 const REGISTER_LEN: usize = 28;
 const ID_LEN: usize = 4;
+/// kind, message number; `ToCompositor`'s has no kind, since a canvas only sends `HostEvent`s
+const SCRIPT_MESSAGE_FIXED_LEN: usize = 3;
+/// The most a canvas script message's values may pack to, so the message fits one datagram.
+pub const MAX_SCRIPT_PAYLOAD_LEN: usize = MAX_DATA_LEN - SCRIPT_MESSAGE_FIXED_LEN;
 /// glassdeck-local-web reads replies into 512 bytes, and only data, which it never gets, is longer.
 const MAX_REASON_LEN: usize = 512 - HEADER_LEN;
 
@@ -38,13 +45,15 @@ pub struct BufferLayout {
 pub type BufferId = u32;
 
 /// Renderer to receiver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToCompositor {
     /// Answered with `Registered` or `Refused`, in order.
     Register(BufferLayout),
     /// Show this buffer from the next flip. It comes back as `Released` once replaced on screen,
     /// or at once if the renderer doesn't own the screen right now.
     Present(BufferId),
+    /// A `HostEvent` the canvas's script sent its host half.
+    ScriptMessage { message: u16, payload: Vec<u8> },
 }
 
 /// Receiver to renderer.
@@ -59,6 +68,8 @@ pub enum FromCompositor {
     Released(BufferId),
     /// What the canvas's host half sent, for its script: MessagePack, at most `MAX_DATA_LEN` bytes.
     Data(Vec<u8>),
+    /// A message from the canvas's host half, for its script's `bridge.on`.
+    ScriptMessage { kind: Kind, message: u16, payload: Vec<u8> },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,6 +80,8 @@ pub enum CompositorProtoError {
     TooShort(usize),
     ReasonNotUtf8,
     DataTooLong(usize),
+    ScriptPayloadTooLong(usize),
+    BadScriptKind(u8),
 }
 
 impl fmt::Display for CompositorProtoError {
@@ -80,16 +93,33 @@ impl fmt::Display for CompositorProtoError {
             Self::TooShort(len) => write!(f, "compositor message of {len} bytes is shorter than its header"),
             Self::ReasonNotUtf8 => write!(f, "refusal reason is not UTF-8"),
             Self::DataTooLong(len) => write!(f, "{len} bytes of canvas data is more than the {MAX_DATA_LEN} a message holds"),
+            Self::ScriptPayloadTooLong(len) => {
+                write!(f, "a canvas message of {len} bytes is more than the {MAX_SCRIPT_PAYLOAD_LEN} one message holds")
+            }
+            Self::BadScriptKind(k) => write!(f, "a canvas message of unknown kind {k}"),
         }
     }
 }
 
 impl std::error::Error for CompositorProtoError {}
 
+fn script_payload_fits(payload: &[u8]) -> Result<(), CompositorProtoError> {
+    match payload.len() <= MAX_SCRIPT_PAYLOAD_LEN {
+        true => Ok(()),
+        false => Err(CompositorProtoError::ScriptPayloadTooLong(payload.len())),
+    }
+}
+
 impl ToCompositor {
+    /// Refused rather than cut when it's too long for one message.
+    pub fn script_message(message: u16, payload: Vec<u8>) -> Result<Self, CompositorProtoError> {
+        script_payload_fits(&payload)?;
+        Ok(Self::ScriptMessage { message, payload })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
-        match *self {
-            Self::Register(layout) => {
+        match self {
+            &Self::Register(layout) => {
                 let mut body = Vec::with_capacity(REGISTER_LEN);
                 for field in [layout.width, layout.height, layout.fourcc, layout.stride, layout.offset] {
                     body.extend_from_slice(&field.to_le_bytes());
@@ -98,6 +128,7 @@ impl ToCompositor {
                 with_header(KIND_REGISTER, &body)
             }
             Self::Present(id) => with_header(KIND_PRESENT, &id.to_le_bytes()),
+            Self::ScriptMessage { message, payload } => with_header(KIND_SCRIPT_MESSAGE, &[&message.to_le_bytes(), payload.as_slice()].concat()),
         }
     }
 
@@ -114,7 +145,8 @@ impl ToCompositor {
                 modifier: u64::from_le_bytes(body[20..28].try_into().expect("8 bytes")),
             })),
             KIND_PRESENT if body.len() == ID_LEN => Ok(Self::Present(u32_at(body, 0))),
-            KIND_REGISTER | KIND_PRESENT => Err(bad_length()),
+            KIND_SCRIPT_MESSAGE if body.len() >= 2 => Ok(Self::ScriptMessage { message: u16::from_le_bytes([body[0], body[1]]), payload: body[2..].to_vec() }),
+            KIND_REGISTER | KIND_PRESENT | KIND_SCRIPT_MESSAGE => Err(bad_length()),
             other => Err(CompositorProtoError::UnknownKind(other)),
         }
     }
@@ -129,12 +161,22 @@ impl FromCompositor {
         Ok(Self::Data(payload))
     }
 
+    /// Refused rather than cut when it's too long for one message.
+    pub fn script_message(kind: Kind, message: u16, payload: Vec<u8>) -> Result<Self, CompositorProtoError> {
+        script_payload_fits(&payload)?;
+        Ok(Self::ScriptMessage { kind, message, payload })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Registered(id) => with_header(KIND_REGISTERED, &id.to_le_bytes()),
             Self::Refused { reason } => with_header(KIND_REFUSED, truncate_utf8(reason, MAX_REASON_LEN).as_bytes()),
             Self::Released(id) => with_header(KIND_RELEASED, &id.to_le_bytes()),
             Self::Data(payload) => with_header(KIND_DATA, payload),
+            Self::ScriptMessage { kind, message, payload } => {
+                let kind = Kind::ALL.iter().position(|k| k == kind).expect("Kind::ALL lists every kind") as u8;
+                with_header(KIND_SCRIPT_MESSAGE, &[&[kind], message.to_le_bytes().as_slice(), payload].concat())
+            }
         }
     }
 
@@ -150,6 +192,12 @@ impl FromCompositor {
             }
             KIND_DATA if body.len() <= MAX_DATA_LEN => Ok(Self::Data(body.to_vec())),
             KIND_DATA => Err(CompositorProtoError::DataTooLong(body.len())),
+            KIND_SCRIPT_MESSAGE if body.len() >= SCRIPT_MESSAGE_FIXED_LEN => Ok(Self::ScriptMessage {
+                kind: *Kind::ALL.get(usize::from(body[0])).ok_or(CompositorProtoError::BadScriptKind(body[0]))?,
+                message: u16::from_le_bytes([body[1], body[2]]),
+                payload: body[SCRIPT_MESSAGE_FIXED_LEN..].to_vec(),
+            }),
+            KIND_SCRIPT_MESSAGE => Err(bad_length()),
             KIND_REGISTERED | KIND_RELEASED => Err(bad_length()),
             other => Err(CompositorProtoError::UnknownKind(other)),
         }
@@ -197,14 +245,16 @@ mod tests {
 
     #[test]
     fn every_message_round_trips() {
-        for message in [ToCompositor::Register(layout()), ToCompositor::Present(7)] {
-            assert_eq!(ToCompositor::decode(&message.encode()), Ok(message));
+        for message in [ToCompositor::Register(layout()), ToCompositor::Present(7), ToCompositor::ScriptMessage { message: 3, payload: vec![1, 2] }] {
+            assert_eq!(ToCompositor::decode(&message.encode()), Ok(message.clone()));
         }
         for message in [
             FromCompositor::Registered(7),
             FromCompositor::Released(7),
             FromCompositor::Refused { reason: "plane rejected XR24 linear".into() },
             FromCompositor::Data(vec![0x81, 0xa1, b'a', 1]),
+            FromCompositor::ScriptMessage { kind: Kind::KeyboardState, message: 2, payload: vec![9] },
+            FromCompositor::ScriptMessage { kind: Kind::KeyboardEvent, message: 0, payload: Vec::new() },
         ] {
             assert_eq!(FromCompositor::decode(&message.encode()), Ok(message.clone()));
         }
@@ -246,6 +296,10 @@ mod tests {
     fn data_past_the_limit_is_refused_not_cut() {
         assert_eq!(FromCompositor::data(vec![0; MAX_DATA_LEN + 1]), Err(CompositorProtoError::DataTooLong(MAX_DATA_LEN + 1)));
         assert!(FromCompositor::data(vec![0; MAX_DATA_LEN]).is_ok());
+        let too_long = MAX_SCRIPT_PAYLOAD_LEN + 1;
+        assert_eq!(ToCompositor::script_message(0, vec![0; too_long]), Err(CompositorProtoError::ScriptPayloadTooLong(too_long)));
+        let longest = FromCompositor::script_message(Kind::KeyboardEvent, 0, vec![0; MAX_SCRIPT_PAYLOAD_LEN]).unwrap();
+        assert_eq!(longest.encode().len(), MAX_MESSAGE_LEN);
     }
 
     #[test]

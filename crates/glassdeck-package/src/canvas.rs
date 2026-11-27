@@ -64,7 +64,7 @@ pub struct CanvasFiles {
     pub canvas: Canvas,
     pub fragment: String,
     pub script: Option<String>,
-    /// `messages.luau`, when the canvas has one
+    /// `bridge.luau`, when the canvas has one
     pub messages: Option<String>,
 }
 
@@ -73,7 +73,7 @@ impl CanvasFiles {
         let manifest = package.manifest();
         let Kind::Background(Content::Canvas(canvas)) = &manifest.kind else { bail!("{} isn't a canvas", manifest.id) };
         let fragment = package.text(SHADER)?.with_context(|| format!("{} has no {SHADER}", manifest.id))?;
-        Ok(Self { origin: manifest.origin.clone(), canvas: canvas.clone(), fragment, script: package.text(KEYBOARD_SCRIPT)?, messages: package.messages_script()? })
+        Ok(Self { origin: manifest.origin.clone(), canvas: canvas.clone(), fragment, script: package.text(KEYBOARD_SCRIPT)?, messages: package.bridge_script()? })
     }
 }
 

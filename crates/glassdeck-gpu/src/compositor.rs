@@ -13,8 +13,8 @@ use rustix::net::{RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncil
 
 pub struct Compositor {
     socket: OwnedFd,
-    /// Data that arrived while we waited for a registration answer, for `receive` to hand on first.
-    pending: RefCell<VecDeque<Vec<u8>>>,
+    /// Data and messages that arrived while we waited for a registration answer, for `receive` to hand on first.
+    pending: RefCell<VecDeque<FromCompositor>>,
 }
 
 pub enum Received {
@@ -43,7 +43,9 @@ impl Compositor {
         loop {
             match self.read(true)? {
                 Received::Message(FromCompositor::Registered(id)) => return Ok(id),
-                Received::Message(FromCompositor::Data(payload)) => self.pending.borrow_mut().push_back(payload),
+                Received::Message(message @ (FromCompositor::Data(_) | FromCompositor::ScriptMessage { .. })) => {
+                    self.pending.borrow_mut().push_back(message);
+                }
                 Received::Message(FromCompositor::Refused { reason }) => bail!("the receiver refused our buffer: {reason}"),
                 Received::Message(FromCompositor::Released(id)) => bail!("the receiver released buffer {id} before any was shown"),
                 Received::Nothing | Received::Closed => bail!("the receiver closed the socket while we registered"),
@@ -56,9 +58,16 @@ impl Compositor {
         Ok(())
     }
 
+    /// A message from the canvas's script to its host half.
+    pub fn send_script_message(&self, message: u16, payload: Vec<u8>) -> Result<()> {
+        let bytes = ToCompositor::script_message(message, payload)?.encode();
+        rustix::net::send(&self.socket, &bytes, SendFlags::NOSIGNAL).context("sending a script message")?;
+        Ok(())
+    }
+
     pub fn receive(&self, wait: bool) -> Result<Received> {
-        if let Some(payload) = self.pending.borrow_mut().pop_front() {
-            return Ok(Received::Message(FromCompositor::Data(payload)));
+        if let Some(message) = self.pending.borrow_mut().pop_front() {
+            return Ok(Received::Message(message));
         }
         self.read(wait)
     }

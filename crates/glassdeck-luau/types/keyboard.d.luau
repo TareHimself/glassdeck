@@ -73,14 +73,17 @@ export type Widget = {
     request_frame: (callback: (dt: number) -> ()) -> (),
 }
 
--- This script: its callbacks, and script.on.<message> for what the host half sends (messages.luau)
-declare script: Widget & { on: MessagesHeard }
+-- This script: its callbacks
+declare script: Widget
+
+-- Messages from the host half (bridge.luau): bridge.on.<message>(callback)
+declare bridge: { on: MessagesHeard }
 
 -- assets/keyboard/<name>: deployed with the module
 declare keyboard: { resource: (name: string) -> Resource }
 
--- The host half: host.script.<message>(value) sends it one (messages.luau)
-declare host: { script: MessagesSent }
+-- The host half: host.bridge.<message>(value) sends it one (bridge.luau)
+declare host: { bridge: MessagesSent }
 
 -- What the host half sent with live.put; draws nothing until it arrives. Names are one word.
 declare live: { resource: (name: string) -> Resource }

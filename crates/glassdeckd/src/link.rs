@@ -16,7 +16,8 @@ use std::sync::mpsc;
 use anyhow::{Context, Result, anyhow};
 use glassdeck_api::KeyboardLink;
 use glassdeck_capture::link::{IncompatibleReceiver, Link};
-use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo, VERSION, WidgetSlot};
+use glassdeck_luau::messages::Sent;
+use glassdeck_proto::{FileTarget, Kind, Message, Mode, PutFile, ScriptTarget, StreamInfo, VERSION, WidgetSlot};
 
 /// Realistic USB 2.0 bulk throughput, what the TCP stand-in is throttled to by default.
 pub const USB2_PRACTICAL_BYTES_PER_SEC: u64 = 35_000_000;
@@ -97,6 +98,8 @@ pub struct Uplink {
     on_change: Box<dyn Fn(KeyboardLink) + Send + Sync>,
     /// Told when the keyboard has said what it holds, after each connect
     on_inventory: Box<dyn Fn() + Send + Sync>,
+    /// Told of each message a keyboard script sent its host half
+    on_script_message: Box<dyn Fn(ScriptTarget, Sent) + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -118,6 +121,11 @@ struct Queues {
     /// The selected canvas's latest data from its host half, kept like `latest` for a reconnect.
     background_data: Option<Vec<u8>>,
     background_data_unsent: bool,
+    /// Each script's latest value of each `KeyboardState`, kept like `latest` for a reconnect.
+    script_states: BTreeMap<(ScriptTarget, u16), Vec<u8>>,
+    unsent_script_states: BTreeSet<(ScriptTarget, u16)>,
+    /// `KeyboardEvent`s in the order sent; dropped while the Link is down, since an event is only news once.
+    script_events: VecDeque<(ScriptTarget, u16, Vec<u8>)>,
     uploads: VecDeque<Upload>,
     /// Fully sent files, oldest first, which is the order the keyboard answers them in.
     awaiting: VecDeque<Waiter>,
@@ -127,6 +135,12 @@ impl Queues {
     fn connected(&self) -> bool {
         self.link == KeyboardLink::Connected
     }
+
+    fn forget_script(&mut self, to: ScriptTarget) {
+        self.script_states.retain(|(owner, _), _| *owner != to);
+        self.unsent_script_states.retain(|(owner, _)| *owner != to);
+        self.script_events.retain(|(owner, _, _)| *owner != to);
+    }
 }
 
 enum Outgoing {
@@ -135,6 +149,7 @@ enum Outgoing {
     ModuleData { instance: u16, payload: Vec<u8> },
     ModuleResource { instance: u16, name: String, data: Vec<u8> },
     BackgroundData(Vec<u8>),
+    ScriptMessage { to: ScriptTarget, sent: Sent },
     Put(Upload),
 }
 
@@ -171,12 +186,17 @@ impl Upload {
 }
 
 impl Uplink {
-    pub fn new(on_change: impl Fn(KeyboardLink) + Send + Sync + 'static, on_inventory: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(
+        on_change: impl Fn(KeyboardLink) + Send + Sync + 'static,
+        on_inventory: impl Fn() + Send + Sync + 'static,
+        on_script_message: impl Fn(ScriptTarget, Sent) + Send + Sync + 'static,
+    ) -> Self {
         Self {
             queues: Mutex::new(Queues::default()),
             changed: Condvar::new(),
             on_change: Box::new(on_change),
             on_inventory: Box::new(on_inventory),
+            on_script_message: Box::new(on_script_message),
         }
     }
 
@@ -230,6 +250,7 @@ impl Uplink {
         if queues.selected.as_ref() != Some(&name) {
             queues.background_data = None;
             queues.background_data_unsent = false;
+            queues.forget_script(ScriptTarget::Background);
         }
         queues.selected = Some(name);
         self.changed.notify_all();
@@ -270,6 +291,22 @@ impl Uplink {
         self.changed.notify_all();
     }
 
+    /// A host script's message for its keyboard half: a state replaces its unsent value and comes back
+    /// after a reconnect, an event goes once, in order, and only while connected.
+    pub fn put_script_message(&self, to: ScriptTarget, sent: Sent) {
+        let mut queues = self.lock();
+        match sent.kind {
+            Kind::KeyboardState => {
+                queues.script_states.insert((to, sent.message), sent.payload);
+                queues.unsent_script_states.insert((to, sent.message));
+            }
+            Kind::KeyboardEvent if queues.connected() => queues.script_events.push_back((to, sent.message, sent.payload)),
+            Kind::KeyboardEvent => {}
+            Kind::HostEvent => unreachable!("a host script only sends to its keyboard half"),
+        }
+        self.changed.notify_all();
+    }
+
     /// For a widget that stopped or restarted, so what its old host side sent isn't sent again.
     pub fn forget_module_instance(&self, instance: u16) {
         let mut queues = self.lock();
@@ -277,6 +314,12 @@ impl Uplink {
         queues.unsent.remove(&instance);
         queues.resources.retain(|(owner, _), _| *owner != instance);
         queues.unsent_resources.retain(|(owner, _)| *owner != instance);
+        queues.forget_script(ScriptTarget::Widget(instance));
+    }
+
+    /// For a background whose host side stopped or restarted.
+    pub fn forget_background_messages(&self) {
+        self.lock().forget_script(ScriptTarget::Background);
     }
 
     /// Queues one message of the running stream, waiting while the queue is full.
@@ -326,6 +369,12 @@ impl Uplink {
             self.lock().inventory = Some(packages.into_iter().map(|p| (p.name, p.digest)).collect());
             (self.on_inventory)();
             return;
+        }
+        if let Message::ScriptMessage { to, kind, message, payload } = message {
+            return match kind {
+                Kind::HostEvent => (self.on_script_message)(to, Sent { message, kind, payload }),
+                Kind::KeyboardState | Kind::KeyboardEvent => eprintln!("Link: the keyboard sent {kind:?} {message}, which only travels to it"),
+            };
         }
         let waiter = self.lock().awaiting.pop_front();
         let (target, result) = match message {
@@ -379,6 +428,14 @@ impl Uplink {
                 let (instance, name) = key;
                 return Outgoing::ModuleResource { instance, name, data };
             }
+            if let Some((to, message, payload)) = queues.script_events.pop_front() {
+                return Outgoing::ScriptMessage { to, sent: Sent { message, kind: Kind::KeyboardEvent, payload } };
+            }
+            if let Some(key) = queues.unsent_script_states.pop_first() {
+                let payload = queues.script_states[&key].clone();
+                let (to, message) = key;
+                return Outgoing::ScriptMessage { to, sent: Sent { message, kind: Kind::KeyboardState, payload } };
+            }
             if let Some(upload) = queues.uploads.pop_front() {
                 return Outgoing::Put(upload);
             }
@@ -394,6 +451,7 @@ impl Uplink {
                 queues.link = KeyboardLink::Connected;
                 queues.unsent = queues.latest.keys().copied().collect();
                 queues.unsent_resources = queues.resources.keys().cloned().collect();
+                queues.unsent_script_states = queues.script_states.keys().copied().collect();
                 queues.background_data_unsent = queues.background_data.is_some();
                 if let Some(name) = queues.selected.clone() {
                     queues.control.push_back(Message::SelectBackground { name });
@@ -407,6 +465,7 @@ impl Uplink {
                 queues.inventory = None;
                 queues.control.clear();
                 queues.stream.clear();
+                queues.script_events.clear();
                 let uploads: Vec<Waiter> = queues.uploads.drain(..).map(|upload| upload.waiter).collect();
                 for waiter in uploads.into_iter().chain(queues.awaiting.drain(..)) {
                     waiter.finish(Err(LinkDown.into()));
@@ -480,6 +539,7 @@ fn send(link: &mut Link, uplink: &Uplink, outgoing: Outgoing) -> Result<()> {
         Outgoing::Control(message) => message,
         Outgoing::ModuleData { instance, payload } => Message::ModuleData { instance, payload },
         Outgoing::BackgroundData(payload) => Message::BackgroundData { payload },
+        Outgoing::ScriptMessage { to, sent: Sent { message, kind, payload } } => Message::ScriptMessage { to, kind, message, payload },
         Outgoing::ModuleResource { instance, name, data } => Message::ModuleResource { instance, name, data },
         Outgoing::Stream(Message::StreamStart(info @ StreamInfo { mode: Mode::Live { .. }, .. })) => {
             let sample = link.sync_clock()?;
@@ -540,7 +600,7 @@ mod tests {
 
     #[test]
     fn widgets_wait_behind_the_stream_and_control_goes_first() {
-        let uplink = Uplink::new(|_| {}, || {});
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
         uplink.apply(Resend);
         uplink.put_module_data(0, vec![1]);
         uplink.push_stream(Message::StreamEnd { stream_id: 7 }).unwrap();
@@ -554,7 +614,7 @@ mod tests {
     fn files_go_after_widgets_and_fail_when_the_link_drops() {
         let path = std::env::temp_dir().join(format!("glassdeckd-upload-{}", std::process::id()));
         std::fs::write(&path, [7u8; 10]).unwrap();
-        let uplink = Uplink::new(|_| {}, || {});
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
         assert!(uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).is_err());
         uplink.apply(Resend);
         let first = uplink.put_file(FileTarget::Package("a.b.deck".into()), &path).unwrap();
@@ -574,7 +634,7 @@ mod tests {
 
     #[test]
     fn resources_go_after_widget_data_latest_wins_and_come_back_after_a_reconnect() {
-        let uplink = Uplink::new(|_| {}, || {});
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
         uplink.apply(Resend);
         uplink.put_module_resource(2, "cover".into(), vec![1]);
         uplink.put_module_resource(2, "cover".into(), vec![2]);
@@ -589,9 +649,46 @@ mod tests {
         assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleResource { instance: 2, .. }));
     }
 
+    fn is_script(outgoing: Outgoing, to: ScriptTarget, message: u16, p: &[u8]) -> bool {
+        matches!(outgoing, Outgoing::ScriptMessage { to: t, sent: Sent { message: m, ref payload, .. } } if t == to && m == message && payload == p)
+    }
+
+    #[test]
+    fn script_states_keep_their_latest_and_come_back_but_events_go_once() {
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
+        let state = |payload| Sent { message: 0, kind: Kind::KeyboardState, payload };
+        let event = |payload| Sent { message: 1, kind: Kind::KeyboardEvent, payload };
+        uplink.put_script_message(ScriptTarget::Widget(1), event(vec![9]));
+        uplink.apply(Resend);
+        uplink.put_script_message(ScriptTarget::Widget(1), state(vec![1]));
+        uplink.put_script_message(ScriptTarget::Widget(1), state(vec![2]));
+        uplink.put_script_message(ScriptTarget::Background, event(vec![3]));
+        uplink.put_script_message(ScriptTarget::Background, event(vec![4]));
+        assert!(is_script(uplink.next_outgoing(), ScriptTarget::Background, 1, &[3]));
+        assert!(is_script(uplink.next_outgoing(), ScriptTarget::Background, 1, &[4]));
+        assert!(is_script(uplink.next_outgoing(), ScriptTarget::Widget(1), 0, &[2]));
+        uplink.put_script_message(ScriptTarget::Widget(1), event(vec![5]));
+        uplink.apply(DropQueued);
+        uplink.apply(Resend);
+        assert!(is_script(uplink.next_outgoing(), ScriptTarget::Widget(1), 0, &[2]));
+        uplink.put_script_message(ScriptTarget::Widget(1), state(vec![6]));
+        uplink.forget_module_instance(1);
+        uplink.put_module_data(0, vec![1]);
+        assert!(matches!(uplink.next_outgoing(), Outgoing::ModuleData { instance: 0, .. }));
+    }
+
+    #[test]
+    fn what_the_keyboard_scripts_send_goes_to_the_module_host() {
+        let (heard, hear) = mpsc::channel();
+        let uplink = Uplink::new(|_| {}, || {}, move |from, sent| heard.send((from, sent)).unwrap());
+        uplink.answered(Message::ScriptMessage { to: ScriptTarget::Widget(2), kind: Kind::HostEvent, message: 4, payload: vec![7] });
+        uplink.answered(Message::ScriptMessage { to: ScriptTarget::Widget(2), kind: Kind::KeyboardEvent, message: 5, payload: vec![] });
+        assert_eq!(hear.try_iter().collect::<Vec<_>>(), vec![(ScriptTarget::Widget(2), Sent { message: 4, kind: Kind::HostEvent, payload: vec![7] })]);
+    }
+
     #[test]
     fn a_widgets_newest_value_replaces_its_unsent_one() {
-        let uplink = Uplink::new(|_| {}, || {});
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
         uplink.apply(Resend);
         uplink.put_module_data(3, vec![1]);
         uplink.put_module_data(3, vec![2]);
@@ -600,7 +697,7 @@ mod tests {
 
     #[test]
     fn reconnecting_resends_every_widget_and_the_selection() {
-        let uplink = Uplink::new(|_| {}, || {});
+        let uplink = Uplink::new(|_| {}, || {}, |_, _| {});
         uplink.select_background("a.b".into());
         uplink.put_module_data(1, vec![9]);
         uplink.apply(Resend);

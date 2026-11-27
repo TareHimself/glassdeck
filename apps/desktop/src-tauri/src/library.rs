@@ -380,7 +380,7 @@ pub fn import_widget(root: &Path, deck: &Path) -> Result<WidgetSummary, LibraryE
 }
 
 /// The scripts the widget editor shows, in tab order.
-pub const SCRIPTS: [&str; 4] = [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::MESSAGES_SCRIPT];
+pub const SCRIPTS: [&str; 4] = [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::BRIDGE_SCRIPT];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct SourceFile {

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail, ensure};
 use glassdeck_luau::Print;
+use glassdeck_luau::messages::Sent;
 use glassdeck_package::{Canvas, CanvasFiles};
 use glow::HasContext;
 
@@ -63,6 +64,19 @@ impl CanvasProgram {
         match &self.script {
             Some(script) => script.deliver(payload),
             None => Ok(()),
+        }
+    }
+
+    /// What the script sent its host half since the last call.
+    pub fn take_messages(&self) -> Vec<Sent> {
+        self.script.as_ref().map_or_else(Vec::new, CanvasScript::take_messages)
+    }
+
+    /// A message from the host half; a canvas without a script has no `bridge.luau` to send it one.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        match &self.script {
+            Some(script) => script.deliver_message(message, payload),
+            None => bail!("message {message} for a canvas with no keyboard.luau"),
         }
     }
 

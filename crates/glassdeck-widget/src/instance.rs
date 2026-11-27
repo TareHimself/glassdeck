@@ -118,7 +118,7 @@ impl Instance {
         }
     }
 
-    /// A message from the host half, to its `script.on` callback; the widget redraws after.
+    /// A message from the host half, to its `bridge.on` callback; the widget redraws after.
     pub fn deliver_message(&mut self, message: u16, payload: &[u8]) {
         self.with_live(|live| {
             live.messages.deliver(&live.vm, message, payload)?;
@@ -293,7 +293,7 @@ impl Live {
         let callbacks = Rc::new(RefCell::new(Callbacks::default()));
         let api = widget_api(&vm, &ui, &callbacks, saved)?;
         vm.lua().globals().set("script", api).lua_context("injecting script")?;
-        let messages = ScriptMessages::install(vm.lua(), read_messages(package.messages_script()?.as_deref())?, Half::Keyboard)?;
+        let messages = ScriptMessages::install(vm.lua(), read_messages(package.bridge_script()?.as_deref())?, Half::Keyboard)?;
         vm.load::<()>(&source, "keyboard.luau")?;
         if callbacks.borrow().on_draw.is_none() {
             bail!("keyboard.luau must register a draw function with script.on_draw");

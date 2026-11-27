@@ -327,7 +327,7 @@ pub(crate) fn show(
         reader: Some(Rc::new(move |resource| readable.resource(resource))),
         send_limit: None,
         print: Some(cx.printer(LogSource::Host)),
-        messages: package.messages_script()?,
+        messages: package.bridge_script()?,
     };
     let host = match HostSide::start(sources, &cx.system, &cx.now_playing) {
         Ok(host) => host,
@@ -423,22 +423,22 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let folder = new_widget(&root);
         let messages = SourceFile {
-            name: "messages.luau".into(),
+            name: "bridge.luau".into(),
             text: "export type label = KeyboardState<{ text: string }>
 export type drawn = HostEvent<{ width: number }>
 ".into(),
         };
         let host = SourceFile {
             name: "host.luau".into(),
-            text: "script.on_options(function(o) keyboard.script.label({ text = o.label }) end)
-script.on.drawn(function(d) print('keyboard drew at', d.width) end)
+            text: "script.on_options(function(o) keyboard.bridge.label({ text = o.label }) end)
+bridge.on.drawn(function(d) print('keyboard drew at', d.width) end)
 ".into(),
         };
         let keyboard = SourceFile {
             name: "keyboard.luau".into(),
             text: "local text = ''
-script.on.label(function(l) text = l.text end)
-script.on_draw(function(ui) ui:text(text) host.script.drawn({ width = ui.width }) end)
+bridge.on.label(function(l) text = l.text end)
+script.on_draw(function(ui) ui:text(text) host.bridge.drawn({ width = ui.width }) end)
 ".into(),
         };
         let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))
@@ -461,7 +461,7 @@ script.on_draw(function(ui) ui:text(text) host.script.drawn({ width = ui.width }
         let keyboard = SourceFile {
             name: "keyboard.luau".into(),
             text: "local text = ''
-script.on.options(function(o) text = o.label print('label', text) end)
+bridge.on.options(function(o) text = o.label print('label', text) end)
 script.on_draw(function(ui) ui:text(text) end)
 ".into(),
         };

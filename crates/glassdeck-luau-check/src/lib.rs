@@ -118,10 +118,10 @@ impl LuauChecker {
     }
 
     /// `host.luau` against the host API, with `on_options` typed by the generated `options.d.luau` and its
-    /// messages by the generated `host-messages.d.luau`.
+    /// messages by the generated `host-bridge.d.luau`.
     pub fn check_host(&self, source: &str, options: &str, messages: &str) -> Result<Vec<String>> {
         let definitions = [
-            LuauFile { name: "host-messages.d.luau", text: messages },
+            LuauFile { name: "host-bridge.d.luau", text: messages },
             LuauFile { name: "options.d.luau", text: options },
             LuauFile { name: "common.d.luau", text: definitions::COMMON },
             LuauFile { name: "host.d.luau", text: definitions::HOST },

@@ -15,17 +15,18 @@ declare host: {
     resource: (name: string) -> Resource,
 }
 
--- This script: what it does when things happen to it, and script.on.<message> for what the keyboard half
--- sends (messages.luau)
+-- This script: what it does when things happen to it
 declare script: {
     -- Called when the package starts and whenever the user changes an option. Options and Changed
     -- come from options.luau (empty when the package has none); see options.d.luau.
     on_options: (callback: (options: Options, changed: Changed) -> ()) -> (),
-    on: MessagesHeard,
 }
 
--- The keyboard half: its resources (assets/keyboard/<name>), and keyboard.script.<message>(value) to send it one
-declare keyboard: { resource: (name: string) -> Resource, script: MessagesSent }
+-- Messages from the keyboard half (bridge.luau): bridge.on.<message>(callback)
+declare bridge: { on: MessagesHeard }
+
+-- The keyboard half: its resources (assets/keyboard/<name>), and keyboard.bridge.<message>(value) to send it one
+declare keyboard: { resource: (name: string) -> Resource, bridge: MessagesSent }
 
 -- Whether anything in a section of changed is true: if any(changed.colours) then ... end
 declare function any<T>(section: T): boolean

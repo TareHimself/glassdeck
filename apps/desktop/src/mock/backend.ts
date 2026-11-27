@@ -142,7 +142,7 @@ function widgetFiles(id: string): SourceFile[] {
     { name: "keyboard.luau", text: clock ? CLOCK_KEYBOARD : "" },
     { name: "options.luau", text: clock ? CLOCK_OPTIONS : "" },
     { name: "host.luau", text: "" },
-    { name: "messages.luau", text: "" },
+    { name: "bridge.luau", text: "" },
   ];
 }
 

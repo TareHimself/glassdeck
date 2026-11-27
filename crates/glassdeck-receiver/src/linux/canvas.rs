@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use super::compositor::Registrar;
 use super::renderer::RendererProcess;
 use crate::mailbox::Mailbox;
+use crate::upstream::Upstream;
 
 const RENDERER: &str = "glassdeck-gpu";
 
@@ -16,7 +17,7 @@ pub struct FallbackCanvas(RendererProcess);
 impl FallbackCanvas {
     pub fn start(registrar: Registrar, mailbox: Arc<Mailbox>, stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
-        RendererProcess::start(RENDERER, &program.to_string_lossy(), &[], registrar, mailbox, stopped).map(Self)
+        RendererProcess::start(RENDERER, &program.to_string_lossy(), &[], registrar, mailbox, None, stopped).map(Self)
     }
 
     pub fn stop(self) {
@@ -32,17 +33,23 @@ impl CanvasBackground {
         background: &Path,
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
+        upstream: Arc<Upstream>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         println!("Local background {}: canvas", background.display());
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
         let args = [format!("--canvas={}", background.display())];
-        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, stopped).map(Self)
+        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, Some(upstream), stopped).map(Self)
     }
 
     /// What the canvas's host half sent, for its script.
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
         self.0.deliver(payload)
+    }
+
+    /// A message from the canvas's host half, for its script.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        self.0.deliver_message(message, payload)
     }
 
     pub fn stop(self) {
@@ -63,7 +70,7 @@ impl ImageBackground {
         println!("Local background {}: image", background.display());
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
         let args = [format!("--image={}", background.display())];
-        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, stopped).map(Self)
+        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, None, stopped).map(Self)
     }
 
     pub fn stop(self) {

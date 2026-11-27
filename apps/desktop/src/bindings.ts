@@ -326,8 +326,8 @@ export type LspMessage = {
  *  different globals and luau-lsp takes definition files per server, not per file.
  */
 export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | 
-/**  `messages.luau`, typed by the kinds messages are written with */
-"luau_messages" | "slang";
+/**  `bridge.luau`, typed by the kinds messages are written with */
+"luau_bridge" | "slang";
 
 export type LspSession = number;
 
@@ -341,7 +341,7 @@ export type LspStarted = {
 	settings: { [key in string]: Value },
 };
 
-/**  A problem in `messages.luau`, at its place (1-based). */
+/**  A problem in `bridge.luau`, at its place (1-based). */
 export type MessageProblem = {
 	line: number,
 	column: number,

@@ -43,7 +43,7 @@ type Props = {
   language?: LanguageSupport;
   /** An error the preview ran into, marked at its line */
   runError?: ScriptError | null;
-  /** Problems the app found in one file (messages.luau), marked at their places */
+  /** Problems the app found in one file (bridge.luau), marked at their places */
   problems?: { file: string; items: MessageProblem[] };
 };
 
@@ -56,7 +56,7 @@ function useProblemMarkers(problems: { file: string; items: MessageProblem[] } |
     monaco.editor.setModelMarkers(
       model,
       "glassdeck",
-      problems.items.map((p) => ({ startLineNumber: p.line, endLineNumber: p.line, startColumn: p.column, endColumn: model.getLineMaxColumn(Math.min(p.line, model.getLineCount())), severity: monaco.MarkerSeverity.Error, message: p.message, source: "messages.luau" })),
+      problems.items.map((p) => ({ startLineNumber: p.line, endLineNumber: p.line, startColumn: p.column, endColumn: model.getLineMaxColumn(Math.min(p.line, model.getLineCount())), severity: monaco.MarkerSeverity.Error, message: p.message, source: "bridge.luau" })),
     );
   }, [problems, tab]);
 }

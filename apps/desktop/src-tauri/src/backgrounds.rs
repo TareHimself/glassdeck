@@ -191,7 +191,7 @@ pub fn typed_background(root: &Path, id: &str, kind: BackgroundKind) -> Result<P
 }
 
 /// The files the canvas editor shows, in tab order.
-pub const CANVAS_FILES: [&str; 5] = [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::MESSAGES_SCRIPT];
+pub const CANVAS_FILES: [&str; 5] = [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::BRIDGE_SCRIPT];
 
 /// A canvas as the editor opens it: its summary and every file, a missing one as empty.
 #[derive(Clone, Debug, Serialize, Type)]
@@ -258,7 +258,7 @@ pub fn check_canvas(root: &Path, id: &str, native: &Path) -> Result<CanvasCheck,
         keyboard: text(KEYBOARD_SCRIPT),
         options: text(OPTIONS_SCRIPT),
         host: text(HOST_SCRIPT),
-        messages: text(glassdeck_package::MESSAGES_SCRIPT),
+        messages: text(glassdeck_package::BRIDGE_SCRIPT),
     };
     let compiled = match glassdeck_slang::pack::compile_canvas(&slang, &sources) {
         Ok(compiled) => compiled,

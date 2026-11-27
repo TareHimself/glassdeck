@@ -1,4 +1,4 @@
-//! A package's `messages.luau`: the messages between its two halves, as Luau types, one per line:
+//! A package's `bridge.luau`: the messages between its two halves, as Luau types, one per line:
 //!
 //! ```lua
 //! type Track = { title: string, artist: string }
@@ -19,7 +19,7 @@ pub use definitions::{Half, definitions, wrapper_definitions};
 pub use parse::parse;
 
 /// The keyboard half's built-in message: the options as they are, from the implicit host (a blank
-/// `host.luau`). Its shape comes from `options.luau`, so it isn't declared in `messages.luau`.
+/// `host.luau`). Its shape comes from `options.luau`, so it isn't declared in `bridge.luau`.
 pub const OPTIONS: &str = "options";
 
 /// How a message travels, by the half it goes to and whether only its latest value matters.
@@ -36,7 +36,7 @@ pub enum Kind {
 impl Kind {
     pub const ALL: [Kind; 3] = [Kind::KeyboardState, Kind::KeyboardEvent, Kind::HostEvent];
 
-    /// Its wrapper type's name in `messages.luau`.
+    /// Its wrapper type's name in `bridge.luau`.
     pub fn wrapper(self) -> &'static str {
         match self {
             Kind::KeyboardState => "KeyboardState",
@@ -76,7 +76,7 @@ pub struct Message {
     pub shape: Shape,
 }
 
-/// A package's messages, in the order `messages.luau` declares them; a message's number is its index.
+/// A package's messages, in the order `bridge.luau` declares them; a message's number is its index.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Messages(pub Vec<Message>);
 
@@ -86,7 +86,7 @@ impl Messages {
     }
 }
 
-/// A problem at a place in `messages.luau`, 1-based.
+/// A problem at a place in `bridge.luau`, 1-based.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {
     pub line: u32,
@@ -96,6 +96,6 @@ pub struct Problem {
 
 impl std::fmt::Display for Problem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "messages.luau:{}:{}: {}", self.line, self.column, self.message)
+        write!(f, "bridge.luau:{}:{}: {}", self.line, self.column, self.message)
     }
 }

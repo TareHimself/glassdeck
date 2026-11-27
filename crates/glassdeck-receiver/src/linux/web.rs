@@ -22,7 +22,7 @@ impl WebBackground {
     ) -> Result<Self> {
         println!("Local background {}: web", background.display());
         let args = [format!("--background={}", background.display())];
-        RendererProcess::start(RENDERER, RENDERER, &args, registrar, mailbox, stopped).map(Self)
+        RendererProcess::start(RENDERER, RENDERER, &args, registrar, mailbox, None, stopped).map(Self)
     }
 
     pub fn stop(self) {

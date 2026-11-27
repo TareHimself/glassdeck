@@ -46,7 +46,7 @@ struct Inputs {
 }
 
 impl CanvasScript {
-    /// `messages`: the canvas's `messages.luau`. `print`: where the script's `print` goes, instead of the
+    /// `messages`: the canvas's `bridge.luau`. `print`: where the script's `print` goes, instead of the
     /// process's own output.
     pub fn load(source: &str, messages: Option<&str>, inputs: &[InputField], print: Option<Print>) -> Result<Self> {
         let vm = Vm::new()?;
@@ -103,7 +103,7 @@ impl CanvasScript {
         self.messages.take_sent()
     }
 
-    /// A message from the host half, to its `script.on` callback.
+    /// A message from the host half, to its `bridge.on` callback.
     pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
         self.messages.deliver(&self.vm, message, payload)
     }

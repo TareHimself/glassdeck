@@ -122,7 +122,7 @@ pub fn encode(shape: &Shape, value: &Value) -> Vec<u8> {
     out
 }
 
-/// Why bytes don't read as a message: the other half has a different `messages.luau`, or they're damaged.
+/// Why bytes don't read as a message: the other half has a different `bridge.luau`, or they're damaged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Malformed(pub &'static str);
 

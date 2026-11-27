@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{Frame, Message, PutFile, StreamInfo};
+use crate::{Frame, Kind, Message, PutFile, ScriptTarget, StreamInfo};
 
 /// Where a receiver is in a connection's sequence of streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +38,13 @@ pub enum Action<'a> {
         data: &'a [u8],
     },
     BackgroundData(&'a [u8]),
+    /// Hand a script a message from its host half; scripts run whether or not a stream is open.
+    ScriptMessage {
+        to: ScriptTarget,
+        kind: Kind,
+        message: u16,
+        payload: &'a [u8],
+    },
     /// Write a piece of a file; files arrive whether or not a stream is open.
     PutFile(&'a PutFile),
 }
@@ -49,6 +56,8 @@ pub enum SessionError {
     WrongStream { current: u32, got: u32 },
     ProbeWhileStreaming,
     UnexpectedReply,
+    /// A `HostEvent` only travels from the keyboard to the host.
+    HostEventToKeyboard,
 }
 
 impl fmt::Display for SessionError {
@@ -59,6 +68,7 @@ impl fmt::Display for SessionError {
             Self::WrongStream { current, got } => write!(f, "message for stream {got} while stream {current} is open"),
             Self::ProbeWhileStreaming => write!(f, "clock probe received while a stream is open"),
             Self::UnexpectedReply => write!(f, "replies only travel from receiver to sender"),
+            Self::HostEventToKeyboard => write!(f, "a HostEvent only travels from the keyboard to the host"),
         }
     }
 }
@@ -75,6 +85,10 @@ pub fn step<'a>(state: SessionState, message: &'a Message) -> Result<(SessionSta
         (_, Message::PutFile(put)) => Ok((state, Action::PutFile(put))),
         (_, Message::ModuleResource { instance, name, data }) => Ok((state, Action::ModuleResource { instance: *instance, name, data })),
         (_, Message::BackgroundData { payload }) => Ok((state, Action::BackgroundData(payload))),
+        (_, Message::ScriptMessage { kind: Kind::HostEvent, .. }) => Err(SessionError::HostEventToKeyboard),
+        (_, Message::ScriptMessage { to, kind, message, payload }) => {
+            Ok((state, Action::ScriptMessage { to: *to, kind: *kind, message: *message, payload }))
+        }
         (_, Message::SelectBackground { name }) => Ok((state, Action::SelectBackground(name))),
         (_, Message::SetWidgets { widgets }) => Ok((state, Action::SetWidgets(widgets))),
         (_, Message::RemovePackages { names }) => Ok((state, Action::RemovePackages(names))),
@@ -133,6 +147,7 @@ mod tests {
             Ok((next, Action::PutFile(_))) => Expect::Moves(next, "put file"),
             Ok((next, Action::ModuleResource { .. })) => Expect::Moves(next, "module resource"),
             Ok((next, Action::BackgroundData(_))) => Expect::Moves(next, "background data"),
+            Ok((next, Action::ScriptMessage { .. })) => Expect::Moves(next, "script message"),
             Err(e) => Expect::Refused(e),
         }
     }
@@ -150,7 +165,13 @@ mod tests {
         let done = Message::PutDone { target: FileTarget::Package("a.b.deck".into()) };
         let resource = Message::ModuleResource { instance: 0, name: "cover".into(), data: vec![1] };
         let refused = Message::PutRefused { target: FileTarget::Package("a.b.deck".into()), reason: "full".into() };
+        let script = Message::ScriptMessage { to: ScriptTarget::Widget(0), kind: Kind::KeyboardEvent, message: 1, payload: vec![2] };
+        let for_host = Message::ScriptMessage { to: ScriptTarget::Background, kind: Kind::HostEvent, message: 1, payload: vec![2] };
         let table = [
+            (Idle, script.clone(), Expect::Moves(Idle, "script message")),
+            (Streaming(a), script, Expect::Moves(Streaming(a), "script message")),
+            (Idle, for_host.clone(), Expect::Refused(SessionError::HostEventToKeyboard)),
+            (Streaming(a), for_host, Expect::Refused(SessionError::HostEventToKeyboard)),
             (Idle, put.clone(), Expect::Moves(Idle, "put file")),
             (Idle, resource.clone(), Expect::Moves(Idle, "module resource")),
             (Streaming(a), resource, Expect::Moves(Streaming(a), "module resource")),

@@ -1,4 +1,4 @@
-//! What the language server sees: Luau's own checker accepts `messages.luau` written with the wrapper
+//! What the language server sees: Luau's own checker accepts `bridge.luau` written with the wrapper
 //! kinds, and each half's generated types check as the scripts will use them.
 
 use std::path::Path;
@@ -22,8 +22,8 @@ fn checker() -> Option<LuauChecker> {
 #[test]
 fn messages_luau_is_ordinary_luau_with_the_wrapper_kinds() {
     let Some(checker) = checker() else { return };
-    let wrappers = LuauFile { name: "messages-api.d.luau", text: wrapper_definitions() };
-    let problems = checker.check(&[wrappers], LuauFile { name: "messages.luau", text: MESSAGES }).unwrap();
+    let wrappers = LuauFile { name: "bridge-api.d.luau", text: wrapper_definitions() };
+    let problems = checker.check(&[wrappers], LuauFile { name: "bridge.luau", text: MESSAGES }).unwrap();
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
@@ -47,13 +47,13 @@ fn host_luau_is_checked_against_its_messages_through_the_real_host_api() {
     let messages = parse(MESSAGES).unwrap();
     let host_messages = definitions(&messages, Half::Host, false);
     let files = [
-        LuauFile { name: "host-messages.d.luau", text: &host_messages },
+        LuauFile { name: "host-bridge.d.luau", text: &host_messages },
         LuauFile { name: "options.d.luau", text: "export type Options = {}\nexport type Changed = {}\n" },
         LuauFile { name: "common.d.luau", text: COMMON },
         LuauFile { name: "host.d.luau", text: HOST },
     ];
-    let good = "--!strict\nscript.on.tapped(function(t) local k: number = t.key end)\nkeyboard.script.palette({ colours = {}, speed = 2 })\n";
+    let good = "--!strict\nbridge.on.tapped(function(t) local k: number = t.key end)\nkeyboard.bridge.palette({ colours = {}, speed = 2 })\n";
     assert!(checker.check(&files, LuauFile { name: "host.luau", text: good }).unwrap().is_empty());
-    let wrong = "--!strict\nkeyboard.script.palette({ colours = {}, speed = \"fast\" })\n";
+    let wrong = "--!strict\nkeyboard.bridge.palette({ colours = {}, speed = \"fast\" })\n";
     assert_eq!(checker.check(&files, LuauFile { name: "host.luau", text: wrong }).unwrap().len(), 1, "a string where speed's number goes");
 }

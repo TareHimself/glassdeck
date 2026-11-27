@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use glassdeck_luau::options::{OptionsScript, Panel};
 use glassdeck_luau_check::{LuauChecker, LuauFile, definitions};
 use glassdeck_package::{
-    CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, MESSAGES_SCRIPT, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
+    CANVAS_API, Canvas, CanvasScripts, Content, DeckSource, HOST_SCRIPT, KEYBOARD_SCRIPT, Kind, BRIDGE_SCRIPT, OPTIONS_SCRIPT, Origin, Package, PackageWriter,
     SHADER, PackageType, canvas_sources,
 };
 
@@ -88,7 +88,7 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let keyboard = read_optional(folder, KEYBOARD_SCRIPT)?;
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
-    let messages = read_optional(folder, MESSAGES_SCRIPT)?;
+    let messages = read_optional(folder, BRIDGE_SCRIPT)?;
     let path = source_path.to_string_lossy();
     let sources = CanvasSources {
         shader: &shader,
@@ -109,7 +109,7 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
     let origin = Origin::Packed { from, sources: canvas_sources(&deck_text, API_MODULE, &shader, sources.scripts()) };
     let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(compiled.canvas))))?;
     writer.add_bytes(SHADER, compiled.fragment.as_bytes())?;
-    for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host), (MESSAGES_SCRIPT, &messages)] {
+    for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host), (BRIDGE_SCRIPT, &messages)] {
         if let Some(text) = text {
             writer.add_bytes(entry, text.as_bytes())?;
         }
@@ -128,7 +128,7 @@ struct Types {
     messages: MessageTypes,
 }
 
-/// What `messages.luau` gives each half's script, and its problems.
+/// What `bridge.luau` gives each half's script, and its problems.
 struct MessageTypes {
     keyboard: String,
     host: String,
@@ -143,7 +143,7 @@ impl MessageTypes {
 }
 
 /// Writes each half's message types into `folder`'s `.glassdeck/` from `messages` as it is now (an
-/// editor's unsaved text), for the language servers; `messages.luau`'s problems, each at its place.
+/// editor's unsaved text), for the language servers; `bridge.luau`'s problems, each at its place.
 pub fn write_message_types(folder: &Path, messages: Option<&str>, implicit_options: bool) -> Result<Vec<glassdeck_messages::Problem>> {
     let types = message_types(messages, implicit_options);
     let dir = folder.join(TYPES_FOLDER);
@@ -155,8 +155,8 @@ pub fn write_message_types(folder: &Path, messages: Option<&str>, implicit_optio
     Ok(types.problems)
 }
 
-/// Each half's message types from `messages.luau` (none without one). `implicit_options`: `host.luau` is
-/// blank, so the keyboard half hears the built-in `options`. A `messages.luau` with problems gives no
+/// Each half's message types from `bridge.luau` (none without one). `implicit_options`: `host.luau` is
+/// blank, so the keyboard half hears the built-in `options`. A `bridge.luau` with problems gives no
 /// messages, and its problems.
 fn message_types(messages: Option<&str>, implicit_options: bool) -> MessageTypes {
     let (parsed, problems) = match messages.map(glassdeck_messages::parse) {
@@ -174,9 +174,9 @@ fn message_types(messages: Option<&str>, implicit_options: bool) -> MessageTypes
 /// The generated message files every package's `.glassdeck/` holds.
 fn message_files(types: &MessageTypes) -> [(&'static str, &str); 3] {
     [
-        ("keyboard-messages.d.luau", types.keyboard.as_str()),
-        ("host-messages.d.luau", types.host.as_str()),
-        ("messages-api.d.luau", glassdeck_messages::wrapper_definitions()),
+        ("keyboard-bridge.d.luau", types.keyboard.as_str()),
+        ("host-bridge.d.luau", types.host.as_str()),
+        ("bridge-api.d.luau", glassdeck_messages::wrapper_definitions()),
     ]
 }
 
@@ -209,11 +209,11 @@ fn check_scripts(luau: &LuauChecker, types: &Types, sources: &CanvasSources) -> 
     let mut checked = Vec::new();
     problems.extend(types.messages.problem_lines());
     if sources.messages.is_some() {
-        checked.push(MESSAGES_SCRIPT);
+        checked.push(BRIDGE_SCRIPT);
     }
     if let Some(keyboard) = sources.keyboard {
         let definitions = [
-            LuauFile { name: "keyboard-messages.d.luau", text: &types.messages.keyboard },
+            LuauFile { name: "keyboard-bridge.d.luau", text: &types.messages.keyboard },
             LuauFile { name: "options.d.luau", text: &types.options },
             LuauFile { name: "canvas.d.luau", text: definitions::CANVAS },
             LuauFile { name: "inputs.d.luau", text: &types.inputs },
@@ -252,7 +252,7 @@ pub struct ScriptCheck {
 pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck> {
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
-    let messages_source = read_optional(folder, MESSAGES_SCRIPT)?;
+    let messages_source = read_optional(folder, BRIDGE_SCRIPT)?;
     let messages = message_types(messages_source.as_deref(), host.is_none());
     let panel = match &options {
         Some(options) => OptionsScript::new(options).first_pass()?,
@@ -275,7 +275,7 @@ pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck>
     let mut problems = messages.problem_lines();
     let mut checked = Vec::new();
     if messages_source.is_some() {
-        checked.push(MESSAGES_SCRIPT);
+        checked.push(BRIDGE_SCRIPT);
     }
     if let Some(options) = &options {
         problems.extend(luau.check_options(options, &generated)?);

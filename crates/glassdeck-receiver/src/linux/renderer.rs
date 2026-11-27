@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use glassdeck_proto::compositor::{BufferId, FromCompositor, MAX_MESSAGE_LEN, ToCompositor};
+use glassdeck_proto::{Kind, ScriptTarget};
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType};
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
@@ -21,6 +22,7 @@ use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use super::Picture;
 use super::compositor::{Registrar, SharedBuffer};
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
+use crate::upstream::Upstream;
 
 /// The renderer finds its end of the socket here, as `--compositor-fd` says.
 const RENDERER_SOCKET_FD: i32 = 3;
@@ -72,13 +74,14 @@ pub struct RendererProcess {
 
 impl RendererProcess {
     /// Runs `program` as the renderer user with `--compositor-fd` added. `stopped` runs if it ends by
-    /// itself, never after `stop`.
+    /// itself, never after `stop`. A canvas background's script messages go `upstream`; others have none.
     pub fn start(
         label: &'static str,
         program: &str,
         args: &[String],
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
+        upstream: Option<Arc<Upstream>>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         let (ours, theirs) = rustix::net::socketpair(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None)
@@ -106,7 +109,7 @@ impl RendererProcess {
         let thread = {
             let (stop, socket) = (Arc::clone(&stop), Arc::clone(&socket));
             thread::Builder::new().name(label.into()).spawn(move || {
-                let served = serve(label, &socket, &registrar, &mailbox);
+                let served = serve(label, &socket, &registrar, &mailbox, upstream.as_deref());
                 let status = child.wait();
                 if stop.load(Ordering::Relaxed) {
                     return;
@@ -125,6 +128,12 @@ impl RendererProcess {
     /// Data for the renderer's script (glassdeck-gpu); refused if it's larger than one message holds.
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
         let message = FromCompositor::data(payload.to_vec()).map_err(|e| anyhow!("{e}"))?;
+        send(&self.socket, &message).map_err(|RendererGone| anyhow!("{} hung up", self.label))
+    }
+
+    /// A message from a canvas's host half, for its script; refused if it's larger than one message holds.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        let message = FromCompositor::script_message(Kind::KeyboardEvent, message, payload.to_vec()).map_err(|e| anyhow!("{e}"))?;
         send(&self.socket, &message).map_err(|RendererGone| anyhow!("{} hung up", self.label))
     }
 
@@ -179,7 +188,7 @@ unsafe extern "C" {
 }
 
 /// Serves one renderer until it closes the socket.
-fn serve(label: &str, socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Mailbox) -> Result<()> {
+fn serve(label: &str, socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Mailbox, upstream: Option<&Upstream>) -> Result<()> {
     let mut buffers: HashMap<BufferId, Arc<SharedBuffer>> = HashMap::new();
     let mut next_id: BufferId = 1;
     let mut bytes = [0u8; MAX_MESSAGE_LEN];
@@ -220,6 +229,10 @@ fn serve(label: &str, socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Ma
                 let picture = Picture::Shared(SharedPicture { buffer, id, socket: Arc::clone(socket) });
                 mailbox.put(ShownFrame { picture, timing: Timing::Paced { late_us: 0 } });
             }
+            ToCompositor::ScriptMessage { message, payload } => match upstream {
+                Some(upstream) => upstream.script_message(ScriptTarget::Background, message, payload),
+                None => bail!("{label} sent a script message, which only a canvas background can"),
+            },
         }
     }
 }

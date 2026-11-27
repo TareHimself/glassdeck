@@ -13,6 +13,7 @@ use crate::mailbox::{Mailbox, ShownFrame, Timing};
 use crate::mp4::{ReadAt, VideoTrack};
 use crate::platform::{self, CanvasBackground, Decoder, ImageBackground, Registrar, WebBackground};
 use crate::playout::{PlayoutClock, wait_until};
+use crate::upstream::Upstream;
 
 /// Local files need no network buffer, only enough lead for the decoder's first pictures.
 const LOCAL_PLAYOUT_DELAY_US: u64 = 100_000;
@@ -35,6 +36,7 @@ impl LocalBackground {
         path: &Path,
         registrar: Registrar,
         mailbox: Arc<Mailbox>,
+        upstream: Arc<Upstream>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         let background = Package::open(path)?;
@@ -42,7 +44,7 @@ impl LocalBackground {
             Kind::Widget(_) => anyhow::bail!("{} is a widget, not a background", background.id()),
             Kind::Background(Content::Video { file, .. }) => background.entry(file).context("the background's video is missing")?,
             Kind::Background(Content::Web { .. }) => return WebBackground::start(path, registrar, mailbox, stopped).map(Self::Web),
-            Kind::Background(Content::Canvas(_)) => return CanvasBackground::start(path, registrar, mailbox, stopped).map(Self::Canvas),
+            Kind::Background(Content::Canvas(_)) => return CanvasBackground::start(path, registrar, mailbox, upstream, stopped).map(Self::Canvas),
             Kind::Background(Content::Image { .. }) => return ImageBackground::start(path, registrar, mailbox, stopped).map(Self::Image),
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -63,6 +65,14 @@ impl LocalBackground {
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
         match self {
             Self::Canvas(canvas) => canvas.deliver(payload),
+            Self::Video { .. } | Self::Web(_) | Self::Image(_) => Ok(()),
+        }
+    }
+
+    /// A message from the host half; only a canvas has a script to hear it.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        match self {
+            Self::Canvas(canvas) => canvas.deliver_message(message, payload),
             Self::Video { .. } | Self::Web(_) | Self::Image(_) => Ok(()),
         }
     }

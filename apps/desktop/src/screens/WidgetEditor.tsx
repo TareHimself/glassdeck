@@ -3,7 +3,7 @@ import { useParams } from "react-router";
 import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type PreviewRun, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
 import { nextPreviewRun } from "../previews";
 import { Button } from "../components/Button";
-import { MESSAGES_SCRIPT, useMessageTypes } from "../messageTypes";
+import { BRIDGE_SCRIPT, useMessageTypes } from "../messageTypes";
 import { RunNote } from "../components/RunNote";
 import { errorLine, markedError, RUNNING, type RunStatus } from "../runStatus";
 import { PageHeader, useBack } from "../components/PageHeader";
@@ -14,7 +14,7 @@ import { OptionControls, type Chosen } from "./OptionControls";
 import styles from "./WidgetEditor.module.css";
 
 const LIBRARY = { to: "/widgets", label: "Widgets" };
-const SCRIPT_ORDER = ["keyboard.luau", "options.luau", "host.luau", "messages.luau"];
+const SCRIPT_ORDER = ["keyboard.luau", "options.luau", "host.luau", "bridge.luau"];
 const OPTIONS_SCRIPT = "options.luau";
 const PREVIEW_ROOM = { w: 300, h: 200 };
 const EDIT_SETTLE_MS = 400;
@@ -74,7 +74,7 @@ export function WidgetEditor() {
   const [check, setCheck] = useState<Check>({ state: "checking" });
   const messageTypes = useMessageTypes(id, files, loaded.state === "ready");
   const definitions = useMemo(() => (check.state === "checking" ? null : { check, messages: messageTypes.version }), [check, messageTypes.version]);
-  const messageProblems = useMemo(() => ({ file: MESSAGES_SCRIPT, items: messageTypes.problems }), [messageTypes.problems]);
+  const messageProblems = useMemo(() => ({ file: BRIDGE_SCRIPT, items: messageTypes.problems }), [messageTypes.problems]);
   const [chosen, setChosen] = useState<Chosen>({});
   const [panel, setPanel] = useState<OptionsPanel | null>(null);
   const [sizeIndex, setSizeIndex] = useState(0);

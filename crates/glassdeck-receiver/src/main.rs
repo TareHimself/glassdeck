@@ -9,6 +9,7 @@ mod presentation;
 mod put;
 mod screen;
 mod stats;
+mod upstream;
 mod widgets;
 
 #[cfg(target_os = "linux")]
@@ -19,11 +20,10 @@ mod platform;
 mod platform;
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use glassdeck_luau::placement::{Placement, PlacedWidget};
 use glassdeck_package::QualifiedId;
-use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
+use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, ScriptTarget, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
 
 use director::{Director, SharedDirector, lock};
 use glassdeck_layout::Variant;
@@ -43,6 +43,7 @@ use presentation::Outcome;
 use put::{Folders, QUEUED_PIECES};
 use screen::Event;
 use stats::{FrameTimes, LatencyStats};
+use upstream::Upstream;
 use widgets::{Input, Tiles};
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
@@ -93,21 +94,22 @@ fn main() -> Result<()> {
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
     let folders = Folders { packages: cli.packages.clone() };
     let config = widgets::Config { packages: cli.packages.clone(), state: cli.state.clone(), font };
-    let widgets = widgets::start(config, Arc::clone(&tiles))?;
+    let upstream = Arc::new(Upstream::default());
+    let widgets = widgets::start(config, Arc::clone(&tiles), Arc::clone(&upstream))?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
 
     let mailbox = Arc::new(Mailbox::new(compositor.doorbell()));
-    let director = Director::start(cli.packages, cli.state, compositor.registrar(), Arc::clone(&mailbox))?;
+    let director = Director::start(cli.packages, cli.state, compositor.registrar(), Arc::clone(&mailbox), Arc::clone(&upstream))?;
     let producer = Arc::clone(&mailbox);
-    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders))?;
+    thread::Builder::new().name("receive".into()).spawn(move || accept_loop(listener, &producer, &director, &widgets, &folders, &upstream))?;
     compose_loop(&mailbox, &tiles, compositor)
 }
 
 pub(crate) use glassdeck_widget::load_font;
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
-fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector, widgets: &Sender<Input>, folders: &Folders) {
+fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector, widgets: &Sender<Input>, folders: &Folders, upstream: &Upstream) {
     if let Err(e) = platform::init_decoder_thread() {
         eprintln!("error: starting the decoder: {e:#}");
         std::process::exit(1);
@@ -116,19 +118,20 @@ fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirect
     for connection in listener.incoming() {
         let mut state = SessionState::Idle;
         let result = connection.context("accepting connection").and_then(|socket| {
-            let replies = Mutex::new(socket.try_clone()?);
+            upstream.connected(socket.try_clone()?);
             let (pieces, arriving) = mpsc::sync_channel(QUEUED_PIECES);
             thread::scope(|scope| {
                 thread::Builder::new()
                     .name("files".into())
-                    .spawn_scoped(scope, || put::write_files(folders, arriving, &replies, widgets, director))?;
+                    .spawn_scoped(scope, || put::write_files(folders, arriving, upstream, widgets, director))?;
                 let inventory = Message::Inventory { packages: digests.inventory(folders)? };
-                send_reply(&replies, &inventory).context("telling the host what's installed")?;
-                let served = serve(socket, mailbox, director, widgets, &pieces, &replies, folders, &mut state);
+                upstream.send(&inventory).context("telling the host what's installed")?;
+                let served = serve(socket, mailbox, director, widgets, &pieces, upstream, folders, &mut state);
                 drop(pieces);
                 served
             })
         });
+        upstream.disconnected();
         match result {
             Ok(()) => println!("Sender disconnected"),
             Err(e) => eprintln!("error: {e:#}"),
@@ -151,7 +154,7 @@ fn serve(
     director: &SharedDirector,
     widgets: &Sender<Input>,
     pieces: &SyncSender<PutFile>,
-    replies: &Mutex<TcpStream>,
+    upstream: &Upstream,
     folders: &Folders,
     state: &mut SessionState,
 ) -> Result<()> {
@@ -203,13 +206,19 @@ fn serve(
             Action::ModuleData { instance, payload } => {
                 widgets.send(Input::Data { instance, payload: payload.to_vec() }).context("the widget thread has stopped")?
             }
+            Action::ScriptMessage { to: ScriptTarget::Background, kind, message, payload } => {
+                report(lock(director).script_message(kind, message, payload.to_vec()));
+            }
+            Action::ScriptMessage { to: ScriptTarget::Widget(instance), message, payload, .. } => widgets
+                .send(Input::Message { instance, message, payload: payload.to_vec() })
+                .context("the widget thread has stopped")?,
             Action::ModuleResource { instance, name, data } => widgets
                 .send(Input::Resource { instance, name: name.to_owned(), data: data.to_vec() })
                 .context("the widget thread has stopped")?,
             Action::PutFile(put) => pieces.send(put.clone()).context("the file writer has stopped")?,
             Action::AnswerProbe { probe_sent_us } => {
                 let reply = Message::ClockReply { probe_sent_us, received_us };
-                send_reply(replies, &reply).context("answering a clock probe")?;
+                upstream.send(&reply).context("answering a clock probe")?;
             }
         }
     }
@@ -225,12 +234,6 @@ fn placed_widgets(slots: &[WidgetSlot]) -> Result<Vec<PlacedWidget>> {
             Ok(PlacedWidget { package: QualifiedId::parse(&slot.package)?, placement })
         })
         .collect()
-}
-
-/// Clock replies and file answers come from different threads, so they share the socket through a lock.
-pub(crate) fn send_reply(replies: &Mutex<TcpStream>, message: &Message) -> Result<()> {
-    replies.lock().expect("reply socket poisoned").write_all(&message.encode())?;
-    Ok(())
 }
 
 /// A failure that is logged, not fatal: the connection carries on.

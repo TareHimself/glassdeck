@@ -9,14 +9,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
+use glassdeck_luau::messages::Sent;
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::ResourceReader;
 use glassdeck_package::{Package, QualifiedId, is_package};
+use glassdeck_proto::ScriptTarget;
 use glassdeck_proto::compositor::MAX_DATA_LEN;
 
 use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
@@ -30,14 +32,15 @@ const RESCAN: Duration = Duration::from_secs(1);
 pub enum HostCommand {
     /// A new active theme
     Theme(ActiveTheme),
+    /// What a keyboard script sent its host half
+    Message(ScriptTarget, Sent),
 }
 
-pub fn start(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Result<Sender<HostCommand>> {
-    let (commands, inbox) = mpsc::channel();
+pub fn start(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying, inbox: Receiver<HostCommand>) -> Result<()> {
     thread::Builder::new()
         .name("module host".into())
         .spawn(move || Host::new(packages, theme, uplink, now_playing).run(&inbox))?;
-    Ok(commands)
+    Ok(())
 }
 
 struct Host {
@@ -102,13 +105,6 @@ fn widget_changes(running: &BTreeMap<u16, SideEntry>, wanted: &BTreeMap<u16, Sid
     numbers.into_iter().filter_map(|n| side_change(running.get(&n), wanted.get(&n)).map(|change| (n, change))).collect()
 }
 
-/// Where a host side's data goes on the Link.
-#[derive(Clone, Copy)]
-enum Target {
-    Background,
-    Widget(u16),
-}
-
 
 impl Host {
     fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Self {
@@ -136,14 +132,30 @@ impl Host {
                     self.theme = theme;
                     self.sync();
                 }
+                Ok(HostCommand::Message(from, sent)) => self.deliver(from, &sent),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }
 
+    /// A message from a keyboard script, to its host half; one that fails is reported, and the side keeps running.
+    fn deliver(&self, from: ScriptTarget, sent: &Sent) {
+        let running = match from {
+            ScriptTarget::Background => self.background.as_ref(),
+            ScriptTarget::Widget(number) => self.widgets.get(&number),
+        };
+        let Some(Running { side, .. }) = running else { return };
+        if let Err(e) = side.deliver_message(sent.message, &sent.payload) {
+            eprintln!("error: {}: {e:#}", side.label);
+        }
+    }
+
     fn flush(&self) {
         for (&number, widget) in &self.widgets {
+            for sent in widget.side.take_messages() {
+                self.uplink.put_script_message(ScriptTarget::Widget(number), sent);
+            }
             if let Some(payload) = widget.side.take_sent() {
                 self.uplink.put_module_data(number, payload);
             }
@@ -157,6 +169,9 @@ impl Host {
             }
             if let Some(payload) = side.take_sent() {
                 self.uplink.put_background_data(payload);
+            }
+            for sent in side.take_messages() {
+                self.uplink.put_script_message(ScriptTarget::Background, sent);
             }
         }
     }
@@ -193,8 +208,11 @@ impl Host {
 
         let running_background = self.background.as_ref().map(|r| &r.entry);
         if let Some(change) = side_change(running_background, background.as_ref().map(|(e, _)| e)) {
+            if matches!(change, Change::Start | Change::Stop) {
+                self.uplink.forget_background_messages();
+            }
             let old = self.background.take();
-            self.background = self.changed(Target::Background, old, change, background);
+            self.background = self.changed(ScriptTarget::Background, old, change, background);
         }
         let running: BTreeMap<u16, SideEntry> = self.widgets.iter().map(|(&n, r)| (n, r.entry.clone())).collect();
         let entries: BTreeMap<u16, SideEntry> = wanted.iter().map(|(&n, (e, _))| (n, e.clone())).collect();
@@ -203,14 +221,14 @@ impl Host {
             if matches!(change, Change::Start | Change::Stop) {
                 self.uplink.forget_module_instance(number);
             }
-            if let Some(kept) = self.changed(Target::Widget(number), old, change, wanted.remove(&number)) {
+            if let Some(kept) = self.changed(ScriptTarget::Widget(number), old, change, wanted.remove(&number)) {
                 self.widgets.insert(number, kept);
             }
         }
     }
 
     /// Carries out one change, and returns what then runs in that place.
-    fn changed(&self, target: Target, old: Option<Running>, change: Change, wanted: Option<(SideEntry, Rc<Package>)>) -> Option<Running> {
+    fn changed(&self, target: ScriptTarget, old: Option<Running>, change: Change, wanted: Option<(SideEntry, Rc<Package>)>) -> Option<Running> {
         match change {
             Change::Stop => None,
             Change::Start => {
@@ -231,16 +249,16 @@ impl Host {
         }
     }
 
-    fn start_side(&self, target: Target, entry: SideEntry, package: &Rc<Package>) -> Option<Running> {
+    fn start_side(&self, target: ScriptTarget, entry: SideEntry, package: &Rc<Package>) -> Option<Running> {
         let label = match target {
-            Target::Background => format!("background ({})", entry.package),
-            Target::Widget(number) => format!("widget {number} ({})", entry.package),
+            ScriptTarget::Background => format!("background ({})", entry.package),
+            ScriptTarget::Widget(number) => format!("widget {number} ({})", entry.package),
         };
         let started = (|| -> Result<Option<HostSide>> {
             let readable = Rc::clone(package);
             let (reader, send_limit): (Option<ResourceReader>, _) = match target {
-                Target::Background => (None, Some(MAX_DATA_LEN)),
-                Target::Widget(_) => (Some(Rc::new(move |resource| readable.resource(resource))), None),
+                ScriptTarget::Background => (None, Some(MAX_DATA_LEN)),
+                ScriptTarget::Widget(_) => (Some(Rc::new(move |resource| readable.resource(resource))), None),
             };
             let sources = Sources {
                 label: label.clone(),
@@ -249,7 +267,7 @@ impl Host {
                 reader,
                 send_limit,
                 print: None,
-                messages: package.messages_script()?,
+                messages: package.bridge_script()?,
             };
             let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;

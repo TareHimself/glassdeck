@@ -97,6 +97,8 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let (events, inbox) = mpsc::channel();
     let (link_up, link_changed) = (events.clone(), published.clone());
     let (reported, keyboard_reports) = mpsc::channel::<()>();
+    let (module_host, module_host_inbox) = mpsc::channel();
+    let heard = module_host.clone();
     let uplink = Arc::new(Uplink::new(
         move |connection| {
             if connection == KeyboardLink::Connected {
@@ -106,6 +108,9 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
         },
         move || {
             let _ = reported.send(());
+        },
+        move |from, sent| {
+            let _ = heard.send(module_host::HostCommand::Message(from, sent));
         },
     ));
     let stream_changed = published.clone();
@@ -119,7 +124,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     let held = ActivePackages::open(paths.active.clone())?;
     let (kept, active) = restored_theme(&paths)?;
-    let module_host = module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), glassdeck_host::start_media()?)?;
+    module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), glassdeck_host::start_media()?, module_host_inbox)?;
     let api = Arc::new(Api {
         token,
         runner,

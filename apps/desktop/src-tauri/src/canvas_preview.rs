@@ -388,7 +388,7 @@ fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
         keyboard: script(files, KEYBOARD_SCRIPT),
         options: script(files, OPTIONS_SCRIPT),
         host: script(files, HOST_SCRIPT),
-        messages: script(files, glassdeck_package::MESSAGES_SCRIPT),
+        messages: script(files, glassdeck_package::BRIDGE_SCRIPT),
     };
     let compiled = compile_canvas(slang, &sources)?;
     let canvas_files = CanvasFiles {

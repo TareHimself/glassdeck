@@ -1,4 +1,4 @@
-//! Reads the subset of Luau type syntax `messages.luau` is written in. Every problem is kept, each at
+//! Reads the subset of Luau type syntax `bridge.luau` is written in. Every problem is kept, each at
 //! its line and column, so the editor can mark them all at once.
 
 use std::collections::HashMap;
@@ -204,7 +204,7 @@ fn item(p: &mut Parser) -> Result<Item, Problem> {
             true
         }
         Token::Name(word) if word == "type" => false,
-        _ => return Err(Parser::problem(&start, "only `type` and `export type` lines belong in messages.luau")),
+        _ => return Err(Parser::problem(&start, "only `type` and `export type` lines belong in bridge.luau")),
     };
     let (name, at) = p.name("a name")?;
     if p.is('<') {
@@ -258,7 +258,7 @@ impl Resolver<'_> {
     }
 }
 
-/// Reads `messages.luau`: its messages in order, or every problem found.
+/// Reads `bridge.luau`: its messages in order, or every problem found.
 pub fn parse(source: &str) -> Result<Messages, Vec<Problem>> {
     let mut p = Parser { tokens: tokens(source).map_err(|p| vec![p])?, at: 0 };
     let mut problems = Vec::new();

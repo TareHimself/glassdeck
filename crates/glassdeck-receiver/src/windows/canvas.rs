@@ -16,14 +16,17 @@ use glassdeck_gpu::program::{CanvasProgram, render_size};
 
 use super::Registrar;
 use super::decode::Picture;
+use glassdeck_proto::ScriptTarget;
+
 use crate::mailbox::{Mailbox, ShownFrame, Timing};
+use crate::upstream::Upstream;
 
 /// The built-in gradient, shown whenever nothing else owns the screen.
 pub struct FallbackCanvas(PreviewCanvas);
 
 impl FallbackCanvas {
     pub fn start(_registrar: Registrar, mailbox: Arc<Mailbox>, stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
-        PreviewCanvas::start("built-in canvas", glassdeck_gpu::built_in()?, mailbox, stopped).map(Self)
+        PreviewCanvas::start("built-in canvas", glassdeck_gpu::built_in()?, mailbox, None, stopped).map(Self)
     }
 
     pub fn stop(self) {
@@ -39,15 +42,22 @@ impl CanvasBackground {
         background: &Path,
         _registrar: Registrar,
         mailbox: Arc<Mailbox>,
+        upstream: Arc<Upstream>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         println!("Local background {}: canvas, drawn on this PC", background.display());
-        PreviewCanvas::start("canvas background", CanvasFiles::read(&Package::open(background)?)?, mailbox, stopped).map(Self)
+        let files = CanvasFiles::read(&Package::open(background)?)?;
+        PreviewCanvas::start("canvas background", files, mailbox, Some(upstream), stopped).map(Self)
     }
 
     /// What the canvas's host half sent, for its script.
     pub fn deliver(&self, payload: &[u8]) -> Result<()> {
-        self.0.data.send(payload.to_vec()).map_err(|_| anyhow!("the preview canvas has stopped"))
+        self.0.send(ToCanvas::Data(payload.to_vec()))
+    }
+
+    /// A message from the canvas's host half, for its script.
+    pub fn deliver_message(&self, message: u16, payload: &[u8]) -> Result<()> {
+        self.0.send(ToCanvas::Message { message, payload: payload.to_vec() })
     }
 
     pub fn stop(self) {
@@ -55,9 +65,15 @@ impl CanvasBackground {
     }
 }
 
+/// What the host half sent, on its way to the canvas thread.
+enum ToCanvas {
+    Data(Vec<u8>),
+    Message { message: u16, payload: Vec<u8> },
+}
+
 struct PreviewCanvas {
     stop: Arc<AtomicBool>,
-    data: Sender<Vec<u8>>,
+    inbox: Sender<ToCanvas>,
     thread: JoinHandle<()>,
 }
 
@@ -67,13 +83,14 @@ impl PreviewCanvas {
         label: &'static str,
         files: CanvasFiles,
         mailbox: Arc<Mailbox>,
+        upstream: Option<Arc<Upstream>>,
         stopped: impl FnOnce(anyhow::Error) + Send + 'static,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let asked = Arc::clone(&stop);
-        let (data, arriving) = mpsc::channel();
+        let (inbox, arriving) = mpsc::channel();
         let thread = thread::Builder::new().name(label.into()).spawn(move || {
-            let error = match run(label, files, &mailbox, &asked, &arriving) {
+            let error = match run(label, files, &mailbox, &asked, &arriving, upstream.as_deref()) {
                 Ok(()) => return,
                 Err(e) => e,
             };
@@ -81,7 +98,11 @@ impl PreviewCanvas {
                 stopped(error);
             }
         })?;
-        Ok(Self { stop, data, thread })
+        Ok(Self { stop, inbox, thread })
+    }
+
+    fn send(&self, input: ToCanvas) -> Result<()> {
+        self.inbox.send(input).map_err(|_| anyhow!("the preview canvas has stopped"))
     }
 
     fn stop(self) {
@@ -93,7 +114,7 @@ impl PreviewCanvas {
 }
 
 /// Draws at the canvas's frame rate until asked to stop; frames where nothing changed aren't sent.
-fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, data: &Receiver<Vec<u8>>) -> Result<()> {
+fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, inbox: &Receiver<ToCanvas>, upstream: Option<&Upstream>) -> Result<()> {
     let size = render_size(files.canvas.scale);
     let period = Duration::from_secs_f64(1.0 / f64::from(files.canvas.frame_rate));
     let offscreen = Offscreen::new(size)?;
@@ -102,8 +123,16 @@ fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, da
     let started = Instant::now();
     let mut due = started;
     while !stop.load(Ordering::Relaxed) {
-        while let Ok(payload) = data.try_recv() {
-            canvas.deliver(&payload)?;
+        while let Ok(input) = inbox.try_recv() {
+            match input {
+                ToCanvas::Data(payload) => canvas.deliver(&payload)?,
+                ToCanvas::Message { message, payload } => canvas.deliver_message(message, &payload)?,
+            }
+        }
+        for sent in canvas.take_messages() {
+            if let Some(upstream) = upstream {
+                upstream.script_message(ScriptTarget::Background, sent.message, sent.payload);
+            }
         }
         if canvas.draw(&offscreen.gl, offscreen.framebuffer(), size, started.elapsed().as_secs_f32())?.is_some() {
             let picture = Picture { pixels: offscreen.read_rgb(), width: size.0 as usize, height: size.1 as usize, time_us: unix_micros() };

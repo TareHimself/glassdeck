@@ -1,5 +1,6 @@
 //! Carries out the screen table: starts and stops local backgrounds and the built-in canvas, and remembers the chosen background.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -8,11 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{Context, Result, bail, ensure};
+use glassdeck_proto::Kind;
 
 use crate::local::LocalBackground;
 use crate::mailbox::Mailbox;
 use crate::platform::{FallbackCanvas, Registrar};
 use crate::screen::{Effect, Event, Screen, Selection, step};
+use crate::upstream::Upstream;
 
 /// Lives in the background folder; background names can't start with a dot, so it never collides with one.
 /// The keyboard's own record of the chosen background, in its state folder
@@ -40,6 +43,8 @@ pub struct Director {
     fallback: Option<FallbackCanvas>,
     /// The selected background's latest data from the host, handed to it again whenever it starts.
     background_data: Option<Vec<u8>>,
+    /// The selected canvas's latest value of each `KeyboardState`, by message number, handed over like `background_data`.
+    background_states: BTreeMap<u16, Vec<u8>>,
     /// Counts starts, so a report from a background or canvas that was since replaced is ignored.
     generation: u64,
     packages: PathBuf,
@@ -47,11 +52,12 @@ pub struct Director {
     state: PathBuf,
     registrar: Registrar,
     mailbox: Arc<Mailbox>,
+    upstream: Arc<Upstream>,
     stopped: Sender<Stopped>,
 }
 
 impl Director {
-    pub fn start(packages: PathBuf, state: PathBuf, registrar: Registrar, mailbox: Arc<Mailbox>) -> Result<SharedDirector> {
+    pub fn start(packages: PathBuf, state: PathBuf, registrar: Registrar, mailbox: Arc<Mailbox>, upstream: Arc<Upstream>) -> Result<SharedDirector> {
         fs::create_dir_all(&packages).with_context(|| format!("creating the packages folder {}", packages.display()))?;
         fs::create_dir_all(&state).with_context(|| format!("creating the state folder {}", state.display()))?;
         let remembered = read_recent(&state).unwrap_or_else(|e| {
@@ -65,11 +71,13 @@ impl Director {
             running: None,
             fallback: None,
             background_data: None,
+            background_states: BTreeMap::new(),
             generation: 0,
             packages,
             state,
             registrar,
             mailbox,
+            upstream,
             stopped,
         }));
         lock(&director).apply(effects)?;
@@ -102,6 +110,7 @@ impl Director {
         ensure!(path.is_file(), "{} is not in the packages folder {}", background, self.packages.display());
         println!("Background selected: {background}");
         self.background_data = None;
+        self.background_states.clear();
         self.handle(Event::BackgroundSelected(Selection::File(background)))
     }
 
@@ -111,6 +120,18 @@ impl Director {
             running.deliver(&payload)?;
         }
         self.background_data = Some(payload);
+        Ok(())
+    }
+
+    /// A message from the selected canvas's host half: handed to the canvas if it's running, and a
+    /// state kept for whenever it starts again.
+    pub fn script_message(&mut self, kind: Kind, message: u16, payload: Vec<u8>) -> Result<()> {
+        if let Some(running) = &self.running {
+            running.deliver_message(message, &payload)?;
+        }
+        if kind == Kind::KeyboardState {
+            self.background_states.insert(message, payload);
+        }
         Ok(())
     }
 
@@ -164,6 +185,7 @@ impl Director {
                         &self.packages.join(background.file_name()),
                         self.registrar.clone(),
                         Arc::clone(&self.mailbox),
+                        Arc::clone(&self.upstream),
                         report,
                     ) {
                         Ok(running) => {
@@ -171,6 +193,11 @@ impl Director {
                                 && let Err(e) = running.deliver(payload)
                             {
                                 eprintln!("error: handing {background} its data: {e:#}");
+                            }
+                            for (message, payload) in &self.background_states {
+                                if let Err(e) = running.deliver_message(*message, payload) {
+                                    eprintln!("error: handing {background} message {message}: {e:#}");
+                                }
                             }
                             self.running = Some(running);
                         }

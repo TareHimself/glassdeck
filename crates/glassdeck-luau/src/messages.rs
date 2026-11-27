@@ -1,5 +1,5 @@
-//! A script's messages, from its package's `messages.luau`: `script.on.<message>(fn)` hears one that
-//! comes to this half, and `<other half>.script.<message>(value)` sends one there. A value is checked
+//! A script's messages, from its package's `bridge.luau`: `bridge.on.<message>(fn)` hears one that
+//! comes to this half, and `<other half>.bridge.<message>(value)` sends one there. A value is checked
 //! against its shape when it's sent, so a mistake is reported where it's made, then packed.
 
 use std::cell::RefCell;
@@ -12,10 +12,11 @@ use mlua::{Function, Lua, Table, Value, Vector};
 
 use crate::{LuaResultExt, Vm};
 
-/// A message on its way to the other half: its number in `messages.luau` and its packed values.
+/// A message on its way to the other half: its number in `bridge.luau`, how it travels, and its packed values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sent {
     pub message: u16,
+    pub kind: Kind,
     pub payload: Vec<u8>,
 }
 
@@ -29,12 +30,12 @@ struct Outbox {
 pub struct ScriptMessages {
     messages: Rc<Messages>,
     heard: Rc<RefCell<HashMap<u16, Function>>>,
-    /// `script.on.options`, on the keyboard half
+    /// `bridge.on.options`, on the keyboard half
     options: Rc<RefCell<Option<Function>>>,
     outbox: Rc<RefCell<Outbox>>,
 }
 
-/// A package's messages from its `messages.luau`, or none without one; every problem in it, each at its line.
+/// A package's messages from its `bridge.luau`, or none without one; every problem in it, each at its line.
 pub fn read_messages(source: Option<&str>) -> Result<Rc<Messages>> {
     let Some(source) = source.filter(|s| !glassdeck_package::is_blank_script(s)) else { return Ok(Rc::new(Messages::default())) };
     glassdeck_messages::parse(source)
@@ -62,7 +63,7 @@ fn strict(lua: &Lua, table: &Table, what: &'static str, names: Vec<String>) -> R
     let index = lua
         .create_function(move |_, (_, key): (Value, String)| -> mlua::Result<Value> {
             let known = if names.is_empty() { "none".to_owned() } else { names.join(", ") };
-            Err(mlua::Error::runtime(format!("{key} isn't a message {what} (messages.luau has: {known})")))
+            Err(mlua::Error::runtime(format!("{key} isn't a message {what} (bridge.luau has: {known})")))
         })
         .lua_context("creating a message table")?;
     meta.set("__index", index).lua_context("creating a message table")?;
@@ -70,14 +71,14 @@ fn strict(lua: &Lua, table: &Table, what: &'static str, names: Vec<String>) -> R
 }
 
 impl ScriptMessages {
-    /// Installs `script.on` and the other half's `script` for `half`. Call after the API has made its
+    /// Installs `bridge.on` and the other half's `bridge` for `half`. Call after the API has made its
     /// own `script` table, and before `seal`.
     pub fn install(lua: &Lua, messages: Rc<Messages>, half: Half) -> Result<Self> {
         let heard = Rc::new(RefCell::new(HashMap::new()));
         let outbox = Rc::new(RefCell::new(Outbox::default()));
         let (here, there): (Vec<_>, Vec<_>) = messages.0.iter().enumerate().partition(|(_, m)| m.kind.to() == half);
 
-        let on = lua.create_table().lua_context("creating script.on")?;
+        let on = lua.create_table().lua_context("creating bridge.on")?;
         let options = Rc::new(RefCell::new(None));
         let mut heard_names: Vec<String> = here.iter().map(|(_, m)| m.name.clone()).collect();
         if half == Half::Keyboard {
@@ -85,12 +86,12 @@ impl ScriptMessages {
             let register = lua
                 .create_function(move |_, callback: Function| {
                     if registered.borrow_mut().replace(callback).is_some() {
-                        return Err(mlua::Error::runtime("script.on.options was already called; register one function"));
+                        return Err(mlua::Error::runtime("bridge.on.options was already called; register one function"));
                     }
                     Ok(())
                 })
-                .lua_context("creating script.on.options")?;
-            on.raw_set(glassdeck_messages::OPTIONS, register).lua_context("creating script.on")?;
+                .lua_context("creating bridge.on.options")?;
+            on.raw_set(glassdeck_messages::OPTIONS, register).lua_context("creating bridge.on")?;
             heard_names.push(glassdeck_messages::OPTIONS.to_owned());
         }
         for (number, message) in &here {
@@ -98,19 +99,19 @@ impl ScriptMessages {
             let register = lua
                 .create_function(move |_, callback: Function| {
                     if registered.borrow_mut().insert(number, callback).is_some() {
-                        return Err(mlua::Error::runtime(format!("script.on.{name} was already called; register one function")));
+                        return Err(mlua::Error::runtime(format!("bridge.on.{name} was already called; register one function")));
                     }
                     Ok(())
                 })
-                .lua_context("creating script.on")?;
-            on.raw_set(message.name.as_str(), register).lua_context("creating script.on")?;
+                .lua_context("creating bridge.on")?;
+            on.raw_set(message.name.as_str(), register).lua_context("creating bridge.on")?;
         }
         strict(lua, &on, "this half hears", heard_names)?;
-        global_table(lua, "script")?.raw_set("on", on).lua_context("installing script.on")?;
+        global_table(lua, "bridge")?.raw_set("on", on).lua_context("installing bridge.on")?;
 
         let (other, other_name) = match half {
-            Half::Keyboard => ("host", "host.script"),
-            Half::Host => ("keyboard", "keyboard.script"),
+            Half::Keyboard => ("host", "host.bridge"),
+            Half::Host => ("keyboard", "keyboard.bridge"),
         };
         let send = lua.create_table().lua_context("creating the other half's script")?;
         for (number, message) in &there {
@@ -125,7 +126,7 @@ impl ScriptMessages {
                         Kind::KeyboardState => {
                             outbox.states.insert(number, payload);
                         }
-                        Kind::KeyboardEvent | Kind::HostEvent => outbox.events.push_back(Sent { message: number, payload }),
+                        Kind::KeyboardEvent | Kind::HostEvent => outbox.events.push_back(Sent { message: number, kind: message.kind, payload }),
                     }
                     Ok(())
                 })
@@ -133,7 +134,7 @@ impl ScriptMessages {
             send.raw_set(name.as_str(), sender).lua_context("creating the other half's script")?;
         }
         strict(lua, &send, "this half sends", there.iter().map(|(_, m)| m.name.clone()).collect())?;
-        global_table(lua, other)?.raw_set("script", send).lua_context(&format!("installing {other_name}"))?;
+        global_table(lua, other)?.raw_set("bridge", send).lua_context(&format!("installing {other_name}"))?;
         Ok(Self { messages, heard, options, outbox })
     }
 
@@ -141,26 +142,26 @@ impl ScriptMessages {
     pub fn take_sent(&self) -> Vec<Sent> {
         let mut outbox = self.outbox.borrow_mut();
         let mut sent: Vec<Sent> = outbox.events.drain(..).collect();
-        sent.extend(std::mem::take(&mut outbox.states).into_iter().map(|(message, payload)| Sent { message, payload }));
+        sent.extend(std::mem::take(&mut outbox.states).into_iter().map(|(message, payload)| Sent { message, kind: Kind::KeyboardState, payload }));
         sent
     }
 
-    /// The options from the implicit host (MessagePack, as `send` packs them), to `script.on.options`;
+    /// The options from the implicit host (MessagePack, as `send` packs them), to `bridge.on.options`;
     /// whether the script registered one to take them.
     pub fn deliver_options(&self, vm: &Vm, payload: &[u8]) -> Result<bool> {
         let Some(callback) = self.options.borrow().clone() else { return Ok(false) };
         let options = crate::decode(vm.lua(), payload)?;
-        vm.call::<()>(&callback, options).context("in script.on.options")?;
+        vm.call::<()>(&callback, options).context("in bridge.on.options")?;
         Ok(true)
     }
 
-    /// A message from the other half, to its `script.on` callback; nothing if the script didn't register one.
+    /// A message from the other half, to its `bridge.on` callback; nothing if the script didn't register one.
     pub fn deliver(&self, vm: &Vm, message: u16, payload: &[u8]) -> Result<()> {
-        let known = self.messages.0.get(usize::from(message)).with_context(|| format!("message {message} isn't in messages.luau"))?;
+        let known = self.messages.0.get(usize::from(message)).with_context(|| format!("message {message} isn't in bridge.luau"))?;
         let value = decode(&known.shape, payload).map_err(|e| anyhow::anyhow!("{} doesn't read: {}", known.name, e.0))?;
         let Some(callback) = self.heard.borrow().get(&message).cloned() else { return Ok(()) };
         let value = to_lua(vm.lua(), &known.shape, value).lua_context("unpacking a message")?;
-        vm.call::<()>(&callback, value).with_context(|| format!("in script.on.{}", known.name))
+        vm.call::<()>(&callback, value).with_context(|| format!("in bridge.on.{}", known.name))
     }
 }
 
@@ -265,24 +266,24 @@ mod tests {
         let (host, host_api) = half(Half::Host);
         let (keyboard, keyboard_api) = half(Half::Keyboard);
         keyboard
-            .load::<()>("script.on.trackChanged(function(t) heard = t.title .. ':' .. tostring(t.length) end)", "keyboard.luau")
+            .load::<()>("bridge.on.trackChanged(function(t) heard = t.title .. ':' .. tostring(t.length) end)", "keyboard.luau")
             .unwrap();
-        host.load::<()>("keyboard.script.trackChanged({ title = 'Low Tide' })", "host.luau").unwrap();
+        host.load::<()>("keyboard.bridge.trackChanged({ title = 'Low Tide' })", "host.luau").unwrap();
         for sent in host_api.take_sent() {
             keyboard_api.deliver(&keyboard, sent.message, &sent.payload).unwrap();
         }
         assert_eq!(keyboard.lua().globals().get::<String>("heard").unwrap(), "Low Tide:nil");
 
-        keyboard.load::<()>("host.script.tapped({ key = 3 })", "keyboard.luau").unwrap();
+        keyboard.load::<()>("host.bridge.tapped({ key = 3 })", "keyboard.luau").unwrap();
         let sent = keyboard_api.take_sent();
-        assert_eq!(sent, vec![Sent { message: 2, payload: vec![1, 6] }]);
+        assert_eq!(sent, vec![Sent { message: 2, kind: Kind::HostEvent, payload: vec![1, 6] }]);
     }
 
     #[test]
     fn only_a_states_latest_value_goes_but_every_event_does() {
         let (host, api) = half(Half::Host);
         host.load::<()>(
-            "keyboard.script.palette({ colours = {}, speed = 1 })\nkeyboard.script.palette({ colours = {}, speed = 2 })\nkeyboard.script.trackChanged({ title = 'a' })\nkeyboard.script.trackChanged({ title = 'b' })",
+            "keyboard.bridge.palette({ colours = {}, speed = 1 })\nkeyboard.bridge.palette({ colours = {}, speed = 2 })\nkeyboard.bridge.trackChanged({ title = 'a' })\nkeyboard.bridge.trackChanged({ title = 'b' })",
             "host.luau",
         )
         .unwrap();
@@ -294,9 +295,9 @@ mod tests {
     fn a_wrong_value_or_name_is_an_error_where_its_made() {
         let (host, _api) = half(Half::Host);
         let error = |script: &str| format!("{:#}", host.load::<()>(script, "host.luau").unwrap_err());
-        assert!(error("keyboard.script.palette({ colours = { 'red' }, speed = 1 })").contains("palette.colours[1]: expected a Color, got string"));
-        assert!(error("keyboard.script.trackChanged({ title = 'x', lenght = 3 })").contains("has no field lenght"));
-        assert!(error("keyboard.script.palete({})").contains("palete isn't a message this half sends"));
-        assert!(error("keyboard.script.tapped({ key = 1 })").contains("tapped isn't a message this half sends"));
+        assert!(error("keyboard.bridge.palette({ colours = { 'red' }, speed = 1 })").contains("palette.colours[1]: expected a Color, got string"));
+        assert!(error("keyboard.bridge.trackChanged({ title = 'x', lenght = 3 })").contains("has no field lenght"));
+        assert!(error("keyboard.bridge.palete({})").contains("palete isn't a message this half sends"));
+        assert!(error("keyboard.bridge.tapped({ key = 1 })").contains("tapped isn't a message this half sends"));
     }
 }

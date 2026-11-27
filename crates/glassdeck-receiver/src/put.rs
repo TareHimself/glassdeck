@@ -3,9 +3,7 @@
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
 use anyhow::{Context, Result};
@@ -16,7 +14,8 @@ use glassdeck_package::{Package, check_file_name, file_digest, is_package};
 use glassdeck_proto::{FileTarget, HeldPackage, LARGE_FILE_BYTES, Message, PutFile};
 
 use crate::director::{SharedDirector, lock};
-use crate::{report, send_reply};
+use crate::report;
+use crate::upstream::Upstream;
 use crate::widgets::Input;
 
 /// Pieces waiting for the disk (8 MB) before the connection waits too.
@@ -24,7 +23,7 @@ pub const QUEUED_PIECES: usize = 32;
 
 /// The file writer thread for one connection: disk writes and the final flush, which takes seconds
 /// for a large file on an SD card, happen here so the receive thread keeps decoding frames.
-pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex<TcpStream>, widgets: &Sender<Input>, director: &SharedDirector) {
+pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, upstream: &Upstream, widgets: &Sender<Input>, director: &SharedDirector) {
     let mut uploads = Uploads::new(folders);
     let mut installing = false;
     for put in pieces {
@@ -42,7 +41,7 @@ pub fn write_files(folders: &Folders, pieces: Receiver<PutFile>, replies: &Mutex
             end_install(widgets, director);
         }
         if let Some(answer) = answer
-            && let Err(e) = send_reply(replies, &answer)
+            && let Err(e) = upstream.send(&answer)
         {
             eprintln!("error: answering {}: {e:#}", put.target);
         }
