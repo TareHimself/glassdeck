@@ -1,4 +1,4 @@
-//! The `ui` object `widget.on_draw` gets: drawing calls, which only work while it runs.
+//! The `ui` object `script.on_draw` gets: drawing calls, which only work while it runs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,7 +68,7 @@ impl Ui {
                 commands.push(command);
                 Ok(())
             }
-            None => Err(mlua::Error::runtime(format!("ui:{method} only works inside widget.on_draw"))),
+            None => Err(mlua::Error::runtime(format!("ui:{method} only works inside script.on_draw"))),
         }
     }
 

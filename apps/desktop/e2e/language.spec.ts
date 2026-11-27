@@ -22,12 +22,12 @@ test("errors show as you type, before saving", async ({ page }) => {
 });
 
 test("typing a member access offers the server's completions", async ({ page }) => {
-  await typeAtEnd(page, "widget.");
+  await typeAtEnd(page, "script.");
   const suggestions = page.locator(".monaco-editor .suggest-widget");
   await expect(suggestions.getByText("on_draw")).toBeVisible();
   await expect(suggestions.getByText("every")).toBeVisible();
   await page.keyboard.press("Enter");
-  await expect(page.locator(".view-lines")).toContainText("widget.every");
+  await expect(page.locator(".view-lines")).toContainText("script.every");
 });
 
 test("an edit that doesn't parse holds the last working preview and stays out of the log", async ({ page }) => {

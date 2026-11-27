@@ -178,7 +178,7 @@ fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
 fn keyboard_script(new: &ValidNewWidget) -> String {
     let title = luau_string(&new.title);
     format!(
-        "local text = {title}\n\nwidget.on_draw(function(ui: Ui)\n    ui:text(text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend)\n"
+        "local text = {title}\n\nscript.on_draw(function(ui: Ui)\n    ui:text(text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend)\n"
     )
 }
 

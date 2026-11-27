@@ -305,7 +305,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
 type LspRequest = { id?: number; method: string; params?: Args };
 
-/** Enough of a language server for the editor's tests: a type error for a string given to a number, widget completions, a hover. */
+/** Enough of a language server for the editor's tests: a type error for a string given to a number, script completions, a hover. */
 function fakeLanguageServer(session: number, request: LspRequest) {
   const reply = (message: object) => window.setTimeout(() => void emit("lsp-message", { session, message: JSON.stringify({ jsonrpc: "2.0", ...message }) }));
   const params = request.params ?? {};

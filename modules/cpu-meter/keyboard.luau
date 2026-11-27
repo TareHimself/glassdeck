@@ -18,13 +18,13 @@ local function animate()
             shown = cpu
             animating = false
         else
-            widget.request_frame(step)
+            script.request_frame(step)
         end
     end
-    widget.request_frame(step)
+    script.request_frame(step)
 end
 
-widget.on_data(function(data: Data)
+script.on_data(function(data: Data)
     cpu = data.cpu
     memory = data.memory
     table.insert(history, data.cpu)
@@ -34,7 +34,7 @@ widget.on_data(function(data: Data)
     animate()
 end)
 
-widget.on_draw(function(ui: Ui)
+script.on_draw(function(ui: Ui)
     ui:text("CPU", { x = 16, y = 12, size = 16, color = "#ffffffb0" })
     ui:text(string.format("%d%%", math.round(shown)), { x = 16, y = 32, size = 36 })
     ui:text(string.format("RAM %d%%", math.round(memory)), {

@@ -392,8 +392,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-preview-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let folder = new_widget(&root);
-        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nwidget.on_data(function(data) text = data.label end)\nwidget.on_draw(function(ui) ui:text(text) end)\n".into() };
-        let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nhost.on_options(function(options) send({ label = options.label }) end)\n".into() };
+        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nscript.on_data(function(data) text = data.label end)\nscript.on_draw(function(ui) ui:text(text) end)\n".into() };
+        let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nscript.on_options(function(options) send({ label = options.label }) end)\n".into() };
         let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))\n".into() };
         let (cx, seen) = session();
         let values = serde_json::json!({ "label": "Hi" });
@@ -412,7 +412,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-preview-fail-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let folder = new_widget(&root);
-        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "widget.on_draw(function() error('boom') end)\n".into() };
+        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "script.on_draw(function() error('boom') end)\n".into() };
         let (cx, seen) = session();
         let mut running = show(&cx, "test", &folder, &[keyboard], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();
         assert!(matches!(step(&cx, &mut running), Drawn::Stopped));

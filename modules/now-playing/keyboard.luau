@@ -5,12 +5,12 @@ local cover = live.resource("cover")
 local title, artist, playing = "", "", false
 local progress: number? = nil
 
-widget.on_data(function(data: Data)
+script.on_data(function(data: Data)
     title, artist, playing = data.title or "", data.artist or "", data.playing == true
     progress = if data.position and data.duration then data.position / data.duration else nil
 end)
 
-widget.on_draw(function(ui: Ui)
+script.on_draw(function(ui: Ui)
     local h = ui.height
     local pad = h * 0.13
     ui:rect(0, 0, ui.width, h, { fill = "#1d1838c0", stroke = "#ffffff12", stroke_width = 2, radius = h * 0.11 })

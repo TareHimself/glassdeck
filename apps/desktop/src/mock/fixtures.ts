@@ -31,11 +31,11 @@ type Options = { seconds: boolean }
 
 local seconds = false
 
-widget.on_data(function(options: Options)
+script.on_data(function(options: Options)
     seconds = options.seconds
 end)
 
-widget.on_draw(function(ui: Ui)
+script.on_draw(function(ui: Ui)
     local label = \`{if seconds then "%H:%M:%S" else "%H:%M"}\`
     ui:text(os.date(label), { size = ui.height * 0.5 })
 end)

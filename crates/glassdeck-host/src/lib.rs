@@ -103,7 +103,7 @@ impl HostSide {
         self.options.as_ref().map_or(&NO_OPTIONS, |o| &o.first)
     }
 
-    /// `host.on_options(options, changed)`, or the options sent as they are.
+    /// `script.on_options(options, changed)`, or the options sent as they are.
     pub fn apply_options(&self, chosen: &Values, changed: Option<&BTreeSet<String>>) -> Result<()> {
         let first = self.first();
         let resolved = first.resolve(chosen);
@@ -118,7 +118,7 @@ impl HostSide {
                 let Some(on_options) = host.on_options.borrow().clone() else { return Ok(()) };
                 let lua = host.vm.lua();
                 let args = (options_table(lua, first, &resolved.values)?, changed_table(lua, first, changed)?);
-                host.vm.call::<()>(&on_options, args).context("in host.on_options")
+                host.vm.call::<()>(&on_options, args).context("in script.on_options")
             }
             Run::Forward { vm, slot } => {
                 if self.options.is_none() {
@@ -215,14 +215,14 @@ impl HostVm {
     }
 }
 
-/// `host.on_options(fn)`, beside `host.resource` when the package has resources.
+/// `script.on_options(fn)`: what this script does when the options are set.
 fn install_on_options(lua: &Lua, slot: &Rc<RefCell<Option<Function>>>) -> Result<()> {
     let globals = lua.globals();
-    let host: Table = match globals.get::<Value>("host").lua_context("reading host")? {
+    let script: Table = match globals.get::<Value>("script").lua_context("reading script")? {
         Value::Table(table) => table,
         _ => {
-            let table = lua.create_table().lua_context("creating host")?;
-            globals.set("host", &table).lua_context("installing host")?;
+            let table = lua.create_table().lua_context("creating script")?;
+            globals.set("script", &table).lua_context("installing script")?;
             table
         }
     };
@@ -231,13 +231,13 @@ fn install_on_options(lua: &Lua, slot: &Rc<RefCell<Option<Function>>>) -> Result
         .create_function(move |_, callback: Function| {
             let mut slot = registered.borrow_mut();
             if slot.is_some() {
-                return Err(mlua::Error::runtime("host.on_options was already called; register one function"));
+                return Err(mlua::Error::runtime("script.on_options was already called; register one function"));
             }
             *slot = Some(callback);
             Ok(())
         })
-        .lua_context("creating host.on_options")?;
-    host.set("on_options", register).lua_context("installing host.on_options")
+        .lua_context("creating script.on_options")?;
+    script.set("on_options", register).lua_context("installing script.on_options")
 }
 
 fn system_api(lua: &Lua, system: &SharedSystem) -> Result<Table> {

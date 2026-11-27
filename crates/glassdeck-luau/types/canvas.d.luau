@@ -1,6 +1,6 @@
 -- keyboard.luau in a canvas: holds the canvas's state and writes the shader's inputs. What the user can
 -- set lives in options.luau; the host half turns it into data, which arrives here in on_data.
--- Callbacks are registered with a call, canvas.on_frame(function(frame) ... end), so their parameters are typed.
+-- Callbacks are registered with a call, script.on_frame(function(frame) ... end), so their parameters are typed.
 -- `glassdeck pack` writes this beside inputs.d.luau, which declares `inputs` from the shader's [Inputs].
 -- Vectors come from Luau's own vector.create(x, y, z?, w?).
 
@@ -34,4 +34,4 @@ export type Canvas = {
     on_frame: (callback: (frame: Frame) -> ()) -> (),
 }
 
-declare canvas: Canvas
+declare script: Canvas

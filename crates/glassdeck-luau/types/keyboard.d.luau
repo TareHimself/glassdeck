@@ -1,5 +1,5 @@
 -- keyboard.luau: runs on the keyboard, draws in the widget's own rectangle.
--- Callbacks are registered on the injected `widget` table, widget.on_draw(function(ui) ... end), and the
+-- Callbacks are registered on the injected `script` table, script.on_draw(function(ui) ... end), and the
 -- script keeps its state in its own locals.
 -- Colors are "#rrggbb" or "#rrggbbaa". Coordinates are local: (0, 0) is the widget's top-left.
 
@@ -44,7 +44,7 @@ declare extern type Ui with
     width: number
     height: number
 
-    -- Drawing, only inside widget.on_draw
+    -- Drawing, only inside script.on_draw
     function text(self, text: string, options: TextOptions?): ()
     function rect(self, x: number, y: number, w: number, h: number, options: RectOptions?): ()
     function bar(self, fraction: number, options: BarOptions?): ()
@@ -63,7 +63,7 @@ export type Widget = {
     on_data: (callback: (data: any) -> ()) -> (),
     -- The widget was resized; it redraws after
     on_resize: (callback: (w: number, h: number) -> ()) -> (),
-    -- Before a hot reload; what it returns is widget.saved in the next run
+    -- Before a hot reload; what it returns is script.saved in the next run
     on_unload: (callback: () -> any) -> (),
     -- What on_unload returned before a hot reload; nil on a fresh start
     saved: any,
@@ -73,7 +73,7 @@ export type Widget = {
     request_frame: (callback: (dt: number) -> ()) -> (),
 }
 
-declare widget: Widget
+declare script: Widget
 
 -- What the host half sent with live.put; draws nothing until it arrives. Names are one word.
 declare live: { resource: (name: string) -> Resource }

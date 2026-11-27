@@ -418,7 +418,7 @@ mod tests {
         }}));
         wait_for(&rx, |v| v["id"] == 1);
         send(serde_json::json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
-        let text = "--!strict\nlocal count: number = \"three\"\nwidget.\n";
+        let text = "--!strict\nlocal count: number = \"three\"\nscript.\n";
         send(serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
             "textDocument": { "uri": script, "languageId": "luau", "version": 1, "text": text }
         }}));

@@ -1,5 +1,5 @@
 //! A canvas's `keyboard.luau`: it holds the canvas's state, takes what the host half sends in
-//! `canvas.on_data`, and writes the shader's inputs through the injected `inputs`. Writes are
+//! `script.on_data`, and writes the shader's inputs through the injected `inputs`. Writes are
 //! recorded, and the renderer uploads only what changed.
 
 use std::cell::RefCell;
@@ -27,7 +27,7 @@ pub struct CanvasScript {
     inputs: Rc<RefCell<Inputs>>,
 }
 
-/// What the script registered with `canvas.on_data(...)` and `canvas.on_frame(...)`.
+/// What the script registered with `script.on_data(...)` and `script.on_frame(...)`.
 #[derive(Default)]
 struct Callbacks {
     on_data: Option<Function>,
@@ -52,7 +52,7 @@ impl CanvasScript {
         }
         vm.seal()?;
         let lua = vm.lua();
-        let canvas = lua.create_table().lua_context("creating canvas")?;
+        let canvas = lua.create_table().lua_context("creating script")?;
         let state = Rc::new(RefCell::new(Inputs {
             kinds: inputs.iter().map(|f| (f.name.clone(), f.kind)).collect(),
             written: BTreeSet::new(),
@@ -66,16 +66,16 @@ impl CanvasScript {
                     let mut callbacks = registered.borrow_mut();
                     let slot = if name == "on_data" { &mut callbacks.on_data } else { &mut callbacks.on_frame };
                     if slot.is_some() {
-                        return Err(mlua::Error::runtime(format!("canvas.{name} was already called; register one function")));
+                        return Err(mlua::Error::runtime(format!("script.{name} was already called; register one function")));
                     }
                     *slot = Some(callback);
                     Ok(())
                 })
-                .lua_context("creating canvas")?;
-            canvas.raw_set(name, register).lua_context("creating canvas")?;
+                .lua_context("creating script")?;
+            canvas.raw_set(name, register).lua_context("creating script")?;
         }
         let globals = lua.globals();
-        globals.set("canvas", &canvas).lua_context("injecting canvas")?;
+        globals.set("script", &canvas).lua_context("injecting script")?;
         globals.set("inputs", inputs_table(lua, Rc::clone(&state))?).lua_context("injecting inputs")?;
         vm.load::<()>(source, "keyboard.luau")?;
         let frame = lua.create_table().lua_context("creating frame")?;
@@ -87,7 +87,7 @@ impl CanvasScript {
         let on_data = self.callbacks.borrow().on_data.clone();
         let Some(on_data) = on_data else { return Ok(()) };
         let data = decode(self.vm.lua(), payload)?;
-        self.vm.call::<()>(&on_data, data).context("in canvas.on_data")
+        self.vm.call::<()>(&on_data, data).context("in script.on_data")
     }
 
     pub fn frame(&self, time: f32, delta: f32, index: u32) -> Result<()> {
@@ -96,7 +96,7 @@ impl CanvasScript {
         for (key, value) in [("time", f64::from(time)), ("delta", f64::from(delta)), ("index", f64::from(index))] {
             self.frame.raw_set(key, value).lua_context("filling frame")?;
         }
-        self.vm.call::<()>(&on_frame, &self.frame).context("in canvas.on_frame")
+        self.vm.call::<()>(&on_frame, &self.frame).context("in script.on_frame")
     }
 
     /// The inputs written since the last call, each with its latest value.
@@ -213,8 +213,8 @@ mod tests {
     const CANVAS: &str = r##"
         inputs.night = color.hex("#ff8000")
         local speed = 0.5
-        canvas.on_data(function(data) speed = data.speed end)
-        canvas.on_frame(function(frame)
+        script.on_data(function(data) speed = data.speed end)
+        script.on_frame(function(frame)
             inputs.roseAt = drift(frame.time * speed, vector.create(0.5, 0.3), vector.create(0.1, 0.1), vector.create(1, 1))
         end)
     "##;
@@ -243,11 +243,11 @@ mod tests {
 
     #[test]
     fn wrong_names_and_types_are_errors_naming_the_input() {
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.nite = vector.create(1, 2, 3) end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("the shader has no input nite"));
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.night = 3 end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.night = 3 end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("input night takes a vector"));
-        let script = CanvasScript::load("canvas.on_frame(function() inputs.bands = { 1 } end)", &fields(), None).unwrap();
+        let script = CanvasScript::load("script.on_frame(function() inputs.bands = { 1 } end)", &fields(), None).unwrap();
         assert!(format!("{:#}", script.frame(0.0, 0.0, 0).unwrap_err()).contains("takes 2 numbers, not 1"));
     }
 
@@ -270,9 +270,9 @@ mod tests {
 
     #[test]
     fn callbacks_are_registered_once_with_a_function() {
-        assert!(CanvasScript::load("canvas.on_frame(3)", &fields(), None).is_err());
-        let twice = CanvasScript::load("canvas.on_data(function() end) canvas.on_data(function() end)", &fields(), None);
-        assert!(format!("{:#}", twice.err().unwrap()).contains("canvas.on_data was already called"));
+        assert!(CanvasScript::load("script.on_frame(3)", &fields(), None).is_err());
+        let twice = CanvasScript::load("script.on_data(function() end) script.on_data(function() end)", &fields(), None);
+        assert!(format!("{:#}", twice.err().unwrap()).contains("script.on_data was already called"));
     }
 
     #[test]

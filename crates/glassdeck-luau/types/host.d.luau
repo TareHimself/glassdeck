@@ -13,6 +13,10 @@ declare system: {
 declare host: {
     -- assets/host/<name>: stays on the host, so only host.luau has this table
     resource: (name: string) -> Resource,
+}
+
+-- This script: what it does when things happen to it
+declare script: {
     -- Called when the package starts and whenever the user changes an option. Options and Changed
     -- come from options.luau (empty when the package has none); see options.d.luau.
     on_options: (callback: (options: Options, changed: Changed) -> ()) -> (),
