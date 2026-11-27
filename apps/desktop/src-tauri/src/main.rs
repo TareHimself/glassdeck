@@ -4,14 +4,16 @@ mod backgrounds;
 mod canvas_preview;
 mod videos;
 mod glassdeckd;
+mod layout_preview;
 mod library;
 mod options;
 mod preview;
 
 use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};
 use canvas_preview::{CanvasPreview, CanvasUpdate};
+use layout_preview::{LayoutPreview, LayoutUpdate, PlacedSource};
 use videos::{Conversions, VideoBackground, VideoCut, VideoFacts, VideoUpdate};
-use glassdeck_api::{Status, Theme};
+use glassdeck_api::{Status, Streams, Theme, ThemeApplied, ThemePush};
 use glassdeck_package::PackageType;
 use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
 use library::{Dims, LibraryError, NewWidget, SourceFile, SourceEdit, WidgetSource, WidgetSummary};
@@ -38,6 +40,57 @@ async fn status(glassdeckd: State<'_, Glassdeckd>) -> Result<Status, GlassdeckdE
 #[specta::specta]
 async fn theme(glassdeckd: State<'_, Glassdeckd>) -> Result<Theme, GlassdeckdError> {
     glassdeckd.theme().await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn streams(glassdeckd: State<'_, Glassdeckd>) -> Result<Streams, GlassdeckdError> {
+    glassdeckd.streams().await
+}
+
+/// Why Apply didn't reach the keyboard.
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ApplyError {
+    /// A package couldn't be packed from the library
+    Library { error: LibraryError },
+    Glassdeckd { error: GlassdeckdError },
+}
+
+/// Where Apply leaves each package for glassdeckd to read, overwritten on every Apply.
+fn outbox() -> Result<PathBuf, LibraryError> {
+    let local = std::env::var_os("LOCALAPPDATA").ok_or(LibraryError::Io { reason: "LOCALAPPDATA isn't set".into() })?;
+    let folder = PathBuf::from(local).join("Glassdeck").join("outbox");
+    std::fs::create_dir_all(&folder).map_err(|e| LibraryError::Io { reason: format!("creating {}: {e}", folder.display()) })?;
+    Ok(folder)
+}
+
+/// Packs every package `theme` uses from the library, the built-in background aside, then makes it the active theme.
+#[tauri::command]
+#[specta::specta]
+async fn apply_theme(glassdeckd: State<'_, Glassdeckd>, theme: Theme) -> Result<ThemeApplied, ApplyError> {
+    let used = std::iter::once(theme.background.package.clone())
+        .filter(|id| id != glassdeck_proto::BUILT_IN_BACKGROUND)
+        .chain(theme.widgets.iter().map(|w| w.package.clone()))
+        .collect::<std::collections::BTreeSet<String>>();
+    let packages = in_library(move |root| {
+        let outbox = outbox()?;
+        let native = native_libraries()?;
+        let mut paths = std::collections::BTreeMap::new();
+        for id in used {
+            let (qualified, _) = library::package_folder(root, &id)?;
+            let out = outbox.join(qualified.file_name());
+            match qualified.package_type() {
+                PackageType::Widget => library::export_widget(root, &id, &out)?,
+                PackageType::Background => backgrounds::export_background(root, &id, &out, &native)?,
+            }
+            paths.insert(id, out.display().to_string());
+        }
+        Ok(paths)
+    })
+    .await
+    .map_err(|error| ApplyError::Library { error })?;
+    glassdeckd.put_theme(&ThemePush { theme, packages }).await.map_err(|error| ApplyError::Glassdeckd { error })
 }
 
 /// Runs a library call off the async runtime, with the library's folder.
@@ -67,6 +120,24 @@ async fn create_background(app: AppHandle, conversions: State<'_, Conversions>, 
         conversions.start(app, conversion);
     }
     Ok(made)
+}
+
+/// Runs every widget of the Overview's layout; their tiles arrive as `LayoutUpdate`s.
+#[tauri::command]
+#[specta::specta]
+async fn preview_layout(preview: State<'_, LayoutPreview>, widgets: Vec<PlacedSource>) -> Result<(), LibraryError> {
+    let layout = in_library(move |root| {
+        Ok(widgets.into_iter().map(|w| (library::widget_folder(root, &w.package).ok(), w)).collect::<Vec<_>>())
+    })
+    .await?;
+    preview.send(layout_preview::Command::Show(layout));
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn stop_layout(preview: State<'_, LayoutPreview>) {
+    preview.send(layout_preview::Command::Stop);
 }
 
 #[tauri::command]
@@ -379,6 +450,8 @@ fn bindings() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             status,
             theme,
+            streams,
+            apply_theme,
             list_widgets,
             create_widget,
             duplicate_package,
@@ -388,6 +461,8 @@ fn bindings() -> Builder<tauri::Wry> {
             list_backgrounds,
             create_background,
             canvas_template,
+            preview_layout,
+            stop_layout,
             video_facts,
             video_frame,
             read_video,
@@ -414,9 +489,10 @@ fn bindings() -> Builder<tauri::Wry> {
             preview_options,
             stop_preview,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
+        .constant("BUILT_IN_BACKGROUND", glassdeck_proto::BUILT_IN_BACKGROUND)
         .error_handling(ErrorHandlingMode::Result)
         // Option values are serde_json::Value, whose numbers JavaScript parses as doubles anyway.
         .dangerously_cast_bigints_to_number()
@@ -445,6 +521,7 @@ fn main() {
             bindings.mount_events(app);
             app.manage(Preview::start(app.handle().clone()));
             app.manage(Conversions::default());
+            app.manage(LayoutPreview::start(app.handle().clone()));
             app.manage(CanvasPreview::start(app.handle().clone(), native_libraries().ok()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

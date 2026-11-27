@@ -8,6 +8,9 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	status: (options?: InvokeOptions) => typedError<Status, GlassdeckdError>(__TAURI_INVOKE("status", undefined, options)),
 	theme: (options?: InvokeOptions) => typedError<Theme, GlassdeckdError>(__TAURI_INVOKE("theme", undefined, options)),
+	streams: (options?: InvokeOptions) => typedError<Streams, GlassdeckdError>(__TAURI_INVOKE("streams", undefined, options)),
+	/**  Packs every package `theme` uses from the library, the built-in background aside, then makes it the active theme. */
+	applyTheme: (theme: Theme, options?: InvokeOptions) => typedError<ThemeApplied, ApplyError>(__TAURI_INVOKE("apply_theme", { theme }, options)),
 	listWidgets: (options?: InvokeOptions) => typedError<WidgetSummary[], LibraryError>(__TAURI_INVOKE("list_widgets", undefined, options)),
 	createWidget: (widget: NewWidget, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("create_widget", { widget }, options)),
 	/**  Copies a widget or background; the copy's qualified id. */
@@ -18,6 +21,9 @@ export const commands = {
 	listBackgrounds: (options?: InvokeOptions) => typedError<BackgroundSummary[], LibraryError>(__TAURI_INVOKE("list_backgrounds", undefined, options)),
 	createBackground: (background: NewBackground, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("create_background", { background }, options)),
 	canvasTemplate: (options?: InvokeOptions) => __TAURI_INVOKE<SourceFile[]>("canvas_template", undefined, options),
+	/**  Runs every widget of the Overview's layout; their tiles arrive as `LayoutUpdate`s. */
+	previewLayout: (widgets: PlacedSource[], options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_layout", { widgets }, options)),
+	stopLayout: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_layout", undefined, options),
 	/**  Asks Media Foundation what a video file the user chose is, and allows it for playback in the app. */
 	videoFacts: (path: string, options?: InvokeOptions) => typedError<VideoFacts, LibraryError>(__TAURI_INVOKE("video_facts", { path }, options)),
 	/**  The frame at `seconds` of a video file, as a base64 JPEG. */
@@ -62,11 +68,14 @@ export const commands = {
 export const events = {
 	canvasUpdate: makeEvent<CanvasUpdate, CanvasUpdate>("canvas-update"),
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
+	layoutUpdate: makeEvent<LayoutUpdate, LayoutUpdate>("layout-update"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
 	videoUpdate: makeEvent<VideoUpdate, VideoUpdate>("video-update"),
 };
 
 /* Constants */
+export const BUILT_IN_BACKGROUND = "background.local.glassdeck.gradient" as const;
+
 export const GRID = 8 as const;
 
 export const WIDGET_AREA = {"h":248,"w":1896} as const;
@@ -77,6 +86,11 @@ export type ApiError = {
 	/**  Says what went wrong, for showing to the user as is */
 	error: string,
 };
+
+/**  Why Apply didn't reach the keyboard. */
+export type ApplyError = 
+/**  A package couldn't be packed from the library */
+{ kind: "library"; error: LibraryError } | { kind: "glassdeckd"; error: GlassdeckdError };
 
 export type BackgroundKind = "canvas" | "video";
 
@@ -166,6 +180,10 @@ export type InputReading = {
 	values: (number | null)[],
 };
 
+export type LayoutUpdate = { state: "tile"; index: number; width: number; height: number; png: string } | 
+/**  The widget isn't running: it isn't in the library, or it stopped on an error */
+{ state: "stopped"; index: number; reason: string };
+
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
 /**  A background's video file that can't be used */
 { kind: "bad_video"; reason: string } | 
@@ -239,9 +257,28 @@ export type PanelRect = {
 	h: number | null,
 };
 
+/**  One placed widget as the Overview's draft has it. */
+export type PlacedSource = {
+	/**  Its qualified id */
+	package: string,
+	size: Dims,
+	values: { [key in string]: Value },
+};
+
 export type PreviewUpdate = { state: "frame"; width: number; height: number; png: string } | 
 /**  Nothing to show: the widget didn't start, or stopped on an error */
 { state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+
+/**  Where a theme's stream got to by the time `PUT /theme` answered. */
+export type ShowState = "shown" | 
+/**  A stream starts once the keyboard connects */
+"waiting_for_keyboard" | 
+/**  A stream starts once a large upload is answered */
+"after_upload" | 
+/**  A stream is taking a while to start (web pages are the slow ones) */
+"starting" | 
+/**  The stream isn't there now, such as an unplugged monitor; the theme keeps it for when it is */
+"unavailable";
 
 /**  How a widget may be sized when placed. */
 export type Sizing = { kind: "fixed"; size: Dims } | { kind: "range"; size: Dims; min: Dims; max: Dims } | 
@@ -265,6 +302,18 @@ export type Status = {
 	stream: StreamStatus,
 };
 
+export type StreamEntry = {
+	name: string,
+	mode: StreamMode,
+	/**  What provides it, such as `built in` */
+	from: string,
+	shown: boolean,
+};
+
+export type StreamMode = 
+/**  Shown on arrival, as with mirroring */
+"live";
+
 export type StreamState = "idle" | "running" | 
 /**  The Link dropped mid-stream; it starts again once the keyboard is back */
 "waiting_for_keyboard" | "paused_for_upload";
@@ -280,6 +329,10 @@ export type StreamStatus = {
 	last_ended: Ended | null,
 };
 
+export type Streams = {
+	streams: StreamEntry[],
+};
+
 /**
  *  One whole setup: the background, the stream to show when it's available, and the widgets. Each
  *  entry names a package by id and carries its own chosen options.
@@ -290,6 +343,12 @@ export type Theme = {
 	/**  Shown whenever it's available; otherwise the keyboard plays `background` */
 	stream?: string | null,
 	widgets?: ThemeWidget[],
+};
+
+/**  What `PUT /theme` did. */
+export type ThemeApplied = {
+	/**  Where the theme's stream got to, when it has one */
+	stream: ShowState | null,
 };
 
 export type ThemeBackground = {

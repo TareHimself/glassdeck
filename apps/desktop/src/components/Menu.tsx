@@ -7,8 +7,8 @@ export function Menu({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
   return <div role="menu" className={classes(styles.menu, className)} {...rest} />;
 }
 
-export function MenuItem({ danger, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
-  return <button type="button" role="menuitem" className={styles.item} data-danger={danger || undefined} {...rest} />;
+export function MenuItem({ danger, className, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
+  return <button type="button" role="menuitem" className={classes(styles.item, className)} data-danger={danger || undefined} {...rest} />;
 }
 
 export function MenuLink(props: LinkProps) {

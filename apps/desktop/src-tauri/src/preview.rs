@@ -82,10 +82,10 @@ impl Preview {
 }
 
 /// Where the preview's frames and log lines go.
-type Out = Rc<dyn Fn(PreviewUpdate)>;
+pub(crate) type Out = Rc<dyn Fn(PreviewUpdate)>;
 
 /// What the preview thread holds for the whole session.
-struct Session {
+pub(crate) struct Session {
     out: Out,
     font: fontdue::Font,
     system: SharedSystem,
@@ -93,13 +93,13 @@ struct Session {
     scratch: PathBuf,
 }
 
-struct Running {
-    instance: Instance,
-    host: Option<HostSide>,
-    live: LiveCache,
+pub(crate) struct Running {
+    pub(crate) instance: Instance,
+    pub(crate) host: Option<HostSide>,
+    pub(crate) live: LiveCache,
     /// The keyboard half's error, once logged, so it's logged once
-    reported: Option<String>,
-    last_frame: Option<Instant>,
+    pub(crate) reported: Option<String>,
+    pub(crate) last_frame: Option<Instant>,
 }
 
 fn run(app: AppHandle, rx: Receiver<Command>) {
@@ -117,7 +117,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
         let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, Instant::now()));
         match rx.recv_timeout(wait) {
             Ok(Command::Show { folder, files, size, values }) => {
-                running = match show(&cx, &folder, &files, size, &values) {
+                running = match show(&cx, EDITOR_SLOT, &folder, &files, size, &values) {
                     Ok(started) => Some(started),
                     Err(e) => {
                         cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
@@ -141,13 +141,17 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(r) = &mut running {
-            step(&cx, r);
+            match step(&cx, r) {
+                Drawn::Nothing => {}
+                Drawn::Frame { width, height, png } => (cx.out)(PreviewUpdate::Frame { width, height, png }),
+                Drawn::Stopped => (cx.out)(PreviewUpdate::Cleared),
+            }
         }
     }
 }
 
 impl Session {
-    fn new(out: Out) -> Result<Self> {
+    pub(crate) fn new(out: Out) -> Result<Self> {
         let font = glassdeck_widget::load_font(None)?;
         let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
             out(PreviewUpdate::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
@@ -169,7 +173,7 @@ impl Session {
     }
 }
 
-fn wait_for(running: &Running, now: Instant) -> Duration {
+pub(crate) fn wait_for(running: &Running, now: Instant) -> Duration {
     let until = |at: Instant| at.saturating_duration_since(now);
     let keyboard = running.instance.next_timer().map(until);
     let host = running.host.as_ref().and_then(HostSide::next_timer).map(until);
@@ -177,9 +181,17 @@ fn wait_for(running: &Running, now: Instant) -> Duration {
     [keyboard, host, frame].into_iter().flatten().min().unwrap_or(IDLE)
 }
 
-/// Runs what's due on both halves, hands the host half's output to the keyboard half, and sends a frame
-/// if one was drawn.
-fn step(cx: &Session, r: &mut Running) {
+/// What one step of a widget gave.
+pub(crate) enum Drawn {
+    Nothing,
+    Frame { width: u32, height: u32, png: String },
+    /// The keyboard half stopped on an error, now logged
+    Stopped,
+}
+
+/// Runs what's due on both halves, hands the host half's output to the keyboard half, and returns the
+/// frame if one was drawn.
+pub(crate) fn step(cx: &Session, r: &mut Running) -> Drawn {
     let now = Instant::now();
     if let Some(host) = &r.host
         && let Err(e) = host.run_timers(now)
@@ -193,18 +205,20 @@ fn step(cx: &Session, r: &mut Running) {
     r.instance.tick(now, frame_dt);
     let tile = r.instance.draw(&cx.font, &r.live);
     if let Some(error) = r.instance.error() {
-        if r.reported.as_deref() != Some(error) {
-            r.reported = Some(error.to_owned());
-            cx.log(LogSource::Keyboard, LogLevel::Error, error.to_owned());
-            (cx.out)(PreviewUpdate::Cleared);
+        if r.reported.as_deref() == Some(error) {
+            return Drawn::Nothing;
         }
-        return;
+        r.reported = Some(error.to_owned());
+        cx.log(LogSource::Keyboard, LogLevel::Error, error.to_owned());
+        return Drawn::Stopped;
     }
-    if let Some(tile) = tile {
-        let Placement { w, h, .. } = r.instance.placement;
-        match png_of(&tile.pixels, w, h) {
-            Ok(png) => (cx.out)(PreviewUpdate::Frame { width: w, height: h, png }),
-            Err(e) => eprintln!("preview: encoding a frame: {e:#}"),
+    let Some(tile) = tile else { return Drawn::Nothing };
+    let Placement { w, h, .. } = r.instance.placement;
+    match png_of(&tile.pixels, w, h) {
+        Ok(png) => Drawn::Frame { width: w, height: h, png },
+        Err(e) => {
+            cx.log(LogSource::Keyboard, LogLevel::Error, format!("encoding a frame: {e:#}"));
+            Drawn::Nothing
         }
     }
 }
@@ -228,7 +242,7 @@ fn deliver(cx: &Session, r: &mut Running) {
     }
 }
 
-fn apply_options(cx: &Session, r: &mut Running, values: &serde_json::Map<String, serde_json::Value>) {
+pub(crate) fn apply_options(cx: &Session, r: &mut Running, values: &serde_json::Map<String, serde_json::Value>) {
     let Some(host) = &r.host else { return };
     let chosen = read_values("preview", host.first(), values.iter());
     if let Err(e) = host.apply_options(&chosen, None) {
@@ -236,9 +250,20 @@ fn apply_options(cx: &Session, r: &mut Running, values: &serde_json::Map<String,
     }
 }
 
-/// Packs the widget folder with the editor's unsaved files over it, and starts both halves at `size`.
-fn show(cx: &Session, folder: &Path, files: &[SourceFile], size: Dims, values: &serde_json::Map<String, serde_json::Value>) -> Result<Running> {
-    let source = cx.scratch.join("source");
+/// The widget editor's scratch folder; the Overview gives each placed widget its own.
+const EDITOR_SLOT: &str = "editor";
+
+/// Packs the widget folder with `files` over it, in its own `slot` of the scratch folder, and starts both
+/// halves at `size`.
+pub(crate) fn show(
+    cx: &Session,
+    slot: &str,
+    folder: &Path,
+    files: &[SourceFile],
+    size: Dims,
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Running> {
+    let source = cx.scratch.join(slot).join("source");
     if source.exists() {
         fs::remove_dir_all(&source).with_context(|| format!("clearing {}", source.display()))?;
     }
@@ -246,7 +271,7 @@ fn show(cx: &Session, folder: &Path, files: &[SourceFile], size: Dims, values: &
     for file in files {
         fs::write(source.join(&file.name), &file.text).with_context(|| format!("writing {}", file.name))?;
     }
-    let deck = cx.scratch.join("preview.deck");
+    let deck = cx.scratch.join(slot).join("preview.deck");
     pack_folder(&source, &deck)?;
     let package = Rc::new(Package::open(&deck)?);
     let id: QualifiedId = package.id().clone();
@@ -337,12 +362,12 @@ mod tests {
         let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))\n".into() };
         let (cx, seen) = session();
         let values = serde_json::json!({ "label": "Hi" });
-        let mut running = show(&cx, &folder, &[keyboard, host, options], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
-        step(&cx, &mut running);
+        let mut running = show(&cx, "test", &folder, &[keyboard, host, options], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
+        let drawn = step(&cx, &mut running);
+        assert!(matches!(drawn, Drawn::Frame { width: 320, .. }), "a frame was drawn");
         let seen = seen.borrow();
         let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewUpdate::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
         assert_eq!(prints, ["host up", "drawn by\tkeyboard"]);
-        assert!(seen.iter().any(|u| matches!(u, PreviewUpdate::Frame { width: 320, .. })), "a frame was drawn");
         assert!(running.host.is_some());
         fs::remove_dir_all(&root).unwrap();
     }
@@ -354,14 +379,13 @@ mod tests {
         let folder = new_widget(&root);
         let keyboard = SourceFile { name: "keyboard.luau".into(), text: "widget.on_draw(function() error('boom') end)\n".into() };
         let (cx, seen) = session();
-        let mut running = show(&cx, &folder, &[keyboard], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();
-        step(&cx, &mut running);
-        step(&cx, &mut running);
+        let mut running = show(&cx, "test", &folder, &[keyboard], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();
+        assert!(matches!(step(&cx, &mut running), Drawn::Stopped));
+        assert!(matches!(step(&cx, &mut running), Drawn::Nothing), "a stop is reported once");
         let seen = seen.borrow();
         let errors = seen.iter().filter(|u| matches!(u, PreviewUpdate::Log { level: LogLevel::Error, text, .. } if text.contains("boom"))).count();
         assert_eq!(errors, 1);
-        assert!(seen.iter().any(|u| matches!(u, PreviewUpdate::Cleared)));
-        assert!(!seen.iter().any(|u| matches!(u, PreviewUpdate::Frame { .. })), "no error tile in the preview");
+
         fs::remove_dir_all(&root).unwrap();
     }
 
