@@ -32,11 +32,23 @@ pub enum LspServer {
 #[serde(transparent)]
 pub struct LspSession(u32);
 
-/// A started server: its session, and the `file://` URI of the folder it works in, which documents sit under.
+/// A started server: its session, the `file://` URI of the folder it works in (documents sit under it),
+/// and the settings to answer its `workspace/configuration` requests with, by section.
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct LspStarted {
     pub session: LspSession,
     pub root: String,
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What `server` asks the editor for: slangd finds the `glassdeck` module in `.glassdeck/`.
+pub fn settings(server: LspServer, folder: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let mut settings = serde_json::Map::new();
+    if server == LspServer::Slang {
+        let types = folder.join(TYPES_FOLDER).to_string_lossy().into_owned();
+        settings.insert("slang.additionalSearchPaths".into(), serde_json::json!([types]));
+    }
+    settings
 }
 
 /// `path` as a `file://` URI, the form LSP names documents and folders by.
@@ -422,6 +434,66 @@ mod tests {
         let items = completion["result"]["items"].as_array().or_else(|| completion["result"].as_array()).cloned().unwrap_or_default();
         let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
         assert!(labels.contains(&"on_draw") && labels.contains(&"every"), "the widget API from keyboard.d.luau: {labels:?}");
+        sessions.stop(session).unwrap();
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn slangd_finds_the_glassdeck_module_through_its_settings() {
+        let native = native();
+        let folder = std::env::temp_dir().join(format!("glassdeck-slangd-test-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join(TYPES_FOLDER)).unwrap();
+        std::fs::write(folder.join(TYPES_FOLDER).join("glassdeck.slang"), include_str!("../../../../crates/glassdeck-slang/slang/glassdeck.slang")).unwrap();
+        let Ok(launch) = launch(LspServer::Slang, PackageType::Background, &folder, &native) else {
+            eprintln!("skipped: slangd isn't built in {} (run native/build.py)", native.display());
+            return;
+        };
+        let settings = settings(LspServer::Slang, &folder);
+        let (sessions, rx) = sessions();
+        let session = sessions.start(&launch).unwrap();
+        let root = file_uri(&folder);
+        let canvas = format!("{root}/canvas.slang");
+        let send = |value: serde_json::Value| sessions.send(session, &value.to_string()).unwrap();
+        // Answers the server's settings requests the way the editor's client does, until `wanted` arrives
+        let answer_until = |wanted: &dyn Fn(&serde_json::Value) -> bool| -> serde_json::Value {
+            loop {
+                let message = wait_for(&rx, |_| true);
+                if message["method"] == "workspace/configuration" {
+                    let sections = message["params"]["items"].as_array().unwrap().iter().map(|i| settings.get(i["section"].as_str().unwrap_or("")).cloned().unwrap_or(serde_json::Value::Null));
+                    send(serde_json::json!({ "jsonrpc": "2.0", "id": message["id"], "result": sections.collect::<Vec<_>>() }));
+                } else if message.get("method").is_some() && message.get("id").is_some() {
+                    send(serde_json::json!({ "jsonrpc": "2.0", "id": message["id"], "result": null }));
+                } else if wanted(&message) {
+                    return message;
+                }
+            }
+        };
+
+        send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "processId": null, "rootUri": root, "workspaceFolders": [{ "uri": root, "name": "canvas" }],
+            "capabilities": { "workspace": { "configuration": true }, "textDocument": { "completion": {} } }
+        }}));
+        answer_until(&|v| v["id"] == 1);
+        send(serde_json::json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+        let text = "import glassdeck;\n[Canvas]\nhalf4 c(Pixel p) {\n    \n    return half4(0);\n}\n";
+        send(serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": canvas, "languageId": "slang", "version": 1, "text": text }
+        }}));
+        // slangd applies its settings and loads imports in the background, answering from what it has so far
+        let mut labels = Vec::new();
+        for id in 2..60 {
+            send(serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "textDocument/completion", "params": {
+                "textDocument": { "uri": canvas }, "position": { "line": 3, "character": 4 }
+            }}));
+            let completion = answer_until(&|v| v["id"] == id);
+            let items = completion["result"]["items"].as_array().or_else(|| completion["result"].as_array()).cloned().unwrap_or_default();
+            labels = items.iter().filter_map(|i| i["label"].as_str().map(str::to_owned)).collect();
+            if labels.iter().any(|l| l == "Frame") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        assert!(labels.iter().any(|l| l == "Frame") && labels.iter().any(|l| l == "CanvasAttribute"), "the glassdeck module's types: {labels:?}");
         sessions.stop(session).unwrap();
         let _ = std::fs::remove_dir_all(folder);
     }

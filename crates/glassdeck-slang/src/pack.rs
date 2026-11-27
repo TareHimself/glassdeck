@@ -129,6 +129,8 @@ fn write_types(folder: &Path, types: &Types) -> Result<()> {
         ("current.d.luau", definitions::CURRENT),
         ("common.d.luau", definitions::COMMON),
         ("host.d.luau", definitions::HOST),
+        // For slangd, which finds `import glassdeck;` through its search path
+        ("glassdeck.slang", API_MODULE),
     ];
     for (name, text) in files {
         let path = folder.join(name);

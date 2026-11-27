@@ -167,7 +167,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   preview_resize: () => undefined,
   preview_options: () => undefined,
   stop_preview: () => undefined,
-  lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package" }),
+  lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package", settings: {} }),
   lsp_send: ({ session, message }) => {
     fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);
     return null;

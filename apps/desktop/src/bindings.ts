@@ -248,10 +248,14 @@ export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | "slang"
 
 export type LspSession = number;
 
-/**  A started server: its session, and the `file://` URI of the folder it works in, which documents sit under. */
+/**
+ *  A started server: its session, the `file://` URI of the folder it works in (documents sit under it),
+ *  and the settings to answer its `workspace/configuration` requests with, by section.
+ */
 export type LspStarted = {
 	session: LspSession,
 	root: string,
+	settings: { [key in string]: Value },
 };
 
 export type NewBackground = {

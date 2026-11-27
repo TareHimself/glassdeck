@@ -55,6 +55,7 @@ export class LanguageClient {
   private constructor(
     readonly session: LspSession,
     readonly root: string,
+    private readonly settings: Partial<Record<string, unknown>>,
   ) {}
 
   /** Starts the server and completes LSP's handshake. */
@@ -62,7 +63,7 @@ export class LanguageClient {
     LanguageClient.listen();
     const started = await commands.lspStart(server, packageId);
     if (started.status === "error") throw new Error(describeLspError(started.error));
-    const client = new LanguageClient(started.data.session, started.data.root);
+    const client = new LanguageClient(started.data.session, started.data.root, started.data.settings);
     LanguageClient.live.set(client.session, client);
     await client.request("initialize", {
       processId: null,
@@ -136,9 +137,10 @@ export class LanguageClient {
     else pending?.resolve(message.result);
   }
 
-  /** Requests the server makes of the editor; this editor has no settings or UI for them. */
+  /** Requests the server makes of the editor: settings come from the app; the rest needs no answer. */
   private answerServerRequest(id: number | string, method: string, params: Json) {
-    const result = method === "workspace/configuration" ? ((params.items as unknown[] | undefined) ?? []).map(() => null) : null;
+    const sections = ((params.items as { section?: string }[] | undefined) ?? []).map((item) => item.section ?? "");
+    const result = method === "workspace/configuration" ? sections.map((section) => this.settings[section] ?? null) : null;
     this.send({ jsonrpc: "2.0", id, result });
   }
 

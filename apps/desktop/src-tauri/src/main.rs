@@ -275,7 +275,7 @@ async fn lsp_start(sessions: State<'_, lsp::Sessions>, server: lsp::LspServer, i
     let (id, folder) = in_library(move |root| library::package_folder(root, &id)).await.map_err(|error| lsp::LspError::Library { error })?;
     let native = native_libraries().map_err(|error| lsp::LspError::Library { error })?;
     let session = sessions.start(&lsp::launch(server, id.package_type(), &folder, &native)?)?;
-    Ok(lsp::LspStarted { session, root: lsp::file_uri(&folder) })
+    Ok(lsp::LspStarted { session, root: lsp::file_uri(&folder), settings: lsp::settings(server, &folder) })
 }
 
 /// Sends one JSON-RPC message to a running language server.
