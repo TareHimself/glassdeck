@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         let size = (picture.width, picture.height);
         let offscreen = Offscreen::new(size)?;
         ImageProgram::new(&offscreen.gl, &picture)?.draw(&offscreen.gl, offscreen.framebuffer(), size);
-        let rgba: Vec<u8> = offscreen.read_rgb().chunks_exact(size.0 as usize).rev().flatten().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+        let rgba: Vec<u8> = offscreen.read_rgb().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
         return std::fs::write(&path, rgba).with_context(|| format!("writing {}", path.display()));
     }
     let files = match &cli.canvas {
@@ -57,10 +57,8 @@ fn main() -> anyhow::Result<()> {
     println!("glassdeck-gpu: {} at {}x{}", offscreen.renderer_name(), size.0, size.1);
     let mut canvas = CanvasProgram::new(&offscreen.gl, files, None)?;
     canvas.draw(&offscreen.gl, offscreen.framebuffer(), size, 10.0)?;
-    // Bottom row first, as the keyboard's snapshots come out of glReadPixels, so the two compare directly.
-    let pixels = offscreen.read_rgb();
-    let rgba: Vec<u8> =
-        pixels.chunks_exact(size.0 as usize).rev().flatten().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+    // Fragment row 0 first, as the keyboard's snapshots come out of glReadPixels, so the two compare directly.
+    let rgba: Vec<u8> = offscreen.read_rgb().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
     std::fs::write(&path, rgba).with_context(|| format!("writing {}", path.display()))
 }
 

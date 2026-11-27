@@ -13,7 +13,7 @@ half4 spectrum(Pixel p, Inputs i) {
     int band = min(int(x), BANDS - 1);
     float within = frac(x);
     float level = i.levels[band];
-    float height = p.uv.y;
+    float height = 1.0 - p.uv.y;
 
     float column = smoothstep(0.06, 0.12, within) * (1.0 - smoothstep(0.88, 0.94, within));
     float bar = column * (1.0 - smoothstep(level - 0.006, level + 0.006, height));
@@ -25,7 +25,7 @@ half4 spectrum(Pixel p, Inputs i) {
     half h = half(height);
     half3 tint = h < 0.5h ? lerp(low, mid, h * 2.0h) : lerp(mid, high, h * 2.0h - 1.0h);
 
-    half3 c = lerp(half3(0.05h, 0.03h, 0.11h), half3(0.01h, 0.01h, 0.03h), half(p.uv.y));
+    half3 c = lerp(half3(0.01h, 0.01h, 0.03h), half3(0.05h, 0.03h, 0.11h), half(p.uv.y));
     c += tint * half(halo * 0.35);
     c = lerp(c, tint, half(bar));
     return half4(dither(c, p), 1);

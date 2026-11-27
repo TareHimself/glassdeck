@@ -111,7 +111,8 @@ impl Offscreen {
         unsafe { self.gl.get_parameter_string(glow::RENDERER) }
     }
 
-    /// The last frame as 0RGB pixels, top row first.
+    /// The last frame as 0RGB pixels, fragment row 0 first: the order the keyboard scans a buffer out,
+    /// so row 0 is the top of the picture there and here alike.
     pub fn read_rgb(&self) -> Vec<u32> {
         let (w, h) = (self.size.0 as usize, self.size.1 as usize);
         let mut rgba = vec![0u8; w * h * 4];
@@ -120,7 +121,7 @@ impl Offscreen {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.framebuffer));
             self.gl.read_pixels(0, 0, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut rgba)));
         }
-        rgba.chunks_exact(w * 4).rev().flat_map(|row| row.as_chunks::<4>().0.iter().map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))).collect()
+        rgba.chunks_exact(w * 4).flat_map(|row| row.as_chunks::<4>().0.iter().map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))).collect()
     }
 }
 

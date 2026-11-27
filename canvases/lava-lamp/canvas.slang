@@ -24,8 +24,8 @@ half4 lava(Pixel p) {
     float body = smoothstep(0.92, 1.08, f);
     float rim = smoothstep(0.45, 1.0, f) * (1.0 - body);
 
-    half3 deep = lerp(half3(0.09h, 0.02h, 0.12h), half3(0.03h, 0.01h, 0.06h), half(p.uv.y));
-    half3 hot = lerp(half3(1.0h, 0.55h, 0.12h), half3(0.95h, 0.12h, 0.38h), half(p.uv.y));
+    half3 deep = lerp(half3(0.03h, 0.01h, 0.06h), half3(0.09h, 0.02h, 0.12h), half(p.uv.y));
+    half3 hot = lerp(half3(0.95h, 0.12h, 0.38h), half3(1.0h, 0.55h, 0.12h), half(p.uv.y));
     half3 c = deep + hot * half(saturate(f * 0.12));
     c = lerp(c, hot * 0.55h, half(rim * 0.8));
     c = lerp(c, hot * half(0.85 + 0.15 * saturate(f - 1.0)), half(body));

@@ -104,8 +104,7 @@ mod tests {
         let offscreen = Offscreen::new((width, height)).unwrap();
         ImageProgram::new(&offscreen.gl, &picture).unwrap().draw(&offscreen.gl, offscreen.framebuffer(), (width, height));
         let pixels = offscreen.read_rgb();
-        // read_rgb puts the last fragment row first; the keyboard scans fragment row 0 out at the top.
-        let fragment_row = |row: usize, x: usize| pixels[(height as usize - 1 - row) * width as usize + x];
+        let fragment_row = |row: usize, x: usize| pixels[row * width as usize + x];
         let red = |p: u32| (p >> 16) as u8 > 200 && (p as u8) < 60;
         let blue = |p: u32| (p as u8) > 200 && ((p >> 16) as u8) < 60;
         assert!(red(fragment_row(2, 32)), "the picture's top row is fragment row 0: {:#08x}", fragment_row(2, 32));

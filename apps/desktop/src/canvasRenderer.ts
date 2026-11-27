@@ -48,6 +48,8 @@ export class CanvasRenderer {
     if (!gl) throw new Error("this webview has no WebGL2");
     this.gl = gl;
     gl.bindVertexArray(gl.createVertexArray());
+    // The keyboard scans fragment row 0 out at the top, but a canvas shows it at the bottom.
+    canvas.style.transform = "scaleY(-1)";
   }
 
   /** A new shader for a new run; inputs start unset until its first frame writes them. */
