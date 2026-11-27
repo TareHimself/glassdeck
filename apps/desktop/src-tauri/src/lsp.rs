@@ -1,0 +1,321 @@
+//! Language servers for the editors. Each runs as a child process speaking LSP over stdio; this relays
+//! its JSON-RPC messages to the webview and back unchanged, and knows nothing about any language.
+
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+use specta::Type;
+
+use crate::library::LibraryError;
+
+/// Which server an editor tab talks to. Each Luau script kind has its own, because each runs with
+/// different globals and luau-lsp takes definition files per server, not per file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LspServer {
+    LuauKeyboard,
+    LuauHost,
+    LuauOptions,
+    Slang,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct LspSession(u32);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LspError {
+    /// The server isn't installed beside the app, or wouldn't start
+    Unavailable { reason: String },
+    /// The package the editor asked about can't be found in the library
+    Library { error: LibraryError },
+    /// The session has stopped, or never existed
+    NoSession { session: LspSession },
+    Io { reason: String },
+}
+
+/// One JSON-RPC message from a server.
+#[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+pub struct LspMessage {
+    pub session: LspSession,
+    pub message: String,
+}
+
+/// A server's process ended; its session is gone.
+#[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+pub struct LspExited {
+    pub session: LspSession,
+    pub reason: String,
+}
+
+/// What the sessions report, for the app to emit.
+#[derive(Clone, Debug)]
+pub enum Output {
+    Message(LspMessage),
+    Exited(LspExited),
+}
+
+/// How to run a server: its program, arguments, and the folder it works in.
+#[derive(Clone, Debug)]
+pub struct Launch {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub folder: PathBuf,
+}
+
+/// The program for `server`, from the native libraries folder, working in the package's `folder`.
+pub fn launch(server: LspServer, folder: &Path, native: &Path) -> Result<Launch, LspError> {
+    let (name, args): (&str, &[&str]) = match server {
+        LspServer::LuauKeyboard | LspServer::LuauHost | LspServer::LuauOptions => ("luau-lsp", &["lsp"]),
+        LspServer::Slang => ("slangd", &[]),
+    };
+    let program = native.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    if !program.is_file() {
+        return Err(LspError::Unavailable { reason: format!("{name} isn't installed in {}", native.display()) });
+    }
+    Ok(Launch { program, args: args.iter().map(OsString::from).collect(), folder: folder.to_path_buf() })
+}
+
+/// LSP's base protocol: each message is `Content-Length: N`, a blank line, then N bytes of JSON.
+pub mod frame {
+    use super::*;
+
+    pub fn encode(message: &str) -> Vec<u8> {
+        let mut out = format!("Content-Length: {}\r\n\r\n", message.len()).into_bytes();
+        out.extend_from_slice(message.as_bytes());
+        out
+    }
+
+    /// The next message, or `None` when the stream ends between messages.
+    pub fn read(reader: &mut impl BufRead) -> io::Result<Option<String>> {
+        let mut length = None;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                return match length {
+                    None => Ok(None),
+                    Some(_) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the stream ended inside a message's headers")),
+                };
+            }
+            let header = line.trim_end_matches(['\r', '\n']);
+            if header.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':')
+                && name.trim().eq_ignore_ascii_case("content-length")
+            {
+                let parsed = value.trim().parse::<usize>().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Content-Length {value:?}: {e}")))?;
+                length = Some(parsed);
+            }
+        }
+        let length = length.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a message without Content-Length"))?;
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        String::from_utf8(body).map(Some).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+struct Running {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Every running server, by session.
+pub struct Sessions {
+    next: AtomicU32,
+    running: Arc<Mutex<HashMap<LspSession, Running>>>,
+    out: Arc<dyn Fn(Output) + Send + Sync>,
+}
+
+impl Sessions {
+    pub fn new(out: impl Fn(Output) + Send + Sync + 'static) -> Self {
+        Self { next: AtomicU32::new(1), running: Arc::default(), out: Arc::new(out) }
+    }
+
+    /// Starts the server; its messages arrive as `Output::Message` until `Output::Exited`.
+    pub fn start(&self, launch: &Launch) -> Result<LspSession, LspError> {
+        let mut command = Command::new(&launch.program);
+        command.args(&launch.args).current_dir(&launch.folder).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        hide_console(&mut command);
+        let mut child = command.spawn().map_err(|e| LspError::Unavailable { reason: format!("starting {}: {e}", launch.program.display()) })?;
+        let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+            unreachable!("all three pipes were asked for");
+        };
+        let session = LspSession(self.next.fetch_add(1, Ordering::Relaxed));
+        self.lock().insert(session, Running { child, stdin });
+        let name = launch.program.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let (running, out) = (Arc::clone(&self.running), Arc::clone(&self.out));
+        let spawned = std::thread::Builder::new().name(format!("lsp {name} {}", session.0)).spawn(move || relay(session, stdout, &running, &*out));
+        if let Err(e) = spawned {
+            self.lock().remove(&session);
+            return Err(LspError::Io { reason: format!("starting the reader thread: {e}") });
+        }
+        let _ = std::thread::Builder::new().name(format!("lsp {name} {} stderr", session.0)).spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("{name} ({}): {line}", session.0);
+            }
+        });
+        Ok(session)
+    }
+
+    pub fn send(&self, session: LspSession, message: &str) -> Result<(), LspError> {
+        let mut running = self.lock();
+        let server = running.get_mut(&session).ok_or(LspError::NoSession { session })?;
+        server.stdin.write_all(&frame::encode(message)).and_then(|()| server.stdin.flush()).map_err(|e| LspError::Io { reason: format!("writing to the server: {e}") })
+    }
+
+    /// Ends the server; its `Output::Exited` says it was stopped.
+    pub fn stop(&self, session: LspSession) -> Result<(), LspError> {
+        let stopped = self.lock().remove(&session).ok_or(LspError::NoSession { session })?;
+        drop(stopped);
+        Ok(())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<LspSession, Running>> {
+        self.running.lock().expect("the LSP sessions aren't poisoned")
+    }
+}
+
+/// Reads the server's messages until its output ends, then reports why.
+fn relay(session: LspSession, stdout: impl Read, running: &Mutex<HashMap<LspSession, Running>>, out: &dyn Fn(Output)) {
+    let mut reader = BufReader::new(stdout);
+    let ended = loop {
+        match frame::read(&mut reader) {
+            Ok(Some(message)) => out(Output::Message(LspMessage { session, message })),
+            Ok(None) => break None,
+            Err(e) => break Some(format!("unreadable output: {e}")),
+        }
+    };
+    let still_running = running.lock().expect("the LSP sessions aren't poisoned").remove(&session);
+    let reason = match (still_running, ended) {
+        (None, _) => "stopped".to_owned(),
+        (Some(mut server), problem) => {
+            let status = server.child.wait().map(|s| s.to_string()).unwrap_or_else(|e| format!("unknown ({e})"));
+            problem.map_or(status.clone(), |p| format!("{p}; {status}"))
+        }
+    };
+    out(Output::Exited(LspExited { session, reason }));
+}
+
+#[cfg(windows)]
+fn hide_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console(_: &mut Command) {}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn frames_round_trip_and_tolerate_other_headers() {
+        let mut bytes = frame::encode(r#"{"id":1}"#);
+        bytes.extend_from_slice(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\ncontent-length: 8\r\n\r\n{\"id\":2}");
+        let mut reader = io::Cursor::new(bytes);
+        assert_eq!(frame::read(&mut reader).unwrap().as_deref(), Some(r#"{"id":1}"#));
+        assert_eq!(frame::read(&mut reader).unwrap().as_deref(), Some(r#"{"id":2}"#));
+        assert_eq!(frame::read(&mut reader).unwrap(), None, "a clean end between messages");
+    }
+
+    #[test]
+    fn broken_frames_are_errors() {
+        let read = |bytes: &[u8]| frame::read(&mut io::Cursor::new(bytes.to_vec()));
+        assert!(read(b"Content-Type: x\r\n\r\n{}").is_err(), "no length");
+        assert!(read(b"Content-Length: ten\r\n\r\n").is_err(), "a length that isn't a number");
+        assert!(read(b"Content-Length: 10\r\n\r\n{}").is_err(), "a body cut short");
+        assert!(read(b"Content-Length: 2\r\n").is_err(), "the stream ends in the headers");
+    }
+
+    /// `examples/fake_lsp.rs`, which `cargo test` builds into the profile's `examples` folder above the test binary.
+    fn fake_server() -> Launch {
+        let name = format!("fake_lsp{}", std::env::consts::EXE_SUFFIX);
+        let test_binary = std::env::current_exe().unwrap();
+        let program = test_binary
+            .ancestors()
+            .map(|folder| folder.join("examples").join(&name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("no examples/{name} above {}; cargo test builds it", test_binary.display()));
+        Launch { program, args: Vec::new(), folder: std::env::temp_dir() }
+    }
+
+    fn sessions() -> (Sessions, mpsc::Receiver<Output>) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        (Sessions::new(move |output| tx.lock().unwrap().send(output).unwrap()), rx)
+    }
+
+    fn next(rx: &mpsc::Receiver<Output>) -> Output {
+        rx.recv_timeout(Duration::from_secs(10)).expect("the server answered")
+    }
+
+    #[test]
+    fn two_sessions_get_their_own_answers() {
+        let (sessions, rx) = sessions();
+        let (a, b) = (sessions.start(&fake_server()).unwrap(), sessions.start(&fake_server()).unwrap());
+        sessions.send(a, r#"{"to":"a"}"#).unwrap();
+        sessions.send(b, r#"{"to":"b"}"#).unwrap();
+        let mut answers: Vec<(LspSession, String)> = (0..2)
+            .map(|_| match next(&rx) {
+                Output::Message(m) => (m.session, m.message),
+                other => panic!("expected a message, got {other:?}"),
+            })
+            .collect();
+        answers.sort_by_key(|(s, _)| s.0);
+        assert_eq!(answers, vec![(a, r#"{"echo":{"to":"a"}}"#.to_owned()), (b, r#"{"echo":{"to":"b"}}"#.to_owned())]);
+    }
+
+    #[test]
+    fn a_server_that_exits_is_reported_and_forgotten() {
+        let (sessions, rx) = sessions();
+        let session = sessions.start(&fake_server()).unwrap();
+        sessions.send(session, r#"{"method":"exit"}"#).unwrap();
+        match next(&rx) {
+            Output::Exited(exited) => {
+                assert_eq!(exited.session, session);
+                assert!(exited.reason.contains('3'), "the exit code is in {:?}", exited.reason);
+            }
+            other => panic!("expected an exit, got {other:?}"),
+        }
+        assert_eq!(sessions.send(session, "{}"), Err(LspError::NoSession { session }));
+    }
+
+    #[test]
+    fn stopping_a_server_ends_it() {
+        let (sessions, rx) = sessions();
+        let session = sessions.start(&fake_server()).unwrap();
+        sessions.stop(session).unwrap();
+        match next(&rx) {
+            Output::Exited(exited) => assert_eq!((exited.session, exited.reason.as_str()), (session, "stopped")),
+            other => panic!("expected an exit, got {other:?}"),
+        }
+        assert_eq!(sessions.stop(session), Err(LspError::NoSession { session }));
+    }
+
+    #[test]
+    fn a_missing_server_is_unavailable() {
+        let missing = std::env::temp_dir().join("glassdeck-no-servers-here");
+        assert!(matches!(launch(LspServer::Slang, Path::new("."), &missing), Err(LspError::Unavailable { .. })));
+    }
+}

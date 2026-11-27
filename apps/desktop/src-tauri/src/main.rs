@@ -6,6 +6,7 @@ mod videos;
 mod glassdeckd;
 mod layout_preview;
 mod library;
+mod lsp;
 mod options;
 mod preview;
 
@@ -26,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use tauri_specta::{Builder, ErrorHandlingMode, collect_commands, collect_events};
+use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, collect_events};
 
 const BINDINGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts");
 
@@ -267,6 +268,28 @@ fn panel_layout() -> PanelLayout {
     PanelLayout { keys: layout.keys.iter().map(rect).collect(), widget_area: rect(&layout.widget_area) }
 }
 
+/// Starts the language server an editor tab needs, working in the package's library folder.
+#[tauri::command]
+#[specta::specta]
+async fn lsp_start(sessions: State<'_, lsp::Sessions>, server: lsp::LspServer, id: String) -> Result<lsp::LspSession, lsp::LspError> {
+    let folder = in_library(move |root| library::package_folder(root, &id).map(|(_, folder)| folder)).await.map_err(|error| lsp::LspError::Library { error })?;
+    let native = native_libraries().map_err(|error| lsp::LspError::Library { error })?;
+    sessions.start(&lsp::launch(server, &folder, &native)?)
+}
+
+/// Sends one JSON-RPC message to a running language server.
+#[tauri::command]
+#[specta::specta]
+async fn lsp_send(sessions: State<'_, lsp::Sessions>, session: lsp::LspSession, message: String) -> Result<(), lsp::LspError> {
+    sessions.send(session, &message)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn lsp_stop(sessions: State<'_, lsp::Sessions>, session: lsp::LspSession) -> Result<(), lsp::LspError> {
+    sessions.stop(session)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn create_widget(widget: NewWidget) -> Result<WidgetSummary, LibraryError> {
@@ -488,8 +511,11 @@ fn bindings() -> Builder<tauri::Wry> {
             preview_resize,
             preview_options,
             stop_preview,
+            lsp_start,
+            lsp_send,
+            lsp_stop,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .constant("BUILT_IN_BACKGROUND", glassdeck_proto::BUILT_IN_BACKGROUND)
@@ -523,6 +549,16 @@ fn main() {
             app.manage(Conversions::default());
             app.manage(LayoutPreview::start(app.handle().clone()));
             app.manage(CanvasPreview::start(app.handle().clone(), native_libraries().ok()));
+            let lsp_events = app.handle().clone();
+            app.manage(lsp::Sessions::new(move |output| {
+                let emitted = match output {
+                    lsp::Output::Message(message) => message.emit(&lsp_events),
+                    lsp::Output::Exited(exited) => exited.emit(&lsp_events),
+                };
+                if let Err(e) = emitted {
+                    eprintln!("emitting a language server event: {e}");
+                }
+            }));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<Glassdeckd>().relay_events(handle.clone()).await;

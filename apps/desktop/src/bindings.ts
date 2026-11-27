@@ -62,6 +62,11 @@ export const commands = {
 	previewResize: (size: Dims, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_resize", { size }, options),
 	previewOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_options", { values }, options),
 	stopPreview: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_preview", undefined, options),
+	/**  Starts the language server an editor tab needs, working in the package's library folder. */
+	lspStart: (server: LspServer, id: string, options?: InvokeOptions) => typedError<LspSession, LspError>(__TAURI_INVOKE("lsp_start", { server, id }, options)),
+	/**  Sends one JSON-RPC message to a running language server. */
+	lspSend: (session: LspSession, message: string, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_send", { session, message }, options)),
+	lspStop: (session: LspSession, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_stop", { session }, options)),
 };
 
 /** Events */
@@ -69,6 +74,8 @@ export const events = {
 	canvasUpdate: makeEvent<CanvasUpdate, CanvasUpdate>("canvas-update"),
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
 	layoutUpdate: makeEvent<LayoutUpdate, LayoutUpdate>("layout-update"),
+	lspExited: makeEvent<LspExited, LspExited>("lsp-exited"),
+	lspMessage: makeEvent<LspMessage, LspMessage>("lsp-message"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
 	videoUpdate: makeEvent<VideoUpdate, VideoUpdate>("video-update"),
 };
@@ -212,6 +219,34 @@ export type LogLevel = "print" | "error";
 export type LogSource = 
 /**  Packing the editor's files, before anything runs */
 "pack" | "keyboard" | "host";
+
+export type LspError = 
+/**  The server isn't installed beside the app, or wouldn't start */
+{ kind: "unavailable"; reason: string } | 
+/**  The package the editor asked about can't be found in the library */
+{ kind: "library"; error: LibraryError } | 
+/**  The session has stopped, or never existed */
+{ kind: "no_session"; session: LspSession } | { kind: "io"; reason: string };
+
+/**  A server's process ended; its session is gone. */
+export type LspExited = {
+	session: LspSession,
+	reason: string,
+};
+
+/**  One JSON-RPC message from a server. */
+export type LspMessage = {
+	session: LspSession,
+	message: string,
+};
+
+/**
+ *  Which server an editor tab talks to. Each Luau script kind has its own, because each runs with
+ *  different globals and luau-lsp takes definition files per server, not per file.
+ */
+export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | "slang";
+
+export type LspSession = number;
 
 export type NewBackground = {
 	title: string,

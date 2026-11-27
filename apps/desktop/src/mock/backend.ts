@@ -166,6 +166,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
   preview_resize: () => undefined,
   preview_options: () => undefined,
   stop_preview: () => undefined,
+  lsp_start: () => 1,
+  lsp_send: () => null,
+  lsp_stop: () => null,
 };
 
 /** Lets a test put the fake keyboard in another state, as glassdeckd would report it. */

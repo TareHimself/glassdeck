@@ -43,7 +43,7 @@ pub struct NewWidget {
     pub sizing: Sizing,
 }
 
-#[derive(Clone, Debug, Serialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LibraryError {
     InvalidTitle { reason: String },
