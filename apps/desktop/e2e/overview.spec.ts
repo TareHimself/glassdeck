@@ -72,3 +72,11 @@ test("an outdated keyboard is named, and Apply says to update it", async ({ page
   await page.getByRole("button", { name: "Apply to keyboard" }).click();
   await expect(page.getByText(/Update the keyboard/)).toBeVisible();
 });
+
+test("the keyboard address stays hidden until asked for", async ({ page }) => {
+  await expect(page.getByText("10.0.0.186:7878")).toHaveCount(0);
+  await page.getByRole("button", { name: "Show address" }).click();
+  await expect(page.getByText("10.0.0.186:7878")).toBeVisible();
+  await page.getByRole("button", { name: "Hide address" }).click();
+  await expect(page.getByText("10.0.0.186:7878")).toHaveCount(0);
+});

@@ -86,3 +86,33 @@
   overflow: auto;
   padding: 24px 28px;
 }
+
+.addressRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.addressRow .detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.eye {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eye:hover {
+  color: var(--ink);
+}
