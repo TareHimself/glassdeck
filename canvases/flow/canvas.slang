@@ -8,14 +8,17 @@ struct Inputs {
 }
 
 // What the ink was last frame, swirled and faded each frame by flow below.
-[Target] [Feedback] [Scale(0.5)] [Format("rgba16f")]
+[Target] [Feedback] [Scale(0.25)] [Format("rgba16f")]
 Sampler2D<half4> ink;
 
 static const int ORBS = 5;
 static const float TAU = 6.2831853;
 
+// Dave Hoskins' hash: no sin, which is slow on this GPU.
 float hash(float2 q) {
-    return frac(sin(dot(q, float2(127.1, 311.7))) * 43758.5453);
+    float3 p3 = frac(float3(q.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
 }
 
 float noise(float2 q) {
@@ -55,7 +58,9 @@ half4 flow(Pixel p, Inputs i) {
             0.5 + 0.36 * sin(i.phase * (0.23 + 0.05 * n) + n * 2.7));
         float radius = 0.03 + 0.05 * i.bass;
         float2 off = q - at;
-        half glow = half(exp(-dot(off, off) / (radius * radius)));
+        // A soft falloff without exp, which is slow on this GPU.
+        half falloff = half(radius * radius / (radius * radius + 2.0 * dot(off, off)));
+        half glow = falloff * falloff;
         fresh += palette(i.hue + n * 0.13) * glow * half(0.06 + 0.22 * i.mid);
     }
 
