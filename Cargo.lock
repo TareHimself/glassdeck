@@ -1966,6 +1966,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "glassdeck-messages"
+version = "0.1.0"
+dependencies = [
+ "glassdeck-luau-check",
+]
+
+[[package]]
 name = "glassdeck-package"
 version = "0.1.0"
 dependencies = [

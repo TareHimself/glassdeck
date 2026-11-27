@@ -16,6 +16,7 @@ glassdeck-convert = { path = "crates/glassdeck-convert" }
 glassdeck-layout = { path = "crates/glassdeck-layout" }
 glassdeck-luau = { path = "crates/glassdeck-luau" }
 glassdeck-luau-check = { path = "crates/glassdeck-luau-check" }
+glassdeck-messages = { path = "crates/glassdeck-messages" }
 glassdeck-proto = { path = "crates/glassdeck-proto" }
 glassdeck-scanner-proto = { path = "crates/glassdeck-scanner-proto" }
 glassdeck-scanner-dsp = { path = "crates/glassdeck-scanner-dsp" }
