@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -45,9 +46,22 @@ pub enum LogLevel {
     Error,
 }
 
+/// Which start of a preview an update belongs to. The frontend picks it and passes it with the start,
+/// and drops updates from any other, so a slow frame from the last widget never lands on the next. */
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize, Type)]
+#[serde(transparent)]
+pub struct PreviewRun(pub u32);
+
+/// Something the widget preview did, in the run it belongs to.
 #[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+pub struct PreviewUpdate {
+    pub run: PreviewRun,
+    pub change: PreviewChange,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum PreviewUpdate {
+pub enum PreviewChange {
     Frame { width: u32, height: u32, png: String },
     /// Nothing to show: the widget didn't start, or stopped on an error
     Cleared,
@@ -55,7 +69,7 @@ pub enum PreviewUpdate {
 }
 
 pub enum Command {
-    Show { folder: PathBuf, files: Vec<SourceFile>, size: Dims, values: serde_json::Map<String, serde_json::Value> },
+    Show { run: PreviewRun, folder: PathBuf, files: Vec<SourceFile>, size: Dims, values: serde_json::Map<String, serde_json::Value> },
     Resize(Dims),
     Options(serde_json::Map<String, serde_json::Value>),
     Stop,
@@ -82,7 +96,7 @@ impl Preview {
 }
 
 /// Where the preview's frames and log lines go.
-pub(crate) type Out = Rc<dyn Fn(PreviewUpdate)>;
+pub(crate) type Out = Rc<dyn Fn(PreviewChange)>;
 
 /// What the preview thread holds for the whole session.
 pub(crate) struct Session {
@@ -103,8 +117,10 @@ pub(crate) struct Running {
 }
 
 fn run(app: AppHandle, rx: Receiver<Command>) {
-    let out: Out = Rc::new(move |update| {
-        if let Err(e) = update.emit(&app) {
+    let current = Rc::new(Cell::new(PreviewRun(0)));
+    let stamp = Rc::clone(&current);
+    let out: Out = Rc::new(move |change| {
+        if let Err(e) = (PreviewUpdate { run: stamp.get(), change }).emit(&app) {
             eprintln!("emitting a preview update: {e}");
         }
     });
@@ -116,12 +132,13 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
     loop {
         let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, Instant::now()));
         match rx.recv_timeout(wait) {
-            Ok(Command::Show { folder, files, size, values }) => {
+            Ok(Command::Show { run, folder, files, size, values }) => {
+                current.set(run);
                 running = match show(&cx, EDITOR_SLOT, &folder, &files, size, &values) {
                     Ok(started) => Some(started),
                     Err(e) => {
                         cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
-                        (cx.out)(PreviewUpdate::Cleared);
+                        (cx.out)(PreviewChange::Cleared);
                         None
                     }
                 }
@@ -143,8 +160,8 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
         if let Some(r) = &mut running {
             match step(&cx, r) {
                 Drawn::Nothing => {}
-                Drawn::Frame { width, height, png } => (cx.out)(PreviewUpdate::Frame { width, height, png }),
-                Drawn::Stopped => (cx.out)(PreviewUpdate::Cleared),
+                Drawn::Frame { width, height, png } => (cx.out)(PreviewChange::Frame { width, height, png }),
+                Drawn::Stopped => (cx.out)(PreviewChange::Cleared),
             }
         }
     }
@@ -154,7 +171,7 @@ impl Session {
     pub(crate) fn new(out: Out) -> Result<Self> {
         let font = glassdeck_widget::load_font(None)?;
         let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
-            out(PreviewUpdate::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
+            out(PreviewChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
             Arc::new(Mutex::new(None))
         });
         static SESSIONS: AtomicU32 = AtomicU32::new(0);
@@ -164,12 +181,12 @@ impl Session {
     }
 
     fn log(&self, source: LogSource, level: LogLevel, text: String) {
-        (self.out)(PreviewUpdate::Log { source, level, text });
+        (self.out)(PreviewChange::Log { source, level, text });
     }
 
     fn printer(&self, source: LogSource) -> Print {
         let out = Rc::clone(&self.out);
-        Rc::new(move |text| out(PreviewUpdate::Log { source, level: LogLevel::Print, text }))
+        Rc::new(move |text| out(PreviewChange::Log { source, level: LogLevel::Print, text }))
     }
 }
 
@@ -338,7 +355,7 @@ mod tests {
     use super::*;
     use crate::library::{NewWidget, Sizing, create_widget};
 
-    fn session() -> (Session, Rc<RefCell<Vec<PreviewUpdate>>>) {
+    fn session() -> (Session, Rc<RefCell<Vec<PreviewChange>>>) {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&seen);
         let cx = Session::new(Rc::new(move |update| sink.borrow_mut().push(update))).unwrap();
@@ -366,7 +383,7 @@ mod tests {
         let drawn = step(&cx, &mut running);
         assert!(matches!(drawn, Drawn::Frame { width: 320, .. }), "a frame was drawn");
         let seen = seen.borrow();
-        let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewUpdate::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
+        let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewChange::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
         assert_eq!(prints, ["host up", "drawn by\tkeyboard"]);
         assert!(running.host.is_some());
         fs::remove_dir_all(&root).unwrap();
@@ -383,7 +400,7 @@ mod tests {
         assert!(matches!(step(&cx, &mut running), Drawn::Stopped));
         assert!(matches!(step(&cx, &mut running), Drawn::Nothing), "a stop is reported once");
         let seen = seen.borrow();
-        let errors = seen.iter().filter(|u| matches!(u, PreviewUpdate::Log { level: LogLevel::Error, text, .. } if text.contains("boom"))).count();
+        let errors = seen.iter().filter(|u| matches!(u, PreviewChange::Log { level: LogLevel::Error, text, .. } if text.contains("boom"))).count();
         assert_eq!(errors, 1);
 
         fs::remove_dir_all(&root).unwrap();

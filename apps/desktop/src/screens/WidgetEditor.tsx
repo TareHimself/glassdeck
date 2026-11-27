@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
+import { commands, events, WIDGET_AREA, type Dims, type LibraryError, type OptionsPanel, type PreviewRun, type Sizing, type SourceFile, type Value, type WidgetSource } from "../bindings";
+import { nextPreviewRun } from "../previews";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
@@ -104,15 +105,18 @@ export function WidgetEditor() {
     });
   }, [id]);
 
+  const run = useRef<PreviewRun | null>(null);
   useEffect(() => {
     const listening = events.previewUpdate.listen(({ payload }) => {
-      switch (payload.state) {
+      if (payload.run !== run.current) return;
+      const change = payload.change;
+      switch (change.state) {
         case "frame":
-          return setFrame({ state: "frame", png: payload.png });
+          return setFrame({ state: "frame", png: change.png });
         case "cleared":
           return setFrame({ state: "none" });
         case "log":
-          return addLog(payload.source, payload.level, payload.text);
+          return addLog(change.source, change.level, change.text);
       }
     });
     return () => {
@@ -130,7 +134,8 @@ export function WidgetEditor() {
     const timer = setTimeout(
       () => {
         started.current = true;
-        void commands.previewWidget(id, listOf(files), size, chosen).then((result) => {
+        run.current = nextPreviewRun();
+        void commands.previewWidget(id, listOf(files), size, chosen, run.current).then((result) => {
           if (result.status === "error") addLog("pack", "error", describeLibraryError(result.error));
         });
       },

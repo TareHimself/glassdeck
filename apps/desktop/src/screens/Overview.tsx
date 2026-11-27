@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Link } from "react-router";
-import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
+import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type PreviewRun, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
 import { BackgroundThumb } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
 import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
-import { pngUrl, rememberThumbnail, useThumbnails } from "../previews";
+import { nextPreviewRun, pngUrl, rememberThumbnail, useThumbnails } from "../previews";
 import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError } from "../library";
 import { NewBackgroundDialog } from "./NewBackgroundDialog";
@@ -99,14 +99,17 @@ function useWidgetTiles(widgets: ThemeWidget[]): Tile[] {
   const placedWidgets = useRef(widgets);
   placedWidgets.current = widgets;
   const key = JSON.stringify(widgets.map((w) => [w.package, w.w, w.h, w.options]));
+  const run = useRef<PreviewRun | null>(null);
 
   useEffect(() => {
     const listening = events.layoutUpdate.listen(({ payload }) => {
-      const id = placedWidgets.current[payload.index]?.package;
-      if (payload.state === "tile" && id && !useThumbnails.getState()[id]) rememberThumbnail(id, pngUrl(payload.png));
+      if (payload.run !== run.current) return;
+      const change = payload.change;
+      const id = placedWidgets.current[change.index]?.package;
+      if (change.state === "tile" && id && !useThumbnails.getState()[id]) rememberThumbnail(id, pngUrl(change.png));
       setTiles((all) => {
         const next = [...all];
-        next[payload.index] = payload.state === "tile" ? { png: payload.png } : { stopped: payload.reason };
+        next[change.index] = change.state === "tile" ? { png: change.png } : { stopped: change.reason };
         return next;
       });
     });
@@ -118,7 +121,11 @@ function useWidgetTiles(widgets: ThemeWidget[]): Tile[] {
 
   useEffect(() => {
     setTiles((all) => all.slice(0, widgets.length));
-    void commands.previewLayout(widgets.map((w) => ({ package: w.package, size: { w: w.w, h: w.h }, values: w.options ?? {} })));
+    run.current = nextPreviewRun();
+    void commands.previewLayout(
+      widgets.map((w) => ({ package: w.package, size: { w: w.w, h: w.h }, values: w.options ?? {} })),
+      run.current,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 

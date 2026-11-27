@@ -15,7 +15,9 @@ import type {
   WidgetSummary,
 } from "../bindings";
 import { BACKGROUNDS, CANVAS_FILES, CLOCK_KEYBOARD, CLOCK_OPTIONS, PANEL_LAYOUT, STATUS, STREAMS, THEME, WIDGETS } from "./fixtures";
-import { canvasFrame, widgetTile } from "./frames";
+import { canvasFrame, staleFrame, widgetTile } from "./frames";
+
+const STALE_FRAME = staleFrame();
 
 /** The app's native side, faked in memory for running the frontend in a plain browser. */
 const state = {
@@ -23,7 +25,7 @@ const state = {
   backgrounds: structuredClone(BACKGROUNDS),
   theme: structuredClone(THEME),
   status: structuredClone(STATUS),
-  canvas: null as { id: string; started: number; timer: number } | null,
+  canvas: null as { id: string; run: number; started: number; timer: number } | null,
   nextLspSession: 1,
 };
 
@@ -45,14 +47,22 @@ function background(id: string): BackgroundSummary {
 
 const glassdeckd = (update: GlassdeckdUpdate) => void emit("glassdeckd-update", update);
 
-function startCanvas(id: string) {
+/**
+ * Like the real preview, a frame from the run being replaced can still be on its way: the mock sends one,
+ * all black (`STALE_FRAME`), shortly after each new start, which the frontend must drop.
+ */
+function startCanvas(id: string, run: number) {
+  const replaced = state.canvas?.run;
   stopCanvas();
+  if (replaced !== undefined) {
+    window.setTimeout(() => void emit("canvas-update", { run: replaced, change: { state: "frame", jpeg: STALE_FRAME, time: 0 } }), 150);
+  }
   const started = performance.now();
   const timer = window.setInterval(() => {
     const time = (performance.now() - started) / 1000;
-    void emit("canvas-update", { state: "frame", jpeg: canvasFrame(id, time), time });
+    void emit("canvas-update", { run, change: { state: "frame", jpeg: canvasFrame(id, time), time } });
   }, 100);
-  state.canvas = { id, started, timer };
+  state.canvas = { id, run, started, timer };
 }
 
 function stopCanvas() {
@@ -61,18 +71,18 @@ function stopCanvas() {
 }
 
 /** Each placed widget's first tile, the way the layout preview sends them. */
-function showLayout(widgets: PlacedSource[]) {
+function showLayout(widgets: PlacedSource[], run: number) {
   widgets.forEach((placed, index) => {
     const found = state.widgets.find((w) => w.id === placed.package);
     const update = found
       ? { state: "tile", index, width: placed.size.w, height: placed.size.h, png: widgetTile(found.title, placed.size.w, placed.size.h, 0) }
       : { state: "stopped", index, reason: `${placed.package} isn't in the library` };
-    void emit("layout-update", update);
+    void emit("layout-update", { run, change: update });
   });
 }
 
-function showWidget(id: string, size: Dims) {
-  void emit("preview-update", { state: "frame", width: size.w, height: size.h, png: widgetTile(widget(id).title, size.w, size.h, 0) });
+function showWidget(id: string, size: Dims, run: number) {
+  void emit("preview-update", { run, change: { state: "frame", width: size.w, height: size.h, png: widgetTile(widget(id).title, size.w, size.h, 0) } });
 }
 
 function widgetFiles(id: string): SourceFile[] {
@@ -140,7 +150,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   read_canvas: ({ id }) => ({ background: background(id as string), files: CANVAS_FILES }),
   save_canvas: ({ id }) => background(id as string),
   check_canvas: () => ({ shader_error: null, problems: [], checked: 3 }),
-  preview_canvas: ({ files }) => startCanvas(JSON.stringify(files).length.toString()),
+  preview_canvas: ({ files, run }) => startCanvas(JSON.stringify(files).length.toString(), run as number),
   canvas_options: () => undefined,
   play_canvas: () => undefined,
   restart_canvas: () => undefined,
@@ -151,8 +161,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_video_preview: () => canvasFrame("video", 0),
   replace_video: () => null,
   panel_layout: () => PANEL_LAYOUT,
-  preview_layout: ({ widgets }) => {
-    showLayout(widgets as PlacedSource[]);
+  preview_layout: ({ widgets, run }) => {
+    showLayout(widgets as PlacedSource[], run as number);
     return null;
   },
   stop_layout: () => undefined,
@@ -160,8 +170,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
   save_widget: ({ id }) => widget(id as string),
   check_widget: () => ({ problems: [], checked: 2 }),
   widget_options: ({ source, values }) => optionsPanel(source as string, values as Args),
-  preview_widget: ({ id, size }) => {
-    showWidget(id as string, size as Dims);
+  preview_widget: ({ id, size, run }) => {
+    showWidget(id as string, size as Dims, run as number);
     return null;
   },
   preview_resize: () => undefined,
@@ -217,7 +227,7 @@ function setKeyboard(connection: KeyboardLink) {
 
 declare global {
   interface Window {
-    glassdeckMock?: { setKeyboard: typeof setKeyboard };
+    glassdeckMock?: { setKeyboard: typeof setKeyboard; staleFrame: string };
   }
 }
 
@@ -231,5 +241,5 @@ export function installMockBackend() {
     },
     { shouldMockEvents: true },
   );
-  window.glassdeckMock = { setKeyboard };
+  window.glassdeckMock = { setKeyboard, staleFrame: STALE_FRAME };
 }

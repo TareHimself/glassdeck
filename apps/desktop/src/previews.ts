@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
-import { BUILT_IN_BACKGROUND, commands, events, type Dims, type SourceFile, type Value } from "./bindings";
+import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Value } from "./bindings";
 
 type Values = { [key: string]: Value };
 
@@ -20,42 +20,58 @@ function canvasFiles(id: string): Promise<SourceFile[]> {
   return commands.readCanvas(id).then((r) => (r.status === "ok" ? r.data.files : []));
 }
 
+let lastRun = 0;
+
+/** A fresh id for one start of a preview; the preview stamps everything that start produces with it. */
+export function nextPreviewRun(): PreviewRun {
+  lastRun += 1;
+  return lastRun;
+}
+
 /**
- * There is one canvas preview. Whoever claimed it last gets its frames; when they let go, the claim
- * before theirs starts again. This lets a picker preview a canvas over the Overview's background.
+ * There is one canvas preview. Whoever claimed it last owns it and hears only its own runs; when they
+ * let go, the claim before theirs starts again. This lets a picker or a dialog preview a canvas over
+ * the Overview's background, and an editor take it over entirely.
  */
-type Claim = { id: string; values: Values; show: (jpeg: string | null) => void; last: string | null };
+export type CanvasClaim = {
+  /** Draws these files: a new run, started now if this claim owns the preview, or when it next does. */
+  show: (files: SourceFile[], values: Values) => void;
+  release: () => void;
+};
+
+type Claim = { onChange: (change: CanvasChange) => void; run: PreviewRun | null; wanted: { files: SourceFile[]; values: Values } | null };
 const claims: Claim[] = [];
 let listening: Promise<() => void> | null = null;
 
-function startTopClaim() {
-  const top = claims.at(-1);
-  if (!top) {
+function startOwner() {
+  const owner = claims.at(-1);
+  if (!owner?.wanted) {
     void commands.stopCanvas();
     return;
   }
   listening ??= events.canvasUpdate.listen(({ payload }) => {
-    const owner = claims.at(-1);
-    if (!owner) return;
-    if (payload.state === "frame") {
-      if (owner.last === null) rememberThumbnail(owner.id, jpegUrl(payload.jpeg));
-      owner.last = payload.jpeg;
-      owner.show(payload.jpeg);
-    } else if (payload.state === "cleared") {
-      owner.show(null);
-    }
+    const current = claims.at(-1);
+    if (current && payload.run === current.run) current.onChange(payload.change);
   });
-  top.last = null;
-  void canvasFiles(top.id).then((files) => {
-    if (claims.at(-1) === top && files.length > 0) void commands.previewCanvas(files, top.values);
-  });
+  owner.run = nextPreviewRun();
+  void commands.previewCanvas(owner.wanted.files, owner.wanted.values, owner.run);
 }
 
-function release(claim: Claim) {
-  const wasTop = claims.at(-1) === claim;
-  claims.splice(claims.indexOf(claim), 1);
-  if (claim.last) rememberThumbnail(claim.id, jpegUrl(claim.last));
-  if (wasTop) startTopClaim();
+export function claimCanvas(onChange: (change: CanvasChange) => void): CanvasClaim {
+  const claim: Claim = { onChange, run: null, wanted: null };
+  claims.push(claim);
+  startOwner();
+  return {
+    show: (files, values) => {
+      claim.wanted = { files, values };
+      if (claims.at(-1) === claim) startOwner();
+    },
+    release: () => {
+      const owned = claims.at(-1) === claim;
+      claims.splice(claims.indexOf(claim), 1);
+      if (owned) startOwner();
+    },
+  };
 }
 
 /** The canvas `id` drawn live, as base64 JPEG frames, while `id` isn't null. */
@@ -65,10 +81,25 @@ export function useCanvasPreview(id: string | null, values: Values = {}): string
   useEffect(() => {
     setJpeg(null);
     if (id === null) return;
-    const claim: Claim = { id, values, show: setJpeg, last: null };
-    claims.push(claim);
-    startTopClaim();
-    return () => release(claim);
+    let last: string | null = null;
+    let alive = true;
+    const claim = claimCanvas((change) => {
+      if (change.state === "frame") {
+        if (last === null) rememberThumbnail(id, jpegUrl(change.jpeg));
+        last = change.jpeg;
+        setJpeg(change.jpeg);
+      } else if (change.state === "cleared") {
+        setJpeg(null);
+      }
+    });
+    void canvasFiles(id).then((files) => {
+      if (alive && files.length > 0) claim.show(files, values);
+    });
+    return () => {
+      alive = false;
+      claim.release();
+      if (last) rememberThumbnail(id, jpegUrl(last));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, valuesKey]);
   return jpeg;
@@ -81,13 +112,14 @@ export function useWidgetPreview(id: string | null, size: Dims): string | null {
     setPng(null);
     if (id === null) return;
     let last: string | null = null;
+    const run = nextPreviewRun();
     const listening = events.previewUpdate.listen(({ payload }) => {
-      if (payload.state !== "frame") return;
-      if (last === null) rememberThumbnail(id, pngUrl(payload.png));
-      last = payload.png;
-      setPng(payload.png);
+      if (payload.run !== run || payload.change.state !== "frame") return;
+      if (last === null) rememberThumbnail(id, pngUrl(payload.change.png));
+      last = payload.change.png;
+      setPng(payload.change.png);
     });
-    void commands.previewWidget(id, [], size, {});
+    void commands.previewWidget(id, [], size, {}, run);
     return () => {
       void listening.then((unlisten) => unlisten());
       void commands.stopPreview();

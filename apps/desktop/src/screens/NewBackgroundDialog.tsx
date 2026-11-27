@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { commands, events, type BackgroundKind, type LibraryError, type NewContent, type VideoFacts } from "../bindings";
+import { commands, type BackgroundKind, type LibraryError, type NewContent, type VideoFacts } from "../bindings";
+import { claimCanvas } from "../previews";
 import { Button } from "../components/Button";
 import { Dialog, DialogActions } from "../components/Dialog";
 import { Field, Input } from "../components/Input";
@@ -40,18 +41,15 @@ function useCanvasPreview(running: boolean): { jpeg: string | null; error: strin
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!running) return;
-    const listening = events.canvasUpdate.listen(({ payload }) => {
-      if (payload.state === "frame") setJpeg(payload.jpeg);
-      if (payload.state === "log" && payload.level === "error") setError(payload.text);
+    const claim = claimCanvas((change) => {
+      if (change.state === "frame") setJpeg(change.jpeg);
+      if (change.state === "log" && change.level === "error") setError(change.text);
     });
     commands
       .canvasTemplate()
-      .then((files) => commands.previewCanvas(files, {}))
+      .then((files) => claim.show(files, {}))
       .catch((e: unknown) => setError(String(e)));
-    return () => {
-      void listening.then((unlisten) => unlisten());
-      void commands.stopCanvas();
-    };
+    return () => claim.release();
   }, [running]);
   return { jpeg, error };
 }

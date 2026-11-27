@@ -43,3 +43,11 @@ export function canvasFrame(seed: string, time: number): string {
   g.fillRect(0, 0, 480, 270);
   return base64Of(canvas, "image/jpeg");
 }
+
+/** An all-black frame, base64 JPEG: what a late frame from a replaced run looks like in tests. */
+export function staleFrame(): string {
+  const [canvas, g] = canvasOf(32, 18);
+  g.fillStyle = "#000000";
+  g.fillRect(0, 0, 32, 18);
+  return base64Of(canvas, "image/jpeg");
+}

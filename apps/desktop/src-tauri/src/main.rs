@@ -126,12 +126,12 @@ async fn create_background(app: AppHandle, conversions: State<'_, Conversions>, 
 /// Runs every widget of the Overview's layout; their tiles arrive as `LayoutUpdate`s.
 #[tauri::command]
 #[specta::specta]
-async fn preview_layout(preview: State<'_, LayoutPreview>, widgets: Vec<PlacedSource>) -> Result<(), LibraryError> {
+async fn preview_layout(preview: State<'_, LayoutPreview>, widgets: Vec<PlacedSource>, run: preview::PreviewRun) -> Result<(), LibraryError> {
     let layout = in_library(move |root| {
         Ok(widgets.into_iter().map(|w| (library::widget_folder(root, &w.package).ok(), w)).collect::<Vec<_>>())
     })
     .await?;
-    preview.send(layout_preview::Command::Show(layout));
+    preview.send(layout_preview::Command::Show(run, layout));
     Ok(())
 }
 
@@ -216,8 +216,8 @@ async fn check_canvas(id: String) -> Result<CanvasCheck, LibraryError> {
 /// Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s.
 #[tauri::command]
 #[specta::specta]
-fn preview_canvas(preview: State<'_, CanvasPreview>, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value>) {
-    preview.send(canvas_preview::Command::Show { files, values });
+fn preview_canvas(preview: State<'_, CanvasPreview>, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value>, run: preview::PreviewRun) {
+    preview.send(canvas_preview::Command::Show { run, files, values });
 }
 
 #[tauri::command]
@@ -391,9 +391,10 @@ async fn preview_widget(
     files: Vec<SourceFile>,
     size: Dims,
     values: serde_json::Map<String, serde_json::Value>,
+    run: preview::PreviewRun,
 ) -> Result<(), LibraryError> {
     let folder = in_library(move |root| library::widget_folder(root, &id)).await?;
-    preview.send(preview::Command::Show { folder, files, size, values });
+    preview.send(preview::Command::Show { run, folder, files, size, values });
     Ok(())
 }
 

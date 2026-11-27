@@ -3,6 +3,7 @@
 //! place in the layout, and the frontend positions it; moving a widget never redraws anything.
 
 use std::path::PathBuf;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -15,7 +16,7 @@ use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::library::Dims;
-use crate::preview::{self, Drawn, PreviewUpdate, Running, Session};
+use crate::preview::{self, Drawn, PreviewChange, PreviewRun, Running, Session};
 
 const IDLE: Duration = Duration::from_secs(1);
 
@@ -28,9 +29,16 @@ pub struct PlacedSource {
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Something the layout preview did, in the run (the `preview_layout` call) it belongs to.
 #[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+pub struct LayoutUpdate {
+    pub run: PreviewRun,
+    pub change: LayoutChange,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum LayoutUpdate {
+pub enum LayoutChange {
     Tile { index: u32, width: u32, height: u32, png: String },
     /// The widget isn't running: it isn't in the library, or it stopped on an error
     Stopped { index: u32, reason: String },
@@ -38,7 +46,7 @@ pub enum LayoutUpdate {
 
 pub enum Command {
     /// The layout, with each widget's library folder when it has one
-    Show(Vec<(Option<PathBuf>, PlacedSource)>),
+    Show(PreviewRun, Vec<(Option<PathBuf>, PlacedSource)>),
     Stop,
 }
 
@@ -70,13 +78,14 @@ struct Slot {
 }
 
 fn run(app: AppHandle, rx: Receiver<Command>) {
-    let emit = move |update: LayoutUpdate| {
-        if let Err(e) = update.emit(&app) {
+    let current = Cell::new(PreviewRun(0));
+    let emit = |change: LayoutChange| {
+        if let Err(e) = (LayoutUpdate { run: current.get(), change }).emit(&app) {
             eprintln!("emitting a layout update: {e}");
         }
     };
     let cx = match Session::new(Rc::new(|update| {
-        if let PreviewUpdate::Log { source, text, .. } = update {
+        if let PreviewChange::Log { source, text, .. } = update {
             eprintln!("overview widget, {source:?}: {text}");
         }
     })) {
@@ -88,7 +97,10 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
         let now = Instant::now();
         let wait = slots.iter().filter_map(|s| s.running.as_ref()).map(|r| preview::wait_for(r, now)).min().unwrap_or(IDLE);
         match rx.recv_timeout(wait) {
-            Ok(Command::Show(layout)) => slots = arrange(&cx, &emit, slots, layout),
+            Ok(Command::Show(run, layout)) => {
+                current.set(run);
+                slots = arrange(&cx, &emit, slots, layout);
+            }
             Ok(Command::Stop) => slots.clear(),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -97,10 +109,10 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
             let Some(running) = &mut slot.running else { continue };
             match preview::step(&cx, running) {
                 Drawn::Nothing => {}
-                Drawn::Frame { width, height, png } => emit(LayoutUpdate::Tile { index: index as u32, width, height, png }),
+                Drawn::Frame { width, height, png } => emit(LayoutChange::Tile { index: index as u32, width, height, png }),
                 Drawn::Stopped => {
                     let reason = running.reported.clone().unwrap_or_default();
-                    emit(LayoutUpdate::Stopped { index: index as u32, reason });
+                    emit(LayoutChange::Stopped { index: index as u32, reason });
                     slot.running = None;
                 }
             }
@@ -110,7 +122,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
 
 /// Keeps what's already running where the same widget stays in the same place, resizing it or giving it
 /// new options as needed, and starts the rest.
-fn arrange(cx: &Session, emit: &dyn Fn(LayoutUpdate), mut old: Vec<Slot>, layout: Vec<(Option<PathBuf>, PlacedSource)>) -> Vec<Slot> {
+fn arrange(cx: &Session, emit: &dyn Fn(LayoutChange), mut old: Vec<Slot>, layout: Vec<(Option<PathBuf>, PlacedSource)>) -> Vec<Slot> {
     old.truncate(layout.len());
     let mut kept: Vec<Option<Slot>> = old.into_iter().map(Some).collect();
     kept.resize_with(layout.len(), || None);
@@ -138,8 +150,8 @@ fn arrange(cx: &Session, emit: &dyn Fn(LayoutUpdate), mut old: Vec<Slot>, layout
         .collect()
 }
 
-fn start(cx: &Session, emit: &dyn Fn(LayoutUpdate), index: usize, folder: Option<&PathBuf>, source: &PlacedSource) -> Option<Running> {
-    let stopped = |reason: String| emit(LayoutUpdate::Stopped { index: index as u32, reason });
+fn start(cx: &Session, emit: &dyn Fn(LayoutChange), index: usize, folder: Option<&PathBuf>, source: &PlacedSource) -> Option<Running> {
+    let stopped = |reason: String| emit(LayoutChange::Stopped { index: index as u32, reason });
     let Some(folder) = folder else {
         stopped(format!("{} isn't in the library", source.package));
         return None;
@@ -174,7 +186,7 @@ mod tests {
         }
         let seen = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&seen);
-        let emit = move |update: LayoutUpdate| sink.borrow_mut().push(update);
+        let emit = move |update: LayoutChange| sink.borrow_mut().push(update);
         let cx = Session::new(Rc::new(|_| {})).unwrap();
         let folder = |id: &str| Some(root.join(id));
         let layout = vec![
@@ -184,7 +196,7 @@ mod tests {
         ];
         let mut slots = arrange(&cx, &emit, Vec::new(), layout);
         assert!(slots[0].running.is_some() && slots[1].running.is_some() && slots[2].running.is_none());
-        assert!(matches!(&seen.borrow()[0], LayoutUpdate::Stopped { index: 2, .. }), "a widget not in the library says so");
+        assert!(matches!(&seen.borrow()[0], LayoutChange::Stopped { index: 2, .. }), "a widget not in the library says so");
         for slot in &mut slots {
             if let Some(running) = &mut slot.running {
                 assert!(matches!(preview::step(&cx, running), Drawn::Frame { width: 320, .. }));

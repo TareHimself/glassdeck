@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { commands, events, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
+import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
+import { claimCanvas, type CanvasClaim } from "../previews";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
@@ -120,22 +121,24 @@ export function CanvasEditor({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const canvas = useRef<CanvasClaim | null>(null);
   useEffect(() => {
-    const listening = events.canvasUpdate.listen(({ payload }) => {
-      switch (payload.state) {
+    const claim = claimCanvas((change) => {
+      switch (change.state) {
         case "frame":
-          return setFrame({ state: "frame", jpeg: payload.jpeg, time: payload.time ?? 0 });
+          return setFrame({ state: "frame", jpeg: change.jpeg, time: change.time ?? 0 });
         case "cleared":
           return setFrame({ state: "none" });
         case "inputs":
-          return setInputs(payload.inputs);
+          return setInputs(change.inputs);
         case "log":
-          return log.add(payload.source, payload.level, payload.text);
+          return log.add(change.source, change.level, change.text);
       }
     });
+    canvas.current = claim;
     return () => {
-      void listening.then((unlisten) => unlisten());
-      void commands.stopCanvas();
+      claim.release();
+      canvas.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -146,7 +149,7 @@ export function CanvasEditor({ id }: { id: string }) {
     const timer = setTimeout(
       () => {
         started.current = true;
-        void commands.previewCanvas(listOf(files), chosen);
+        canvas.current?.show(listOf(files), chosen);
       },
       started.current ? EDIT_SETTLE_MS : 0,
     );

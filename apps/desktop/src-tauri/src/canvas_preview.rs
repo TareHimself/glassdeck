@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,7 @@ use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::library::SourceFile;
-use crate::preview::{LogLevel, LogSource};
+use crate::preview::{LogLevel, LogSource, PreviewRun};
 
 /// The preview is shown at most this wide, so frames stay small enough to send many a second.
 const PREVIEW_WIDTH: u32 = 960;
@@ -45,9 +46,16 @@ pub struct InputReading {
     pub values: Vec<f32>,
 }
 
+/// Something the canvas preview did, in the run it belongs to.
 #[derive(Clone, Debug, Serialize, Type, tauri_specta::Event)]
+pub struct CanvasUpdate {
+    pub run: PreviewRun,
+    pub change: CanvasChange,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum CanvasUpdate {
+pub enum CanvasChange {
     Frame { jpeg: String, time: f32 },
     /// Nothing to show: the canvas didn't compile, or stopped on an error
     Cleared,
@@ -56,7 +64,7 @@ pub enum CanvasUpdate {
 }
 
 pub enum Command {
-    Show { files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value> },
+    Show { run: PreviewRun, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value> },
     Options(serde_json::Map<String, serde_json::Value>),
     Play(bool),
     Restart,
@@ -83,7 +91,7 @@ impl CanvasPreview {
     }
 }
 
-type Out = Rc<dyn Fn(CanvasUpdate)>;
+type Out = Rc<dyn Fn(CanvasChange)>;
 
 struct Session {
     out: Out,
@@ -130,13 +138,15 @@ struct Running {
 }
 
 fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
-    let out: Out = Rc::new(move |update| {
-        if let Err(e) = update.emit(&app) {
+    let current = Rc::new(Cell::new(PreviewRun(0)));
+    let stamp = Rc::clone(&current);
+    let out: Out = Rc::new(move |change| {
+        if let Err(e) = (CanvasUpdate { run: stamp.get(), change }).emit(&app) {
             eprintln!("emitting a canvas preview update: {e}");
         }
     });
     let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
-        out(CanvasUpdate::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
+        out(CanvasChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
         Arc::new(Mutex::new(None))
     });
     let mut cx = Session { out, native, slang: None, system: glassdeck_host::system(), now_playing };
@@ -145,7 +155,8 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
     loop {
         let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, playing, Instant::now()));
         match rx.recv_timeout(wait) {
-            Ok(Command::Show { files, values }) => {
+            Ok(Command::Show { run, files, values }) => {
+                current.set(run);
                 let clock = running.take().map(|r| r.clock);
                 running = match show(&mut cx, &files, &values) {
                     Ok(mut started) => {
@@ -157,7 +168,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
                     }
                     Err(e) => {
                         cx.log(LogSource::Pack, LogLevel::Error, format!("{e:#}"));
-                        (cx.out)(CanvasUpdate::Cleared);
+                        (cx.out)(CanvasChange::Cleared);
                         None
                     }
                 };
@@ -192,7 +203,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
             && let Err(e) = step(&cx, r, playing)
         {
             cx.log(LogSource::Keyboard, LogLevel::Error, format!("{e:#}"));
-            (cx.out)(CanvasUpdate::Cleared);
+            (cx.out)(CanvasChange::Cleared);
             running = None;
         }
     }
@@ -200,12 +211,12 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
 
 impl Session {
     fn log(&self, source: LogSource, level: LogLevel, text: String) {
-        (self.out)(CanvasUpdate::Log { source, level, text });
+        (self.out)(CanvasChange::Log { source, level, text });
     }
 
     fn printer(&self, source: LogSource) -> Print {
         let out = Rc::clone(&self.out);
-        Rc::new(move |text| out(CanvasUpdate::Log { source, level: LogLevel::Print, text }))
+        Rc::new(move |text| out(CanvasChange::Log { source, level: LogLevel::Print, text }))
     }
 
     /// Slang, loaded on first use and kept.
@@ -243,11 +254,11 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
     let time = r.clock.at(now);
     let size = r.offscreen.size();
     if r.program.draw(&r.offscreen.gl, r.offscreen.framebuffer(), size, time)?.is_some() {
-        (cx.out)(CanvasUpdate::Frame { jpeg: jpeg_of(&r.offscreen.read_rgb(), size)?, time });
+        (cx.out)(CanvasChange::Frame { jpeg: jpeg_of(&r.offscreen.read_rgb(), size)?, time });
     }
     if r.inputs_sent.is_none_or(|at| now.saturating_duration_since(at) >= INPUTS_EVERY) {
         r.inputs_sent = Some(now);
-        (cx.out)(CanvasUpdate::Inputs { inputs: readings(&r.program.canvas.inputs, r.program.inputs()) });
+        (cx.out)(CanvasChange::Inputs { inputs: readings(&r.program.canvas.inputs, r.program.inputs()) });
     }
     if !playing {
         r.next_frame = now + IDLE;
@@ -385,7 +396,7 @@ mod tests {
         let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new()).unwrap();
         step(&cx, &mut running, true).unwrap();
         let seen = seen.borrow();
-        assert!(seen.iter().any(|u| matches!(u, CanvasUpdate::Frame { .. })), "a frame: {seen:?}");
+        assert!(seen.iter().any(|u| matches!(u, CanvasChange::Frame { .. })), "a frame: {seen:?}");
     }
 
     #[test]

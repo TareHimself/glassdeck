@@ -22,7 +22,7 @@ export const commands = {
 	createBackground: (background: NewBackground, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("create_background", { background }, options)),
 	canvasTemplate: (options?: InvokeOptions) => __TAURI_INVOKE<SourceFile[]>("canvas_template", undefined, options),
 	/**  Runs every widget of the Overview's layout; their tiles arrive as `LayoutUpdate`s. */
-	previewLayout: (widgets: PlacedSource[], options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_layout", { widgets }, options)),
+	previewLayout: (widgets: PlacedSource[], run: PreviewRun, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_layout", { widgets, run }, options)),
 	stopLayout: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_layout", undefined, options),
 	/**  Asks Media Foundation what a video file the user chose is, and allows it for playback in the app. */
 	videoFacts: (path: string, options?: InvokeOptions) => typedError<VideoFacts, LibraryError>(__TAURI_INVOKE("video_facts", { path }, options)),
@@ -39,7 +39,7 @@ export const commands = {
 	/**  Compiles the canvas as saved and type-checks its scripts. */
 	checkCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasCheck, LibraryError>(__TAURI_INVOKE("check_canvas", { id }, options)),
 	/**  Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s. */
-	previewCanvas: (files: SourceFile[], values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_canvas", { files, values }, options),
+	previewCanvas: (files: SourceFile[], values: { [key in string]: Value }, run: PreviewRun, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_canvas", { files, values, run }, options),
 	canvasOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("canvas_options", { values }, options),
 	playCanvas: (playing: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("play_canvas", { playing }, options),
 	restartCanvas: (options?: InvokeOptions) => __TAURI_INVOKE<void>("restart_canvas", undefined, options),
@@ -58,7 +58,7 @@ export const commands = {
 	checkWidget: (id: string, options?: InvokeOptions) => typedError<WidgetCheck, LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
 	widgetOptions: (source: string, values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<OptionsPanel>("widget_options", { source, values }, options),
 	/**  Starts the preview of a widget with the editor's unsaved scripts; frames arrive as `PreviewUpdate`s. */
-	previewWidget: (id: string, files: SourceFile[], size: Dims, values: { [key in string]: Value }, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_widget", { id, files, size, values }, options)),
+	previewWidget: (id: string, files: SourceFile[], size: Dims, values: { [key in string]: Value }, run: PreviewRun, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_widget", { id, files, size, values, run }, options)),
 	previewResize: (size: Dims, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_resize", { size }, options),
 	previewOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_options", { values }, options),
 	stopPreview: (options?: InvokeOptions) => __TAURI_INVOKE<void>("stop_preview", undefined, options),
@@ -108,6 +108,10 @@ export type BackgroundSummary = {
 	kind: BackgroundKind,
 };
 
+export type CanvasChange = { state: "frame"; jpeg: string; time: number | null } | 
+/**  Nothing to show: the canvas didn't compile, or stopped on an error */
+{ state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+
 /**  What checking a canvas as saved found: Slang's error, if it didn't compile, and the scripts' type problems. */
 export type CanvasCheck = {
 	shader_error: string | null,
@@ -121,9 +125,11 @@ export type CanvasSource = {
 	files: SourceFile[],
 };
 
-export type CanvasUpdate = { state: "frame"; jpeg: string; time: number | null } | 
-/**  Nothing to show: the canvas didn't compile, or stopped on an error */
-{ state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+/**  Something the canvas preview did, in the run it belongs to. */
+export type CanvasUpdate = {
+	run: PreviewRun,
+	change: CanvasChange,
+};
 
 export type ConversionState = { state: "converting"; fraction: number | null } | { state: "failed"; reason: string };
 
@@ -194,9 +200,15 @@ export type KeyboardLink = { state: "connected" } |
 /**  Answering, but with another version of the Link protocol, so one side needs updating */
 { state: "incompatible"; keyboard: number; host: number };
 
-export type LayoutUpdate = { state: "tile"; index: number; width: number; height: number; png: string } | 
+export type LayoutChange = { state: "tile"; index: number; width: number; height: number; png: string } | 
 /**  The widget isn't running: it isn't in the library, or it stopped on an error */
 { state: "stopped"; index: number; reason: string };
+
+/**  Something the layout preview did, in the run (the `preview_layout` call) it belongs to. */
+export type LayoutUpdate = {
+	run: PreviewRun,
+	change: LayoutChange,
+};
 
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
 /**  A background's video file that can't be used */
@@ -317,9 +329,21 @@ export type PlacedSource = {
 	values: { [key in string]: Value },
 };
 
-export type PreviewUpdate = { state: "frame"; width: number; height: number; png: string } | 
+export type PreviewChange = { state: "frame"; width: number; height: number; png: string } | 
 /**  Nothing to show: the widget didn't start, or stopped on an error */
 { state: "cleared" } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+
+/**
+ *  Which start of a preview an update belongs to. The frontend picks it and passes it with the start,
+ *  and drops updates from any other, so a slow frame from the last widget never lands on the next. *\/
+ */
+export type PreviewRun = number;
+
+/**  Something the widget preview did, in the run it belongs to. */
+export type PreviewUpdate = {
+	run: PreviewRun,
+	change: PreviewChange,
+};
 
 /**  Where a theme's stream got to by the time `PUT /theme` answered. */
 export type ShowState = "shown" | 
