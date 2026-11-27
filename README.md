@@ -12,9 +12,10 @@ Pre-release. Package formats and the protocol are versioned, and a build refuses
 | host | The Windows PC that runs glassdeckd and streams to the keyboard |
 | keyboard | The RK3566 board, running Linux |
 | stream | A named feed, such as `monitor-q27g4zd` |
-| package | A `.deck`: a background or a widget. Its id is `{tld}.{entity}.{name}`, such as `local.user.clock`, unique within its type; Glassdeck keys it by its qualified id, `{type}.{id}`, such as `widget.local.user.clock` |
-| canvas | A Slang `[Canvas]` shader plus optional `keyboard.luau`, `options.luau` and `host.luau`, packed as a background `.deck` |
+| package | A `.deck`: a background (video, web, canvas or image) or a widget. Its id is `{tld}.{entity}.{name}`, such as `local.user.clock`, unique within its type; Glassdeck keys it by its qualified id, `{type}.{id}`, such as `widget.local.user.clock` |
+| canvas | A Slang `[Canvas]` shader, with optional passes into render targets (feedback included), plus optional `keyboard.luau`, `options.luau`, `host.luau` and `bridge.luau`, packed as a background `.deck` |
 | widget | A widget package with a keyboard half and an optional host half |
+| bridge | The messages between a package's two halves, declared in `bridge.luau`: `bridge.on.<msg>` hears one, `host.bridge.<msg>` or `keyboard.bridge.<msg>` sends one |
 | theme | The background, an optional stream, and the placed widgets, each with its options. The desktop app owns themes and pushes the active one |
 | options | What `options.luau` declares and the user chooses |
 
@@ -23,7 +24,8 @@ Pre-release. Package formats and the protocol are versioned, and a build refuses
 ```mermaid
 flowchart LR
   subgraph host [host, Windows]
-    cli[glassdeck CLI] -- local HTTP API --> d[glassdeckd]
+    app[desktop app] -- local HTTP API, WHEP --> d[glassdeckd]
+    cli[glassdeck CLI] -- local HTTP API --> d
     w[source workers<br/>glassdeckd source] -- localhost socket --> d
   end
   subgraph keyboard [keyboard, Linux]
@@ -35,33 +37,34 @@ flowchart LR
 ```
 
 - Source and Encoder run in a source worker (one process per source, because CEF starts once per process).
-- glassdeckd owns the Link, keeps the active theme, and runs the host halves of its background and widgets.
+- glassdeckd owns the Link, keeps the active theme, runs the host halves of its background and widgets, and serves stream previews to the app (WHEP). The app owns the library, themes and options; glassdeckd only bridges.
 - glassdeck-receiver decodes (Rockchip MPP) and composites (DRM/KMS planes). With nothing streaming it starts a renderer process for the chosen background.
 
 ## Crates
 
 | Crate | Side | What it is |
 |---|---|---|
-| [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of the theme's background and widgets, and serves the local HTTP API. |
+| [glassdeckd](crates/glassdeckd) | host | The host daemon. It owns the Link, runs sources and the host halves of the theme's background and widgets, and serves the local HTTP API and WebRTC stream previews. |
 | [glassdeck](crates/glassdeck) | host | The CLI. |
 | [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types. They derive `specta::Type` for the app's TypeScript bindings. |
-| [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, CSS Modules). A client of glassdeckd. |
+| [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, CSS Modules). Owns the library, edits and previews packages, and pushes the active theme to glassdeckd. |
 | [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds, Wallpaper Engine scenes. |
 | [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a background `.deck`. |
 | [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder. |
 | [glassdeck-slang](crates/glassdeck-slang) | host | Slang compiler bindings and `glassdeck pack` for canvases. |
-| [glassdeck-luau-check](crates/glassdeck-luau-check) | host | Luau type checker bindings, for checking scripts when packing. |
+| [glassdeck-luau-check](crates/glassdeck-luau-check) | host | Luau type checker bindings, for checking scripts when packing and in the app. |
 | [glassdeck-proto](crates/glassdeck-proto) | both | The Link wire protocol and the keyboard's compositor socket protocol. |
 | [glassdeck-package](crates/glassdeck-package) | both | The `.deck` package format. |
-| [glassdeck-luau](crates/glassdeck-luau) | both | Shared Luau VM core, options, widget placement and resource handles. |
+| [glassdeck-luau](crates/glassdeck-luau) | both | Shared Luau VM core: `bridge`, callbacks that wait, `json`, options, widget placement and resource handles. |
+| [glassdeck-messages](crates/glassdeck-messages) | both | Reads `bridge.luau`, packs its messages for the wire, and writes each half's Luau types. |
 | [glassdeck-layout](crates/glassdeck-layout) | both | Key and widget area geometry on the 1920x1080 panel. |
-| [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas renderer process, and its core shared with the host preview. |
+| [glassdeck-gpu](crates/glassdeck-gpu) | keyboard | The canvas and image renderer process, and its core shared with the host previews. |
 | [glassdeck-widget](crates/glassdeck-widget) | keyboard, host | A widget's keyboard half: `keyboard.luau` in its own VM, drawn on the CPU. The receiver runs it on the keyboard; the desktop app runs it for the editor's preview. |
-| [glassdeck-host](crates/glassdeck-host) | host | A widget's or background's host half: `options.luau` and `host.luau` with the host-only `live`, `image` and `media` APIs. glassdeckd runs it for the active theme; the desktop app runs it for the editor's preview. |
+| [glassdeck-host](crates/glassdeck-host) | host | A widget's or background's host half: `options.luau` and `host.luau` with the host-only `net`, `audio`, `media`, `live`, `image` and `system` APIs. glassdeckd runs it for the active theme; the desktop app runs it for the editor's preview. |
 | [glassdeck-receiver](crates/glassdeck-receiver) | keyboard | Decoder, Compositor and widget host. Also builds on Windows as a preview window. |
-| [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's (RP2040) serial-link framing and messages, byte for byte as the stock firmware sends them. Tested against vectors printed by Keyglass's C firmware ([firmware/vectors](firmware/vectors)). |
-| [glassdeck-scanner-dsp](crates/glassdeck-scanner-dsp) | key scanner | `no_std`: the key scanner's signal processing, from sensor readings to key decisions, ported from Keyglass's C firmware and checked against it scan by scan. |
-| [firmware](firmware) | key scanner | The key scanner's firmware (RP2040, its own Cargo workspace): Keyglass's main loop with USB, the serial link and littlefs storage, reporting `glassdeck-scanner 0.0.1`. Build, back up and flash: [firmware/README.md](firmware/README.md). |
+| [glassdeck-scanner-proto](crates/glassdeck-scanner-proto) | key scanner, keyboard | `no_std`: the key scanner's serial-link framing and messages, as the stock firmware sends them. |
+| [glassdeck-scanner-dsp](crates/glassdeck-scanner-dsp) | key scanner | `no_std`: the key scanner's signal processing, from sensor readings to key decisions. |
+| [firmware](firmware) | key scanner | The key scanner's firmware (RP2040, its own Cargo workspace). See [firmware/README.md](firmware/README.md). |
 
 ## Build
 
@@ -71,18 +74,22 @@ flowchart LR
 cargo build
 ```
 
-glassdeck-capture's build script builds CEF with silo through `uv`. It needs `uv` on `PATH` and a silo checkout at `../silo` beside this repo, or `SILO` set to one.
+glassdeck-capture's build script builds CEF with silo; see [its README](crates/glassdeck-capture/README.md).
 
 ### Native libraries
 
-Slang and the Luau checker are loaded at run time from `target/native`. Build them once with silo:
+Slang, the Luau checker and the editors' language servers (luau-lsp, slangd) are loaded at run time from `target/native`. Build them once with silo:
 
 ```sh
 cd native
 uv run python build.py
 ```
 
-The CLI looks in `GLASSDECK_NATIVE`, else beside `glassdeck.exe`. See [native/README.md](native/README.md).
+See [native/README.md](native/README.md) for where each program looks.
+
+### Desktop app
+
+See [apps/desktop/README.md](apps/desktop/README.md).
 
 ### Keyboard (aarch64 Linux)
 

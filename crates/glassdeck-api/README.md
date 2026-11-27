@@ -12,6 +12,9 @@ glassdeckd listens on `127.0.0.1` at a random port and writes `%LOCALAPPDATA%\Gl
 |---|---|---|
 | `GET /status` | | `Status` |
 | `GET /streams` | | `Streams` |
+| `GET /streams/{name}/snapshot` | | a JPEG of the stream now |
+| `POST /streams/{name}/whep` | an SDP offer | an SDP answer (201, with the session's URL in `Location`): a WebRTC preview of the stream (WHEP) |
+| `DELETE /streams/{name}/whep/{session}` | | ends that preview |
 | `GET /theme` | | `Theme` |
 | `PUT /theme` | `ThemePush` | `ThemeApplied` |
 | `GET /events` | | server-sent `Event`s |

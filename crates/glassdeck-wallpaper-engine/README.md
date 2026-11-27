@@ -27,18 +27,6 @@ The default output is `background.com.wallpaperengine.<id>.deck` in the current 
 
 Scenes can't be converted. glassdeck-capture streams them live instead, rendered by Wallpaper Engine itself.
 
-## Used by
-
-glassdeck-capture (wallpaper and scene sources, web background init script).
-
 ## Platform
 
 Windows only. Reads the Steam install location from the registry, and conversion uses Media Foundation through glassdeck-convert.
-
-## Test
-
-```sh
-cargo test -p glassdeck-wallpaper-engine
-```
-
-Tests cover `project.json` parsing, VDF parsing and the init script. No ignored tests.

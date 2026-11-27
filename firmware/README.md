@@ -18,7 +18,7 @@ The logic lives in `crates/glassdeck-scanner-dsp`, and the wire formats in `crat
 
 ## Build
 
-```powershell
+```sh
 sh firmware/build.sh
 ```
 

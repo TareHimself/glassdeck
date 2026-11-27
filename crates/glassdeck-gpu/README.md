@@ -1,42 +1,39 @@
 # glassdeck-gpu
 
-The canvas renderer. A binary that runs on the keyboard, plus a library shared with the receiver's Windows preview.
+The keyboard's GPU renderer. A binary that runs on the keyboard, plus a library shared with the receiver's Windows preview and the desktop app's canvas preview.
 
-On the keyboard, glassdeck-receiver starts it whenever a canvas owns the screen: the built-in gradient (shown when nothing else does) or a canvas `.deck`. It draws into GBM scanout buffers and presents them over the compositor socket.
+On the keyboard, glassdeck-receiver starts it whenever a canvas or an image owns the screen: the built-in gradient (shown when nothing else does), a canvas `.deck` or an image `.deck`. It draws into GBM scanout buffers and presents them over the compositor socket.
 
 ```mermaid
 flowchart LR
-  r[glassdeck-receiver] -- "--compositor-fd, Data" --> g[glassdeck-gpu]
-  g -- "Register, Present" --> r
-  g --> s[keyboard.luau] --> i["[Inputs] uniforms"] --> f[shader.essl]
+  r[glassdeck-receiver] -- "--compositor-fd, Data, ScriptMessage" --> g[glassdeck-gpu]
+  g -- "Register, Present, ScriptMessage" --> r
+  g --> s[keyboard.luau] --> i["[Inputs] uniforms"] --> p["pass{n}.essl, into targets"] --> f[shader.essl]
 ```
 
 ## Library
 
 | Item | Role |
 |---|---|
-| `program::CanvasProgram` | A canvas's GLSL ES shader and its script. `new(gl, files)`, `deliver(payload)`, `draw(gl, framebuffer, size, seconds)` |
+| `program::CanvasProgram` | A canvas's GLSL ES shaders and its script. `new(gl, files, print)`; `deliver_options`, `deliver_message`, `take_messages` for `bridge`; `inputs()`; `draw(gl, framebuffer, size, seconds)` returns the frame's cost, or `None` when nothing was drawn |
 | `program::render_size(scale)` | Render size for a canvas's scale |
-| `script::CanvasScript` | `keyboard.luau`: `load`, `deliver_options` (the implicit host's options to `bridge.on.options`), `deliver_message`, `frame`, `take_changes` |
+| `script::CanvasScript` | `keyboard.luau`: `load(source, messages, inputs, print)`, `deliver_options` (to `bridge.on.options`), `deliver_message`, `take_messages`, `frame`, `take_changes`, `unwritten` (inputs the script never set) |
 | `script::InputValue` | A written input value |
-| `offscreen::Offscreen` | Windows only: a hidden WGL context (GL 4.3 core, which takes GLSL ES 3.00) and a framebuffer to read back |
-| `BUILT_IN` | `canvases/gradient`, packed as `builtin/gradient.deck` (id `core.glassdeck.gradient`), included with `include_bytes!` |
+| `image::Picture`, `image::ImageProgram` | An image background: decoded once, drawn once |
+| `offscreen::Offscreen` | Windows only: a hidden WGL context (GL 4.3 core, which takes GLSL ES 3.00) and a framebuffer to read back, fragment row 0 first |
+| `BUILT_IN`, `built_in()` | `canvases/gradient`, packed as `builtin/gradient.deck` (id `core.glassdeck.gradient`), and the same opened as `CanvasFiles` |
 
-Only inputs written since the last draw are uploaded. A frame where nothing changed and the shader ignores the clock is not drawn.
+Each pass draws into its target, then the canvas draws the screen, reading the targets as textures. A `[Feedback]` target swaps between two textures, so a pass reads its last frame. Only inputs written since the last draw are uploaded, and a frame where nothing changed and nothing reads the clock or keeps a history isn't drawn.
 
 ## Binary
 
 ```sh
-glassdeck-gpu --compositor-fd <fd> [--canvas bg.deck]   # keyboard, as the receiver starts it
-glassdeck-gpu --bench <frames> [--canvas bg.deck]        # keyboard, no receiver: frame costs
-glassdeck-gpu --snapshot out.rgba [--canvas bg.deck]     # one frame at 10 s as raw RGBA
+glassdeck-gpu --compositor-fd <fd> [--canvas bg.deck | --image bg.deck]   # keyboard, as the receiver starts it
+glassdeck-gpu --bench <frames> [--canvas bg.deck]                        # keyboard, no receiver: frame costs
+glassdeck-gpu --snapshot out.rgba [--canvas bg.deck | --image bg.deck]   # one frame at 10 s as raw RGBA
 ```
 
-On Windows only `--snapshot` works, through the same shader and script, so host and keyboard output compare directly.
-
-## Used by
-
-glassdeck-receiver (the library, for its Windows preview; on Linux it starts the binary).
+On Windows only `--snapshot` works, through the same shaders and script, so host and keyboard output compare directly.
 
 ## Platform
 
@@ -46,14 +43,8 @@ glassdeck-receiver (the library, for its Windows preview; on Linux it starts the
 
 ## Test
 
+`the_built_in_gradient_matches_its_sources` fails when `canvases/gradient` or `glassdeck.slang` changed without repacking. Repack with:
+
 ```sh
-cargo test -p glassdeck-gpu
+glassdeck pack canvases/gradient --out crates/glassdeck-gpu/builtin/gradient.deck
 ```
-
-- `the_built_in_gradient_matches_its_sources` fails when `canvases/gradient` or `glassdeck.slang` changed without repacking. Repack with:
-
-  ```sh
-  glassdeck pack canvases/gradient --out crates/glassdeck-gpu/builtin/gradient.deck
-  ```
-
-- No ignored tests.

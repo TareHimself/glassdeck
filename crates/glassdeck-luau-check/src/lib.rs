@@ -100,7 +100,7 @@ pub mod definitions {
     pub const HOST: &str = include_str!("../../glassdeck-luau/types/host.d.luau");
     pub const OPTIONS_API: &str = include_str!("../../glassdeck-luau/types/options-api.d.luau");
     pub const CANVAS: &str = include_str!("../../glassdeck-luau/types/canvas.d.luau");
-    /// A widget's `keyboard.luau`: the `widget` table and the drawing API
+    /// A widget's `keyboard.luau`: the `script` table and the drawing API
     pub const KEYBOARD: &str = include_str!("../../glassdeck-luau/types/keyboard.d.luau");
     /// `options.luau`'s `current`, typed by the generated `options.d.luau`
     pub const CURRENT: &str = "declare current: Options\n";

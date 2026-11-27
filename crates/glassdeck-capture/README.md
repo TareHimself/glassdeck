@@ -34,11 +34,6 @@ Canvas backgrounds can't be streamed. The keyboard draws them itself.
 - `record::run`: record a monitor to a local file.
 - `helper_process_exit_code()`: call first in `main`. CEF relaunches the program for its own subprocesses.
 
-## Used by
-
-- glassdeckd (sources, Link, monitors, worker)
-- glassdeck (monitors, record)
-
 ## Platform
 
 - Windows only: Direct3D 11, Media Foundation and Windows.Graphics.Capture. Scene sources mute Wallpaper Engine in the volume mixer while they run.
@@ -56,4 +51,6 @@ cargo test -p glassdeck-capture -- --ignored
 |---|---|
 | `gpu::converter_produces_bt709_limited_range` | A GPU |
 | `gpu::dropping_the_encoder_drains_every_submitted_frame` | A GPU |
+| `gpu::scales_down_and_makes_a_keyframe_when_asked` | A GPU |
+| `gpu::bench_convert` | A GPU; a benchmark, run with `--release -- --ignored --nocapture` |
 | `play::a_loop_starts_one_frame_after_the_last_frame` | `ffmpeg` on `PATH` |

@@ -22,19 +22,7 @@ Videos must decode in hardware in CEF on the host and in WebKit on the keyboard.
 - Any other video becomes VP9.
 - Audio files become silence of the same length, so every file name the page refers to still exists.
 
-## Used by
-
-glassdeck (the CLI's `convert`), glassdeck-capture, glassdeck-wallpaper-engine.
-
 ## Platform
 
 - Windows only: video uses Media Foundation.
 - Web media conversion needs `ffmpeg` and `ffprobe` on `PATH`.
-
-## Test
-
-```sh
-cargo test -p glassdeck-convert
-```
-
-Unit tests cover crop geometry, media planning and folder listing, and need neither ffmpeg nor a GPU. No ignored tests.

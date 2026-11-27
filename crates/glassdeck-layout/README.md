@@ -14,19 +14,6 @@ Geometry adapted from Keyglass (see `NOTICE`).
   - `key_at(x, y)`: the key under a panel point.
 - `Rect`: `x`, `y`, `width`, `height`, `centre()`.
 
-## Used by
-
-- glassdeck-luau (`placement`: the widget area's size)
-- glassdeck-receiver (key labels, keymap, Windows preview window)
-
 ## Platform
 
 Portable, no dependencies.
-
-## Test
-
-```sh
-cargo test -p glassdeck-layout
-```
-
-No ignored tests.
