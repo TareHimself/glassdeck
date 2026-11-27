@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fontdue::{Font, FontSettings, Metrics};
@@ -9,6 +10,8 @@ use glassdeck_package::Resource;
 use glassdeck_luau::ResourceRef;
 use resvg::tiny_skia::{self, FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform};
 use resvg::usvg;
+
+use crate::text::{self, Fit, Scrolls};
 
 /// Text keeps the key labels' shadow, so it reads over any wallpaper or effect.
 const SHADOW_OFFSET: f32 = 2.0;
@@ -79,9 +82,9 @@ pub struct Area {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// `width` given: aligned within it and shrunk to fit. Otherwise aligned at `x`. `font`: a
+    /// `fit` given: aligned within its width, overflowing as it says. Otherwise aligned at `x`. `font`: a
     /// keyboard resource, or the built-in font when `None`.
-    Text { text: String, x: f32, y: f32, size: f32, color: Color, align: Align, width: Option<f32>, font: Option<Resource> },
+    Text { text: String, x: f32, y: f32, size: f32, color: Color, align: Align, fit: Option<Fit>, font: Option<Resource> },
     Rect { area: Area, fill: Option<Color>, stroke: Option<(Color, f32)>, radius: f32 },
     Bar { fraction: f32, area: Area, color: Color },
     Graph { values: Vec<f32>, area: Area, color: Color, min: Option<f32>, max: Option<f32> },
@@ -172,21 +175,30 @@ fn raster(bytes: &[u8], resource: &ResourceRef) -> Result<Image> {
     Ok(Image::Raster(Pixmap::decode_png(bytes).map_err(|e| anyhow!("decoding {resource}: {e}"))?))
 }
 
-/// Draws `commands` into a transparent tile of `size`; anything outside it is clipped.
+/// Draws `commands` into a transparent tile of `size`; anything outside it is clipped. Scrolling text
+/// is placed for `now`, keeping its place in `scrolls`.
 pub fn render(
     commands: &[Command],
     size: (u32, u32),
     font: &Font,
     images: &mut ResourceCache,
     read_resource: ReadResource,
+    scrolls: &mut Scrolls,
+    now: Instant,
 ) -> Result<Pixmap> {
     let mut pixmap = Pixmap::new(size.0, size.1).context("a tile can't be empty")?;
     for command in commands {
         match command {
-            Command::Text { text, x, y, size, color, align, width, font: chosen } => {
+            Command::Text { text, x, y, size, color, align, fit, font: chosen } => {
                 let (font, glyphs) = images.text_font(chosen.as_ref(), font, read_resource)?;
-                let face = Face { font, which: chosen.as_ref(), glyphs };
-                draw_text(&mut pixmap, face, text, (*x, *y), *size, *color, *align, *width)
+                let measure = |line: &str, px: f32| line.chars().map(|c| font.metrics(c, px).advance_width).sum::<f32>();
+                let laid = text::lay_out(text, *size, *align, *fit, &measure);
+                let pan = laid.pan.map_or(0.0, |pan| pan.offset(scrolls.elapsed(&format!("{x},{y}:{text}"), now)));
+                let clip = laid.clip.map(|w| (*x, *x + w));
+                let mut face = Face { font, which: chosen.as_ref(), glyphs };
+                for line in &laid.lines {
+                    draw_line(&mut pixmap, &mut face, &line.text, (x + line.x - pan, y + line.y), laid.px, *color, clip);
+                }
             }
             Command::Rect { area, fill, stroke, radius } => {
                 if let Some(path) = rounded_rect(*area, *radius) {
@@ -266,34 +278,24 @@ struct Face<'a> {
     glyphs: &'a mut GlyphCache,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_text(pixmap: &mut Pixmap, face: Face, text: &str, at: (f32, f32), size: f32, color: Color, align: Align, width: Option<f32>) {
-    let Face { font, which, glyphs } = face;
-    let natural: f32 = text.chars().map(|c| font.metrics(c, size).advance_width).sum();
-    let px = match width {
-        Some(width) if natural > width && natural > 0.0 => size * width / natural,
-        _ => size,
-    };
-    let text_width = natural * px / size;
-    let left = match (align, width) {
-        (Align::Left, _) => at.0,
-        (Align::Center, Some(w)) => at.0 + (w - text_width) / 2.0,
-        (Align::Right, Some(w)) => at.0 + w - text_width,
-        (Align::Center, None) => at.0 - text_width / 2.0,
-        (Align::Right, None) => at.0 - text_width,
-    };
-    let ascent = font.horizontal_line_metrics(px).map_or(px * 0.8, |m| m.ascent);
+/// One line with its top-left at `at`; with `clip`, only between those two x positions.
+fn draw_line(pixmap: &mut Pixmap, face: &mut Face, line: &str, at: (f32, f32), px: f32, color: Color, clip: Option<(f32, f32)>) {
+    let ascent = face.font.horizontal_line_metrics(px).map_or(px * 0.8, |m| m.ascent);
     let baseline = at.1 + ascent;
+    let (left, right) = clip.map_or((i32::MIN, i32::MAX), |(l, r)| (l.floor() as i32, r.ceil() as i32));
     let shadow = Color { r: 0, g: 0, b: 0, a: SHADOW_ALPHA }.with_alpha_scaled(color.a);
     for (offset, color) in [(SHADOW_OFFSET, shadow), (0.0, color)] {
-        let mut pen = left + offset;
-        for c in text.chars() {
-            let (metrics, coverage) = glyphs.glyph(font, which, c, px);
+        let mut pen = at.0 + offset;
+        for c in line.chars() {
+            let (metrics, coverage) = face.glyphs.glyph(face.font, face.which, c, px);
             let gx = pen.round() as i32 + metrics.xmin;
             let gy = (baseline + offset).round() as i32 - metrics.ymin - metrics.height as i32;
             for row in 0..metrics.height {
                 for col in 0..metrics.width {
-                    blend(pixmap, gx + col as i32, gy + row as i32, color, coverage[row * metrics.width + col]);
+                    let px_x = gx + col as i32;
+                    if px_x >= left && px_x < right {
+                        blend(pixmap, px_x, gy + row as i32, color, coverage[row * metrics.width + col]);
+                    }
                 }
             }
             pen += metrics.advance_width;
@@ -403,7 +405,7 @@ mod tests {
             radius: 0.0,
         }];
         let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
-        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets).unwrap();
+        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets, &mut Scrolls::default(), Instant::now()).unwrap();
         let argb = to_argb(&tile);
         assert_eq!(argb[3 * 8 + 3], 0xFF_FF_00_00);
         assert_eq!(argb[0], 0);
@@ -415,7 +417,7 @@ mod tests {
         let missing = ResourceRef::Packaged(glassdeck_package::Resource { kind: glassdeck_package::ResourceKind::Keyboard, name });
         let commands = [Command::Image { resource: missing, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, radius: 0.0 }];
         let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { bail!("no {resource}") };
-        assert!(render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets).is_err());
+        assert!(render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &no_assets, &mut Scrolls::default(), Instant::now()).is_err());
     }
 
     #[test]
@@ -423,7 +425,7 @@ mod tests {
         let cover = ResourceRef::Live(glassdeck_luau::LiveName::parse("cover").unwrap());
         let commands = [Command::Image { resource: cover, area: Area { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, radius: 0.0 }];
         let not_yet = |_: &ResourceRef| -> Result<Option<Vec<u8>>> { Ok(None) };
-        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &not_yet).unwrap();
+        let tile = render(&commands, (8, 8), &test_font(), &mut ResourceCache::new(), &not_yet, &mut Scrolls::default(), Instant::now()).unwrap();
         assert!(tile.pixels().iter().all(|p| p.alpha() == 0));
     }
 

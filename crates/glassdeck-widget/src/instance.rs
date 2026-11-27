@@ -14,14 +14,15 @@ use mlua::{Function, Table, Value};
 
 use crate::Installed;
 use crate::draw::{self, Align, Area, Color, Command, ResourceCache};
+use crate::text::{Fit, Overflow, Scrolls};
 use crate::live::LiveCache;
 use crate::ui::Ui;
 
 const ERROR_FILL: &str = "#4a0d0de0";
 const ERROR_STROKE: &str = "#ff6b6b";
 const ERROR_TEXT_SIZE: f32 = 12.0;
-/// Rough glyph width at the error text size, for wrapping without measuring.
-const ERROR_CHAR_WIDTH: f32 = 7.0;
+/// Scrolling text redraws the tile at most this often, since it's rasterised on the CPU.
+const SCROLL_FRAME: Duration = Duration::from_millis(33);
 
 pub struct Instance {
     pub label: String,
@@ -30,6 +31,11 @@ pub struct Instance {
     pub installed: Installed,
     run: Run,
     images: ResourceCache,
+    /// What the last `on_draw` drew, redrawn without running it while text scrolls.
+    drawn: Vec<Command>,
+    scrolls: Scrolls,
+    scrolling: bool,
+    last_scroll_frame: Option<Instant>,
     /// The error tile still has to be drawn.
     error_unshown: bool,
     measured: bool,
@@ -79,6 +85,10 @@ impl Instance {
             installed,
             run,
             images: ResourceCache::new(),
+            drawn: Vec::new(),
+            scrolls: Scrolls::default(),
+            scrolling: false,
+            last_scroll_frame: None,
             measured: false,
         }
     }
@@ -180,24 +190,30 @@ impl Instance {
     }
 
     pub fn wants_frame(&self) -> bool {
-        matches!(&self.run, Run::Running(live) if live.ui.wants_frame())
+        matches!(&self.run, Run::Running(live) if live.ui.wants_frame() || self.scrolling)
     }
 
     /// The instance's new pixels, if anything asked for a redraw.
     pub fn draw(&mut self, font: &Font, resources: &LiveCache) -> Option<DrawnTile> {
         let size = (self.placement.w, self.placement.h);
+        let now = Instant::now();
+        let pan_due = self.scrolling && self.last_scroll_frame.is_none_or(|at| now.saturating_duration_since(at) >= SCROLL_FRAME);
+        let rerun = matches!(&self.run, Run::Running(live) if live.ui.take_redraw());
         if let Run::Running(live) = &self.run
-            && live.ui.take_redraw()
+            && (rerun || pan_due)
         {
             let started = Instant::now();
-            let result = live.draw().and_then(|commands| {
+            let commands = if rerun { live.draw() } else { Ok(std::mem::take(&mut self.drawn)) };
+            let result = commands.map(|commands| self.drawn = commands).and_then(|()| {
                 let listed = started.elapsed();
                 let package = Rc::clone(&self.installed.package);
                 let read = |resource: &ResourceRef| match resource {
                     ResourceRef::Packaged(packaged) => package.resource(packaged).map(Some),
                     ResourceRef::Live(name) => Ok(resources.get(name)),
                 };
-                let tile = draw::render(&commands, size, font, &mut self.images, &read)?;
+                let tile = draw::render(&self.drawn, size, font, &mut self.images, &read, &mut self.scrolls, now)?;
+                self.scrolling = self.scrolls.finish_render();
+                self.last_scroll_frame = Some(now);
                 Ok((tile, listed))
             });
             match result {
@@ -338,31 +354,23 @@ fn error_tile(module: &str, message: &str, (w, h): (u32, u32), font: &Font) -> D
             size: 14.0,
             color: Color::WHITE,
             align: Align::Left,
-            width: Some(w - 16.0),
+            fit: Some(Fit { width: w - 16.0, overflow: Overflow::Ellipsis }),
             font: None,
         },
     ];
-    let per_line = ((w - 16.0) / ERROR_CHAR_WIDTH).max(1.0) as usize;
-    let chars: Vec<char> = message.chars().collect();
-    for (row, line) in chars.chunks(per_line).enumerate() {
-        let y = 26.0 + row as f32 * (ERROR_TEXT_SIZE + 3.0);
-        if y + ERROR_TEXT_SIZE > h {
-            break;
-        }
-        let text = line.iter().collect();
-        commands.push(Command::Text {
-            text,
-            x: 8.0,
-            y,
-            size: ERROR_TEXT_SIZE,
-            color: color(ERROR_STROKE),
-            align: Align::Left,
-            width: Some(w - 16.0),
-            font: None,
-        });
-    }
+    commands.push(Command::Text {
+        text: message.to_owned(),
+        x: 8.0,
+        y: 26.0,
+        size: ERROR_TEXT_SIZE,
+        color: color(ERROR_STROKE),
+        align: Align::Left,
+        fit: Some(Fit { width: w - 16.0, overflow: Overflow::Wrap { lines: None, line_height: 1.25, height: Some(h - 32.0) } }),
+        font: None,
+    });
     let no_assets = |resource: &ResourceRef| -> Result<Option<Vec<u8>>> { anyhow::bail!("the error tile has no {resource}") };
-    let tile = draw::render(&commands, (w as u32, h as u32), font, &mut ResourceCache::new(), &no_assets).expect("the error tile draws");
+    let tile = draw::render(&commands, (w as u32, h as u32), font, &mut ResourceCache::new(), &no_assets, &mut Scrolls::default(), Instant::now())
+        .expect("the error tile draws");
     DrawnTile { pixels: draw::to_argb(&tile) }
 }
 
@@ -597,6 +605,33 @@ mod tests {
             assert_eq!(instance.wants_frame(), expected);
             instance.tick(now, Some(Duration::from_millis(16)));
             assert_eq!(instance.draw(&font(), &LiveCache::default()).is_some(), expected);
+        }
+    }
+
+    #[test]
+    fn scrolling_text_keeps_asking_for_frames_and_short_text_does_not() {
+        for (title, scrolls) in [("a title far too long for a sixty four pixel tile", true), ("hi", false)] {
+            let script = format!("widget.on_draw(function(ui) ui:text({title:?}, {{ w = 64, overflow = 'scroll' }}) end)");
+            let (_scratch, installed) = module("scroll", &script);
+            let mut instance = Instance::start(0, &widget(), installed, None, None);
+            assert!(instance.draw(&font(), &LiveCache::default()).is_some());
+            assert_eq!(instance.wants_frame(), scrolls, "{title}");
+        }
+    }
+
+    #[test]
+    fn text_options_that_dont_go_together_are_errors() {
+        for (options, says) in [
+            ("{ overflow = 'wrap' }", "overflow needs w"),
+            ("{ w = 40, lines = 2 }", "lines only works with overflow = \"wrap\""),
+            ("{ w = 40, overflow = 'scroll', min_size = 8 }", "min_size only works with overflow = \"shrink\""),
+            ("{ w = 40, overflow = 'fade' }", "is not ellipsis, shrink, wrap, scroll or clip"),
+        ] {
+            let script = format!("widget.on_draw(function(ui) ui:text('x', {options}) end)");
+            let (_scratch, installed) = module("text-options", &script);
+            let mut instance = Instance::start(0, &widget(), installed, None, None);
+            instance.draw(&font(), &LiveCache::default());
+            assert!(instance.error().is_some_and(|e| e.contains(says)), "{options}: {:?}", instance.error());
         }
     }
 

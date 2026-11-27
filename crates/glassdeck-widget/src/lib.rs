@@ -6,6 +6,7 @@ mod draw;
 mod installing;
 mod instance;
 mod live;
+mod text;
 mod ui;
 
 use std::path::Path;

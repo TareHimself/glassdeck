@@ -1,10 +1,14 @@
 //! What the widget area shows while a large file is being installed: the file's name and a progress
 //! bar, over the keyboard's own background.
 
+use std::time::Instant;
+
 use anyhow::{Result, bail};
 use fontdue::Font;
+use glassdeck_luau::ResourceRef;
 
 use crate::draw::{self, Align, Area, Color, Command, ResourceCache};
+use crate::text::{Fit, Overflow, Scrolls};
 
 const PANEL: Color = Color { r: 0, g: 0, b: 0, a: 150 };
 const TRACK: Color = Color { r: 255, g: 255, b: 255, a: 60 };
@@ -43,13 +47,14 @@ impl Installing {
                 size: TEXT_SIZE,
                 color: Color::WHITE,
                 align: Align::Center,
-                width: Some(w),
+                fit: Some(Fit { width: w, overflow: Overflow::Shrink { min_size: None } }),
                 font: None,
             },
             Command::Rect { area: bar, fill: Some(TRACK), stroke: None, radius: BAR_HEIGHT / 2.0 },
             Command::Bar { fraction: self.fraction, area: bar, color: Color::WHITE },
         ];
-        let tile = draw::render(&commands, size, font, &mut ResourceCache::new(), &|name| bail!("the install panel has no asset {name}"))?;
+        let no_assets = |name: &ResourceRef| bail!("the install panel has no asset {name}");
+        let tile = draw::render(&commands, size, font, &mut ResourceCache::new(), &no_assets, &mut Scrolls::default(), Instant::now())?;
         Ok(Some(draw::to_argb(&tile)))
     }
 }

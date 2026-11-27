@@ -10,8 +10,19 @@ export type TextOptions = {
     color: string?,
     -- "left", "center" or "right": within w when given, otherwise around x
     align: ("left" | "center" | "right")?,
-    -- shrink the text to fit this width
+    -- the width the text fits in; overflow says what happens when it's wider
     w: number?,
+    -- "ellipsis" (the default) cuts it with "…"; "shrink" scales it down, to min_size; "wrap" breaks it onto
+    -- more lines, at most lines or as many as fit h; "scroll" pans it back and forth; "clip" cuts it off
+    overflow: ("ellipsis" | "shrink" | "wrap" | "scroll" | "clip")?,
+    min_size: number?,
+    lines: number?,
+    -- a multiple of size; 1.2 by default
+    line_height: number?,
+    h: number?,
+    -- pixels per second, 30 by default, and seconds held at each end, 1.5 by default
+    speed: number?,
+    pause: number?,
     -- a .ttf or .otf the module bundles, from keyboard.resource(...); the built-in font otherwise
     font: Resource?,
 }

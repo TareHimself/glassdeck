@@ -10,17 +10,6 @@ widget.on_data(function(data: Data)
     progress = if data.position and data.duration then data.position / data.duration else nil
 end)
 
--- Text shrinks to fit its width, so a long title is cut short instead of shrinking to nothing.
-local AVERAGE_GLYPH_WIDTH = 0.58
-
-local function shorten(text: string, size: number, w: number): string
-    local fits = math.floor(w / (size * AVERAGE_GLYPH_WIDTH))
-    if utf8.len(text) <= fits then
-        return text
-    end
-    return string.sub(text, 1, utf8.offset(text, fits) - 1) .. "…"
-end
-
 widget.on_draw(function(ui: Ui)
     local h = ui.height
     local pad = h * 0.13
@@ -37,8 +26,8 @@ widget.on_draw(function(ui: Ui)
         return
     end
     local dim = if playing then "#c8c2e6" else "#c8c2e680"
-    ui:text(shorten(title, h * 0.16, w), { x = x, y = h * 0.27, size = h * 0.16, w = w, color = if playing then "#ffffff" else "#ffffffa0" })
-    ui:text(shorten(artist, h * 0.12, w), { x = x, y = h * 0.47, size = h * 0.12, w = w, color = dim })
+    ui:text(title, { x = x, y = h * 0.27, size = h * 0.16, w = w, overflow = "scroll", color = if playing then "#ffffff" else "#ffffffa0" })
+    ui:text(artist, { x = x, y = h * 0.47, size = h * 0.12, w = w, color = dim })
     if progress then
         ui:bar(progress, { x = x, y = h * 0.72, w = math.min(w, ui.width * 0.42), h = math.max(4, h * 0.03), color = "#ffffff" })
     end

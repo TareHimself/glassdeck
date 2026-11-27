@@ -8,6 +8,7 @@ use glassdeck_package::Resource;
 use mlua::{AnyUserData, Function, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 use crate::draw::{Align, Area, Color, Command};
+use crate::text::{Fit, Overflow};
 
 #[derive(Clone)]
 pub struct Ui(Rc<RefCell<UiState>>);
@@ -85,7 +86,7 @@ impl UserData for Ui {
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("text", |_, ui, (text, opts): (String, Option<Table>)| {
-            let o = Opts::new("text", opts, &["x", "y", "size", "color", "align", "w", "font"])?;
+            let o = Opts::new("text", opts, TEXT_OPTIONS)?;
             let align = o.string("align")?.map(|a| Align::parse(&a)).transpose().map_err(o.wrap())?.unwrap_or(Align::Left);
             let command = Command::Text {
                 text,
@@ -94,7 +95,7 @@ impl UserData for Ui {
                 size: o.number("size", 16.0)?,
                 color: o.color("color")?.unwrap_or(Color::WHITE),
                 align,
-                width: o.optional_number("w")?,
+                fit: o.fit()?,
                 font: o.font()?,
             };
             ui.record("text", command)
@@ -134,6 +135,13 @@ impl UserData for Ui {
         });
     }
 }
+
+const TEXT_OPTIONS: &[&str] =
+    &["x", "y", "size", "color", "align", "w", "font", "overflow", "min_size", "lines", "line_height", "h", "speed", "pause"];
+
+/// Options that only mean something with one `overflow`, and that one.
+const OVERFLOW_ONLY: [(&str, &str); 6] =
+    [("min_size", "shrink"), ("lines", "wrap"), ("line_height", "wrap"), ("h", "wrap"), ("speed", "scroll"), ("pause", "scroll")];
 
 /// A call's options table, checked against the names that call takes so typos fail loudly.
 struct Opts {
@@ -187,6 +195,41 @@ impl Opts {
                 live @ ResourceRef::Live(_) => Err(self.error(format!("font: {live} can't be a font; bundle it and use keyboard.resource(...)"))),
             },
         }
+    }
+
+    /// `w` and how text overflows it; ellipsis when `overflow` isn't given.
+    fn fit(&self) -> mlua::Result<Option<Fit>> {
+        let overflow = self.string("overflow")?;
+        let Some(width) = self.optional_number("w")? else {
+            return match overflow {
+                Some(_) => Err(self.error("overflow needs w, the width the text overflows".into())),
+                None => self.check_overflow_only("ellipsis").map(|()| None),
+            };
+        };
+        let name = overflow.as_deref().unwrap_or("ellipsis");
+        self.check_overflow_only(name)?;
+        let overflow = match name {
+            "ellipsis" => Overflow::Ellipsis,
+            "shrink" => Overflow::Shrink { min_size: self.optional_number("min_size")? },
+            "wrap" => Overflow::Wrap {
+                lines: self.get::<u32>("lines")?,
+                line_height: self.number("line_height", 1.2)?,
+                height: self.optional_number("h")?,
+            },
+            "scroll" => Overflow::Scroll { speed: self.number("speed", 30.0)?, pause: self.number("pause", 1.5)? },
+            "clip" => Overflow::Clip,
+            other => return Err(self.error(format!("overflow {other:?} is not ellipsis, shrink, wrap, scroll or clip"))),
+        };
+        Ok(Some(Fit { width, overflow }))
+    }
+
+    fn check_overflow_only(&self, chosen: &str) -> mlua::Result<()> {
+        for (key, mode) in OVERFLOW_ONLY {
+            if mode != chosen && self.get::<Value>(key)?.is_some_and(|v| !v.is_nil()) {
+                return Err(self.error(format!("{key} only works with overflow = \"{mode}\"")));
+            }
+        }
+        Ok(())
     }
 
     fn color(&self, key: &str) -> mlua::Result<Option<Color>> {
