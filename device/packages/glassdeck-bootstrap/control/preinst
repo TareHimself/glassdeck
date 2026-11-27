@@ -12,7 +12,7 @@ fail() {
 grep -q " ok " "$BACKUP/RESULTS" 2>/dev/null || fail "the backup holds no partition"
 [ -s "$BACKUP/files.tar.gz" ] || fail "the backup holds no system files"
 [ -x /usr/bin/flux-weston-autolaunch.sh ] || fail "no stock launcher at /usr/bin/flux-weston-autolaunch.sh"
-for c in pidof df awk sync cp mv; do
+for c in pidof pgrep df awk grep sed bash sync cp mv; do
     command -v "$c" >/dev/null 2>&1 || fail "$c is missing"
 done
 exit 0
