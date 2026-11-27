@@ -157,7 +157,7 @@ export type ErrorCode =
 /**  What `GET /events` sends, each as one server-sent event's JSON data. */
 export type Event = 
 /**  Everything at once: first on connecting, and again if this client fell behind */
-{ type: "status"; status: Status } | { type: "link"; connected: boolean } | { type: "stream"; status: StreamStatus } | 
+{ type: "status"; status: Status } | { type: "link"; connection: KeyboardLink } | { type: "stream"; status: StreamStatus } | 
 /**  A new active theme */
 { type: "theme"; theme: Theme };
 
@@ -180,6 +180,13 @@ export type InputReading = {
 	values: (number | null)[],
 };
 
+/**  Whether glassdeckd can talk to the keyboard. */
+export type KeyboardLink = { state: "connected" } | 
+/**  Not answering yet */
+{ state: "unreachable" } | 
+/**  Answering, but with another version of the Link protocol, so one side needs updating */
+{ state: "incompatible"; keyboard: number; host: number };
+
 export type LayoutUpdate = { state: "tile"; index: number; width: number; height: number; png: string } | 
 /**  The widget isn't running: it isn't in the library, or it stopped on an error */
 { state: "stopped"; index: number; reason: string };
@@ -197,7 +204,7 @@ export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "
 export type LinkStatus = {
 	/**  The keyboard's address, such as `10.0.0.186:7878` */
 	keyboard: string,
-	connected: boolean,
+	connection: KeyboardLink,
 };
 
 export type LogLevel = "print" | "error";
@@ -359,7 +366,7 @@ export type ThemeBackground = {
 };
 
 export type ThemeWidget = {
-	/**  A widget's qualified id, such as `widget.local.me.clock` */
+	/**  A widget's qualified id, such as `widget.local.user.clock` */
 	package: string,
 	/**  Where it sits in the widget area, in panel pixels on an 8 px grid */
 	x: number,

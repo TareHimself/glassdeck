@@ -169,7 +169,7 @@ mod tests {
     fn each_widget_draws_in_its_own_slot_and_a_resize_keeps_it_running() {
         let root = std::env::temp_dir().join(format!("glassdeck-layout-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        for (title, id) in [("Sky", "local.me.sky"), ("Sea", "local.me.sea")] {
+        for (title, id) in [("Sky", "local.user.sky"), ("Sea", "local.user.sea")] {
             create_widget(&root, NewWidget { title: title.into(), id: id.into(), sizing: Sizing::Any { size: Dims { w: 320, h: 160 } } }).unwrap();
         }
         let seen = Rc::new(RefCell::new(Vec::new()));
@@ -178,9 +178,9 @@ mod tests {
         let cx = Session::new(Rc::new(|_| {})).unwrap();
         let folder = |id: &str| Some(root.join(id));
         let layout = vec![
-            (folder("widget.local.me.sky"), placed("widget.local.me.sky", 320)),
-            (folder("widget.local.me.sea"), placed("widget.local.me.sea", 320)),
-            (None, placed("widget.local.me.gone", 320)),
+            (folder("widget.local.user.sky"), placed("widget.local.user.sky", 320)),
+            (folder("widget.local.user.sea"), placed("widget.local.user.sea", 320)),
+            (None, placed("widget.local.user.gone", 320)),
         ];
         let mut slots = arrange(&cx, &emit, Vec::new(), layout);
         assert!(slots[0].running.is_some() && slots[1].running.is_some() && slots[2].running.is_none());
@@ -190,7 +190,7 @@ mod tests {
                 assert!(matches!(preview::step(&cx, running), Drawn::Frame { width: 320, .. }));
             }
         }
-        let resized = vec![(folder("widget.local.me.sky"), placed("widget.local.me.sky", 480))];
+        let resized = vec![(folder("widget.local.user.sky"), placed("widget.local.user.sky", 480))];
         let mut slots = arrange(&cx, &emit, slots, resized);
         assert_eq!(slots.len(), 1);
         let running = slots[0].running.as_mut().unwrap();

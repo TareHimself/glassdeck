@@ -14,8 +14,9 @@ use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result, anyhow};
-use glassdeck_capture::link::Link;
-use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo, WidgetSlot};
+use glassdeck_api::KeyboardLink;
+use glassdeck_capture::link::{IncompatibleReceiver, Link};
+use glassdeck_proto::{FileTarget, Message, Mode, PutFile, StreamInfo, VERSION, WidgetSlot};
 
 /// Realistic USB 2.0 bulk throughput, what the TCP stand-in is throttled to by default.
 pub const USB2_PRACTICAL_BYTES_PER_SEC: u64 = 35_000_000;
@@ -92,15 +93,15 @@ impl std::error::Error for LinkDown {}
 pub struct Uplink {
     queues: Mutex<Queues>,
     changed: Condvar,
-    /// Told `true` when the keyboard connects and `false` when it goes away
-    on_change: Box<dyn Fn(bool) + Send + Sync>,
+    /// Told whenever whether glassdeckd can talk to the keyboard changes
+    on_change: Box<dyn Fn(KeyboardLink) + Send + Sync>,
     /// Told when the keyboard has said what it holds, after each connect
     on_inventory: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
 struct Queues {
-    connected: bool,
+    link: KeyboardLink,
     control: VecDeque<Message>,
     stream: VecDeque<Message>,
     /// Each widget's latest value, kept after sending so a reconnect brings the keyboard up to date.
@@ -120,6 +121,12 @@ struct Queues {
     uploads: VecDeque<Upload>,
     /// Fully sent files, oldest first, which is the order the keyboard answers them in.
     awaiting: VecDeque<Waiter>,
+}
+
+impl Queues {
+    fn connected(&self) -> bool {
+        self.link == KeyboardLink::Connected
+    }
 }
 
 enum Outgoing {
@@ -164,7 +171,7 @@ impl Upload {
 }
 
 impl Uplink {
-    pub fn new(on_change: impl Fn(bool) + Send + Sync + 'static, on_inventory: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(on_change: impl Fn(KeyboardLink) + Send + Sync + 'static, on_inventory: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             queues: Mutex::new(Queues::default()),
             changed: Condvar::new(),
@@ -193,19 +200,31 @@ impl Uplink {
                 inventory.remove(name);
             }
         }
-        if queues.connected {
+        if queues.connected() {
             queues.control.push_back(Message::RemovePackages { names });
         }
         self.changed.notify_all();
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.lock().connected
+    pub fn link(&self) -> KeyboardLink {
+        self.lock().link
+    }
+
+    /// Why the last connection attempt failed; reports whether that changed anything.
+    fn report_not_connected(&self, link: KeyboardLink) -> bool {
+        let mut queues = self.lock();
+        if queues.connected() || queues.link == link {
+            return false;
+        }
+        queues.link = link;
+        drop(queues);
+        (self.on_change)(link);
+        true
     }
 
     pub fn select_background(&self, name: String) {
         let mut queues = self.lock();
-        if queues.connected {
+        if queues.connected() {
             queues.control.push_back(Message::SelectBackground { name: name.clone() });
         }
         if queues.selected.as_ref() != Some(&name) {
@@ -219,7 +238,7 @@ impl Uplink {
     /// The widgets the keyboard runs, in order; sent now if connected, and again on every reconnect.
     pub fn set_widgets(&self, widgets: Vec<WidgetSlot>) {
         let mut queues = self.lock();
-        if queues.connected {
+        if queues.connected() {
             queues.control.push_back(Message::SetWidgets { widgets: widgets.clone() });
         }
         queues.widgets = Some(widgets);
@@ -264,7 +283,7 @@ impl Uplink {
     pub fn push_stream(&self, message: Message) -> Result<(), LinkDown> {
         let mut queues = self.lock();
         loop {
-            if !queues.connected {
+            if !queues.connected() {
                 return Err(LinkDown);
             }
             if queues.stream.len() < QUEUED_STREAM_MESSAGES {
@@ -282,7 +301,7 @@ impl Uplink {
         let total = file.metadata()?.len();
         let (answer, answered) = mpsc::channel();
         let mut queues = self.lock();
-        if !queues.connected {
+        if !queues.connected() {
             return Err(LinkDown.into());
         }
         queues.uploads.push_back(Upload { file, total, sent: 0, waiter: Waiter { target, answer } });
@@ -294,7 +313,7 @@ impl Uplink {
     /// Called before the piece goes out, so the answer can't arrive first.
     fn sending_piece(&self, upload: Upload, last: bool) {
         let mut queues = self.lock();
-        match (queues.connected, last) {
+        match (queues.connected(), last) {
             (false, _) => upload.waiter.finish(Err(LinkDown.into())),
             (true, false) => queues.uploads.push_front(upload),
             (true, true) => queues.awaiting.push_back(upload.waiter),
@@ -312,7 +331,7 @@ impl Uplink {
         let (target, result) = match message {
             Message::PutDone { target } => (target, Ok(())),
             Message::PutRefused { target, reason } => {
-                let refusal = anyhow!("the keyboard refused {target}: {reason}");
+                let refusal = anyhow!("the keyboard couldn't install {target}: {reason}");
                 (target, Err(refusal))
             }
             other => {
@@ -369,10 +388,10 @@ impl Uplink {
 
     fn apply(&self, effect: LinkEffect) {
         let mut queues = self.lock();
-        let was_connected = queues.connected;
+        let was = queues.link;
         match effect {
             LinkEffect::Resend => {
-                queues.connected = true;
+                queues.link = KeyboardLink::Connected;
                 queues.unsent = queues.latest.keys().copied().collect();
                 queues.unsent_resources = queues.resources.keys().cloned().collect();
                 queues.background_data_unsent = queues.background_data.is_some();
@@ -384,7 +403,7 @@ impl Uplink {
                 }
             }
             LinkEffect::DropQueued => {
-                queues.connected = false;
+                queues.link = KeyboardLink::Unreachable;
                 queues.inventory = None;
                 queues.control.clear();
                 queues.stream.clear();
@@ -395,10 +414,10 @@ impl Uplink {
             }
         }
         self.changed.notify_all();
-        let connected = queues.connected;
+        let link = queues.link;
         drop(queues);
-        if connected != was_connected {
-            (self.on_change)(connected);
+        if link != was {
+            (self.on_change)(link);
         }
     }
 }
@@ -425,8 +444,12 @@ pub fn run(uplink: &Arc<Uplink>, to: SocketAddr, link_bytes_per_sec: Option<u64>
                     LinkEvent::Connected
                 }
                 Err(e) => {
-                    if !failing_since_connected {
-                        eprintln!("Link: can't reach the keyboard ({e:#}); retrying until it answers");
+                    let why = match e.downcast_ref::<IncompatibleReceiver>() {
+                        Some(receiver) => KeyboardLink::Incompatible { keyboard: receiver.version, host: VERSION },
+                        None => KeyboardLink::Unreachable,
+                    };
+                    if uplink.report_not_connected(why) || !failing_since_connected {
+                        eprintln!("Link: can't use the keyboard ({e:#}); retrying until it answers");
                         failing_since_connected = true;
                     }
                     LinkEvent::ConnectFailed

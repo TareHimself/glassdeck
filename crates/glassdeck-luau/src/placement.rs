@@ -76,14 +76,14 @@ mod tests {
     const AREA: Size = Size { w: 1903, h: 256 };
 
     fn clock(id: &QualifiedId) -> Option<WidgetSize> {
-        (id.as_str() == "widget.local.me.clock").then_some(WidgetSize {
+        (id.as_str() == "widget.local.user.clock").then_some(WidgetSize {
             size: Size { w: 240, h: 120 },
             resize: Resize::Between { min: Size { w: 160, h: 80 }, max: Size { w: 480, h: 240 } },
         })
     }
 
     fn widget(x: u32, y: u32, w: u32, h: u32) -> PlacedWidget {
-        PlacedWidget { package: QualifiedId::parse("widget.local.me.clock").unwrap(), placement: Placement { x, y, w, h } }
+        PlacedWidget { package: QualifiedId::parse("widget.local.user.clock").unwrap(), placement: Placement { x, y, w, h } }
     }
 
     #[test]
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn refuses_bad_placements_with_a_reason() {
-        let nope = PlacedWidget { package: QualifiedId::parse("widget.local.me.nope").unwrap(), placement: Placement { x: 0, y: 0, w: 8, h: 8 } };
+        let nope = PlacedWidget { package: QualifiedId::parse("widget.local.user.nope").unwrap(), placement: Placement { x: 0, y: 0, w: 8, h: 8 } };
         let cases = [
             (vec![widget(4, 0, 240, 120)], "multiples of 8"),
             (vec![widget(0, 0, 100, 120)], "not a size"),

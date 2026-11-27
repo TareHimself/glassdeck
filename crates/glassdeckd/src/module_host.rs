@@ -299,16 +299,16 @@ mod tests {
 
     #[test]
     fn only_what_changed_restarts_or_hears_about_it() {
-        let clock = entry("widget.local.me.clock", 1, serde_json::json!({ "seconds": true }));
+        let clock = entry("widget.local.user.clock", 1, serde_json::json!({ "seconds": true }));
         let running = BTreeMap::from([
             (0, clock.clone()),
-            (1, entry("widget.local.me.cpu", 1, serde_json::json!({}))),
-            (2, entry("widget.local.me.pomodoro", 1, serde_json::json!({}))),
+            (1, entry("widget.local.user.cpu", 1, serde_json::json!({}))),
+            (2, entry("widget.local.user.pomodoro", 1, serde_json::json!({}))),
         ]);
         let wanted = BTreeMap::from([
-            (0, entry("widget.local.me.clock", 1, serde_json::json!({ "seconds": false, "hours24": true }))),
-            (1, entry("widget.local.me.cpu", 2, serde_json::json!({}))),
-            (3, entry("widget.local.me.now-playing", 1, serde_json::json!({}))),
+            (0, entry("widget.local.user.clock", 1, serde_json::json!({ "seconds": false, "hours24": true }))),
+            (1, entry("widget.local.user.cpu", 2, serde_json::json!({}))),
+            (3, entry("widget.local.user.now-playing", 1, serde_json::json!({}))),
         ]);
         assert_eq!(widget_changes(&running, &wanted), vec![
             (0, Change::Reapply(BTreeSet::from(["hours24".to_owned(), "seconds".to_owned()]))),
@@ -317,7 +317,7 @@ mod tests {
             (3, Change::Start),
         ]);
         assert!(widget_changes(&running, &running).is_empty());
-        let swapped = entry("widget.local.me.cpu", 1, serde_json::json!({ "seconds": true }));
+        let swapped = entry("widget.local.user.cpu", 1, serde_json::json!({ "seconds": true }));
         assert_eq!(side_change(Some(&clock), Some(&swapped)), Some(Change::Start));
         assert_eq!(side_change(Some(&clock), None), Some(Change::Stop));
         assert_eq!(side_change(None, None), None);

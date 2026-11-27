@@ -444,7 +444,7 @@ mod tests {
     use super::*;
 
     fn new(sizing: Sizing) -> NewWidget {
-        NewWidget { title: "Weather \"now\"".into(), id: "local.me.weather".into(), sizing }
+        NewWidget { title: "Weather \"now\"".into(), id: "local.user.weather".into(), sizing }
     }
 
     const SIZE: Dims = Dims { w: 320, h: 160 };
@@ -493,10 +493,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let made = create_widget(&root, new(Sizing::Fixed { size: SIZE })).unwrap();
-        assert_eq!(made.id, "widget.local.me.weather");
+        assert_eq!(made.id, "widget.local.user.weather");
         assert!(!made.has_options && !made.runs_on_host, "empty scripts are no options and no host half");
         assert_eq!(list_widgets(&root).unwrap().len(), 1);
-        glassdeck_package::pack_folder(&root.join("widget.local.me.weather"), &root.join("packed.deck")).expect("a new widget packs as it is");
+        glassdeck_package::pack_folder(&root.join("widget.local.user.weather"), &root.join("packed.deck")).expect("a new widget packs as it is");
         assert!(matches!(create_widget(&root, new(Sizing::Fixed { size: SIZE })), Err(LibraryError::AlreadyExists { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
@@ -506,17 +506,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-actions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         create_widget(&root, new(Sizing::Any { size: SIZE })).unwrap();
-        assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy");
-        assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy-2");
-        rename_package(&root, "widget.local.me.weather-copy", "Sky").unwrap();
-        assert!(list_widgets(&root).unwrap().iter().any(|w| w.title == "Sky" && w.id == "widget.local.me.weather-copy"));
-        assert!(matches!(rename_package(&root, "widget.local.me.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
+        assert_eq!(duplicate_package(&root, "widget.local.user.weather").unwrap().as_str(), "widget.local.user.weather-copy");
+        assert_eq!(duplicate_package(&root, "widget.local.user.weather").unwrap().as_str(), "widget.local.user.weather-copy-2");
+        rename_package(&root, "widget.local.user.weather-copy", "Sky").unwrap();
+        assert!(list_widgets(&root).unwrap().iter().any(|w| w.title == "Sky" && w.id == "widget.local.user.weather-copy"));
+        assert!(matches!(rename_package(&root, "widget.local.user.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
         let deck = root.join("out.deck");
-        export_widget(&root, "widget.local.me.weather", &deck).unwrap();
+        export_widget(&root, "widget.local.user.weather", &deck).unwrap();
         assert!(matches!(import_widget(&root, &deck), Err(LibraryError::AlreadyExists { .. })));
         let imported = import_widget(&root.join("elsewhere"), &deck).unwrap();
         assert_eq!(imported.sizing, Sizing::Any { size: SIZE });
-        assert!(matches!(widget_folder(&root, "widget.local.me.nope"), Err(LibraryError::NotFound { .. })));
+        assert!(matches!(widget_folder(&root, "widget.local.user.nope"), Err(LibraryError::NotFound { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -525,17 +525,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-editor-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         create_widget(&root, new(Sizing::Fixed { size: SIZE })).unwrap();
-        let source = read_widget(&root, "widget.local.me.weather").unwrap();
+        let source = read_widget(&root, "widget.local.user.weather").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
         assert!(!source.widget.runs_on_host, "an empty host.luau is no host half");
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
-        let saved = save_widget(&root, "widget.local.me.weather", SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
+        let saved = save_widget(&root, "widget.local.user.weather", SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));
         let bad_version = SourceEdit { title: "Sky".into(), version: "1.1".into(), files: vec![] };
-        assert!(matches!(save_widget(&root, "widget.local.me.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
+        assert!(matches!(save_widget(&root, "widget.local.user.weather", bad_version), Err(LibraryError::InvalidVersion { .. })));
         let stray = SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "../x.luau".into(), text: String::new() }] };
-        assert!(save_widget(&root, "widget.local.me.weather", stray).is_err());
+        assert!(save_widget(&root, "widget.local.user.weather", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

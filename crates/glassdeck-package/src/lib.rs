@@ -452,8 +452,8 @@ pub(crate) mod tests {
 
     #[test]
     fn file_names_are_ids() {
-        assert_eq!(check_file_name("widget.local.me.clock.deck").unwrap().as_str(), "widget.local.me.clock");
-        for bad in ["clock.deck", "local.me.clock.deck", "widget.local.me.clock.deckbg", "../widget.a.b.deck", "widget.A.b.c.deck", "widget.x!.y.z.deck"] {
+        assert_eq!(check_file_name("widget.local.user.clock.deck").unwrap().as_str(), "widget.local.user.clock");
+        for bad in ["clock.deck", "local.user.clock.deck", "widget.local.user.clock.deckbg", "../widget.a.b.deck", "widget.A.b.c.deck", "widget.x!.y.z.deck"] {
             assert!(check_file_name(bad).is_err(), "{bad}");
         }
     }

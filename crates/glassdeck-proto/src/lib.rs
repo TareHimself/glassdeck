@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use session::{Action, SessionError, SessionState, step};
 
-pub const VERSION: u8 = 11;
+pub const VERSION: u8 = 12;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// The built-in canvas's package id: the default background, always on the keyboard and never a file.
@@ -646,14 +646,14 @@ mod tests {
         round_trip(Message::SelectBackground { name: "background.local.converted.late-night".into() });
         round_trip(Message::SetWidgets {
             widgets: vec![
-                WidgetSlot { package: "widget.local.me.clock".into(), x: 792, y: 16, w: 320, h: 160 },
-                WidgetSlot { package: "widget.local.me.pomodoro".into(), x: 1736, y: 16, w: 160, h: 160 },
+                WidgetSlot { package: "widget.local.user.clock".into(), x: 792, y: 16, w: 320, h: 160 },
+                WidgetSlot { package: "widget.local.user.pomodoro".into(), x: 1736, y: 16, w: 160, h: 160 },
             ],
         });
         round_trip(Message::SetWidgets { widgets: vec![] });
         round_trip(Message::Inventory {
             packages: vec![
-                HeldPackage { name: "widget.local.me.clock.deck".into(), digest: 0x0123_4567_89ab_cdef },
+                HeldPackage { name: "widget.local.user.clock.deck".into(), digest: 0x0123_4567_89ab_cdef },
                 HeldPackage { name: "background.local.converted.late-night.deck".into(), digest: 7 },
             ],
         });

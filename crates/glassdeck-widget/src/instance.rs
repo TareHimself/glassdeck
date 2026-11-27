@@ -411,7 +411,7 @@ mod tests {
         }
         fs::write(
             dir.join("src/deck.json"),
-            r#"{ "id": "local.me.test", "title": "Test", "version": "1.0.0", "type": "widget", "details": { "size": { "w": 64, "h": 32 } } }"#,
+            r#"{ "id": "local.user.test", "title": "Test", "version": "1.0.0", "type": "widget", "details": { "size": { "w": 64, "h": 32 } } }"#,
         )
         .unwrap();
         fs::write(dir.join("src/keyboard.luau"), script).unwrap();
@@ -422,7 +422,7 @@ mod tests {
     }
 
     fn widget() -> PlacedWidget {
-        PlacedWidget { package: glassdeck_package::QualifiedId::parse("widget.local.me.test").unwrap(), placement: Placement { x: 0, y: 0, w: 64, h: 32 } }
+        PlacedWidget { package: glassdeck_package::QualifiedId::parse("widget.local.user.test").unwrap(), placement: Placement { x: 0, y: 0, w: 64, h: 32 } }
     }
 
     fn font() -> Font {

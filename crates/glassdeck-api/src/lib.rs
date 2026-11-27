@@ -102,7 +102,19 @@ pub struct Status {
 pub struct LinkStatus {
     /// The keyboard's address, such as `10.0.0.186:7878`
     pub keyboard: String,
-    pub connected: bool,
+    pub connection: KeyboardLink,
+}
+
+/// Whether glassdeckd can talk to the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum KeyboardLink {
+    Connected,
+    /// Not answering yet
+    #[default]
+    Unreachable,
+    /// Answering, but with another version of the Link protocol, so one side needs updating
+    Incompatible { keyboard: u8, host: u8 },
 }
 
 /// One whole setup: the background, the stream to show when it's available, and the widgets. Each
@@ -132,7 +144,7 @@ pub struct ThemeBackground {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeWidget {
-    /// A widget's qualified id, such as `widget.local.me.clock`
+    /// A widget's qualified id, such as `widget.local.user.clock`
     pub package: String,
     /// Where it sits in the widget area, in panel pixels on an 8 px grid
     pub x: u32,
@@ -318,7 +330,7 @@ pub enum OptionKind {
 pub enum Event {
     /// Everything at once: first on connecting, and again if this client fell behind
     Status { status: Status },
-    Link { connected: bool },
+    Link { connection: KeyboardLink },
     Stream { status: StreamStatus },
     /// A new active theme
     Theme { theme: Theme },
@@ -330,10 +342,13 @@ mod tests {
 
     #[test]
     fn wire_shapes_are_tagged_and_snake_case() {
-        let event = Event::Link { connected: true };
-        assert_eq!(serde_json::to_value(&event).unwrap(), serde_json::json!({ "type": "link", "connected": true }));
-        let owner = OptionsOwner::Widget { index: 1, package: "widget.local.me.clock".into() };
-        assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "widget.local.me.clock" }));
+        let event = Event::Link { connection: KeyboardLink::Incompatible { keyboard: 11, host: 12 } };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({ "type": "link", "connection": { "state": "incompatible", "keyboard": 11, "host": 12 } })
+        );
+        let owner = OptionsOwner::Widget { index: 1, package: "widget.local.user.clock".into() };
+        assert_eq!(serde_json::to_value(&owner).unwrap(), serde_json::json!({ "kind": "widget", "index": 1, "package": "widget.local.user.clock" }));
         let item = PanelItem::Heading { text: "Look".into() };
         assert_eq!(serde_json::to_value(&item).unwrap(), serde_json::json!({ "item": "heading", "text": "Look" }));
         let kind = OptionKind::Toggle { default: true };

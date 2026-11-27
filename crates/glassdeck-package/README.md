@@ -15,8 +15,8 @@ A `.deck` is a ZIP of stored entries only, each aligned to 4 KB (`ALIGNMENT`), n
 | `Kind` | `Background(Content)` or `Widget(WidgetSize)` |
 | `Content` | `Video` (`file` and its `VideoFormat`: H.264 or HEVC at 1920x1080), `Web` (`entry` plus `properties`), `Canvas` |
 | `WidgetSize` | `size`, plus optional `min` and `max` (`Resize`) |
-| `PackageId` | `{tld}.{entity}.{name}` in lowercase, such as `local.me.clock`: what `deck.json` and `manifest.json` call the package. Unique within its type |
-| `QualifiedId` | `{type}.{id}`, such as `widget.local.me.clock`: what Glassdeck keys packages by, and the file name `<qualified id>.deck` (`check_file_name`) |
+| `PackageId` | `{tld}.{entity}.{name}` in lowercase, such as `local.user.clock`: what `deck.json` and `manifest.json` call the package. Unique within its type |
+| `QualifiedId` | `{type}.{id}`, such as `widget.local.user.clock`: what Glassdeck keys packages by, and the file name `<qualified id>.deck` (`check_file_name`) |
 | `Origin` | `WallpaperEngine`, `Converted`, or `Packed` (with a `source_digest` of what was packed) |
 | `check(ProbedVideo)` | Whether a video meets the background spec, as `VideoFormat` or `SpecMismatch` |
 

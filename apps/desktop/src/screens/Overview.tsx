@@ -8,7 +8,7 @@ import { BackgroundThumb } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
 import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
 import { pngUrl, rememberThumbnail, useThumbnails } from "../previews";
-import { describeError, useGlassdeckd } from "../glassdeckd";
+import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError } from "../library";
 import { NewBackgroundDialog } from "./NewBackgroundDialog";
 import { NewWidgetDialog } from "./NewWidgetDialog";
@@ -176,7 +176,8 @@ export function Overview() {
     setApplying(false);
     if (result.status === "ok") return setProblem(null);
     const error = result.error;
-    setProblem(error.kind === "glassdeckd" ? describeError(error.error) : describeLibraryError(error.error));
+    const keyboard = connection.state === "connected" ? keyboardProblem(connection.status.link.connection) : null;
+    setProblem(error.kind === "glassdeckd" ? (keyboard ?? describeError(error.error)) : describeLibraryError(error.error));
   };
 
   if (connection.state === "lost") {

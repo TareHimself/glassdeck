@@ -11,7 +11,7 @@ import { CanvasIcon, KIND_NAMES, VideoIcon } from "./backgroundKinds";
 import { VideoCutter, type Chosen, type Cut } from "./VideoCutter";
 import styles from "./NewBackgroundDialog.module.css";
 
-const ID_PREFIX = "local.me";
+const ID_PREFIX = "local.user";
 
 const KINDS: { value: BackgroundKind; name: ReactNode }[] = [
   {

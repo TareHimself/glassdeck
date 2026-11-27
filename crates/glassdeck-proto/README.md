@@ -11,7 +11,7 @@ No dependencies.
 
 ## Link
 
-Every message is an 8-byte header (`VERSION`, kind, length) and a body of at most `MAX_BODY_LEN`. A build refuses any other `VERSION` (now 11).
+Every message is an 8-byte header (`VERSION`, kind, length) and a body of at most `MAX_BODY_LEN`. A build refuses any other `VERSION` (now 12).
 
 - `Message`: the enum of every message, with `encode()` and `Message::read_from(reader)`.
   - Streams: `StreamStart(StreamInfo)`, `Frame(Frame)`, `StreamEnd`. A later `StreamStart` switches source.

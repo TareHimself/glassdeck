@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type Status, type Theme } from "./bindings";
+import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type KeyboardLink, type Status, type Theme } from "./bindings";
 
 export type Connection =
   | { state: "connecting" }
@@ -28,7 +28,7 @@ function applyEvent(current: Connection, event: Event): Connection {
   const status = current.status;
   switch (event.type) {
     case "link":
-      return { state: "connected", status: { ...status, link: { ...status.link, connected: event.connected } } };
+      return { state: "connected", status: { ...status, link: { ...status.link, connection: event.connection } } };
     case "stream":
       return { state: "connected", status: { ...status, stream: event.status } };
     case "theme":
@@ -46,6 +46,32 @@ export function describeError(error: GlassdeckdError): string {
       return error.error.error;
     case "bad_answer":
       return `glassdeckd sent something unexpected: ${error.reason}`;
+  }
+}
+
+/** Why the keyboard can't be used, in words that say what to do; null when it's connected. */
+export function keyboardProblem(link: KeyboardLink): string | null {
+  switch (link.state) {
+    case "connected":
+      return null;
+    case "unreachable":
+      return "The keyboard isn't answering. Check that it's on and on the same network as this PC.";
+    case "incompatible":
+      return link.keyboard < link.host
+        ? "The keyboard's Glassdeck software is older than this PC's. Update the keyboard, then apply again."
+        : "This PC's Glassdeck is older than the keyboard's. Update it, then apply again.";
+  }
+}
+
+/** The sidebar's short name for the keyboard link. */
+export function keyboardLabel(link: KeyboardLink): string {
+  switch (link.state) {
+    case "connected":
+      return "Keyboard connected";
+    case "unreachable":
+      return "Keyboard not connected";
+    case "incompatible":
+      return link.keyboard < link.host ? "Keyboard needs an update" : "Glassdeck needs an update";
   }
 }
 

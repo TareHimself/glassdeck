@@ -2,9 +2,9 @@
   "format": 1,
   "background": { "package": "background.local.glassdeck.gradient", "options": {} },
   "widgets": [
-    { "package": "widget.local.me.cpu-meter", "x": 0, "y": 64, "w": 320, "h": 120, "options": {} },
-    { "package": "widget.local.me.clock", "x": 792, "y": 16, "w": 320, "h": 160, "options": { "seconds": true } },
-    { "package": "widget.local.me.now-playing", "x": 1232, "y": 16, "w": 400, "h": 160, "options": {} },
-    { "package": "widget.local.me.pomodoro", "x": 1736, "y": 16, "w": 160, "h": 160, "options": {} }
+    { "package": "widget.local.user.cpu-meter", "x": 0, "y": 64, "w": 320, "h": 120, "options": {} },
+    { "package": "widget.local.user.clock", "x": 792, "y": 16, "w": 320, "h": 160, "options": { "seconds": true } },
+    { "package": "widget.local.user.now-playing", "x": 1232, "y": 16, "w": 400, "h": 160, "options": {} },
+    { "package": "widget.local.user.pomodoro", "x": 1736, "y": 16, "w": 160, "h": 160, "options": {} }
   ]
 }

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router";
-import { describeError, useGlassdeckd, type Connection } from "./glassdeckd";
+import { describeError, keyboardLabel, useGlassdeckd, type Connection } from "./glassdeckd";
 import styles from "./Layout.module.css";
 
 function linkSummary(connection: Connection): { on: boolean; label: string; detail: string } {
@@ -11,7 +11,7 @@ function linkSummary(connection: Connection): { on: boolean; label: string; deta
       return { on: false, label: "No glassdeckd", detail: describeError(connection.error) };
     case "connected": {
       const { link } = connection.status;
-      return { on: link.connected, label: link.connected ? "Keyboard connected" : "Keyboard not connected", detail: link.keyboard };
+      return { on: link.connection.state === "connected", label: keyboardLabel(link.connection), detail: link.keyboard };
     }
   }
 }

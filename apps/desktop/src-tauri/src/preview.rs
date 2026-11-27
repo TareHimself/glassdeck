@@ -347,9 +347,9 @@ mod tests {
 
     fn new_widget(root: &Path) -> PathBuf {
         let size = Dims { w: 320, h: 160 };
-        let new = NewWidget { title: "Sky".into(), id: "local.me.sky".into(), sizing: Sizing::Fixed { size } };
+        let new = NewWidget { title: "Sky".into(), id: "local.user.sky".into(), sizing: Sizing::Fixed { size } };
         create_widget(root, new).unwrap();
-        root.join("widget.local.me.sky")
+        root.join("widget.local.user.sky")
     }
 
     #[test]

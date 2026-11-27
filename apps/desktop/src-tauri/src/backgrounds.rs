@@ -276,14 +276,14 @@ mod tests {
     #[test]
     fn a_canvas_starts_as_the_gradient_with_every_script_and_lists_as_a_canvas() {
         let root = scratch("canvas");
-        let (made, conversion) = create_background(&root, new("Aurora", "local.me.aurora", NewContent::Canvas)).unwrap();
+        let (made, conversion) = create_background(&root, new("Aurora", "local.user.aurora", NewContent::Canvas)).unwrap();
         assert!(conversion.is_none());
-        assert_eq!((made.id.as_str(), made.kind), ("background.local.me.aurora", BackgroundKind::Canvas));
-        let folder = root.join("background.local.me.aurora");
+        assert_eq!((made.id.as_str(), made.kind), ("background.local.user.aurora", BackgroundKind::Canvas));
+        let folder = root.join("background.local.user.aurora");
         for name in [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT] {
             assert!(folder.join(name).is_file(), "{name}");
         }
-        assert!(matches!(create_background(&root, new("Aurora", "local.me.aurora", NewContent::Canvas)), Err(LibraryError::AlreadyExists { .. })));
+        assert!(matches!(create_background(&root, new("Aurora", "local.user.aurora", NewContent::Canvas)), Err(LibraryError::AlreadyExists { .. })));
         assert!(list_widgets(&root).unwrap().is_empty(), "a background isn't a widget");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -296,38 +296,38 @@ mod tests {
         let fake = root.join("rain.mp4");
         fs::write(&fake, b"not really a video").unwrap();
         for source in [fake, root.join("gone.mp4")] {
-            let video = new("Rain", "local.me.rain", NewContent::Video { source: source.display().to_string(), cut });
+            let video = new("Rain", "local.user.rain", NewContent::Video { source: source.display().to_string(), cut });
             assert!(matches!(create_background(&root, video), Err(LibraryError::BadVideo { .. })), "{}", source.display());
         }
-        assert!(!root.join("background.local.me.rain").exists());
+        assert!(!root.join("background.local.user.rain").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn the_canvas_editor_reads_every_file_and_saves_title_and_version() {
         let root = scratch("editor");
-        create_background(&root, new("Aurora", "local.me.aurora", NewContent::Canvas)).unwrap();
-        let source = read_canvas(&root, "background.local.me.aurora").unwrap();
+        create_background(&root, new("Aurora", "local.user.aurora", NewContent::Canvas)).unwrap();
+        let source = read_canvas(&root, "background.local.user.aurora").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, CANVAS_FILES);
         let edit = SourceEdit { title: "Dawn".into(), version: "1.1.0".into(), files: vec![SourceFile { name: HOST_SCRIPT.into(), text: "-- later\n".into() }] };
-        let saved = save_canvas(&root, "background.local.me.aurora", edit).unwrap();
+        let saved = save_canvas(&root, "background.local.user.aurora", edit).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str()), ("Dawn", "1.1.0"));
         let stray = SourceEdit { title: "Dawn".into(), version: "1.1.0".into(), files: vec![SourceFile { name: "deck.json".into(), text: String::new() }] };
-        assert!(save_canvas(&root, "background.local.me.aurora", stray).is_err());
+        assert!(save_canvas(&root, "background.local.user.aurora", stray).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn card_actions_work_on_backgrounds_too() {
         let root = scratch("actions");
-        create_background(&root, new("Aurora", "local.me.aurora", NewContent::Canvas)).unwrap();
-        let copy = duplicate_package(&root, "background.local.me.aurora").unwrap();
-        assert_eq!(copy.as_str(), "background.local.me.aurora-copy");
+        create_background(&root, new("Aurora", "local.user.aurora", NewContent::Canvas)).unwrap();
+        let copy = duplicate_package(&root, "background.local.user.aurora").unwrap();
+        assert_eq!(copy.as_str(), "background.local.user.aurora-copy");
         rename_package(&root, copy.as_str(), "Dawn").unwrap();
         let titles: Vec<String> = list_backgrounds(&root).unwrap().into_iter().map(|b| b.title).collect();
         assert_eq!(titles, ["Aurora", "Dawn"]);
-        assert!(matches!(parse_new(&root, new(" ", "local.me.x", NewContent::Canvas)), Err(LibraryError::InvalidTitle { .. })));
+        assert!(matches!(parse_new(&root, new(" ", "local.user.x", NewContent::Canvas)), Err(LibraryError::InvalidTitle { .. })));
         assert!(matches!(parse_new(&root, new("X", "aurora", NewContent::Canvas)), Err(LibraryError::InvalidId { .. })));
         fs::remove_dir_all(&root).unwrap();
     }

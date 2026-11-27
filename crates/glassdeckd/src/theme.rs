@@ -154,10 +154,10 @@ mod tests {
 
         let missing = Theme { background: ThemeBackground { package: "background.local.converted.nope".into(), options: Map::new() }, ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&missing, &packages).unwrap_err()).contains("isn't held"));
-        let widget = ThemeWidget { package: "widget.local.me.clock".into(), x: 0, y: 0, w: 8, h: 8, options: Map::new() };
+        let widget = ThemeWidget { package: "widget.local.user.clock".into(), x: 0, y: 0, w: 8, h: 8, options: Map::new() };
         let unknown_widget = Theme { widgets: vec![widget], ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&unknown_widget, &packages).unwrap_err()).contains("no widget"));
-        let widget_as_background = Theme { background: ThemeBackground { package: "widget.local.me.clock".into(), options: Map::new() }, ..starting.clone() };
+        let widget_as_background = Theme { background: ThemeBackground { package: "widget.local.user.clock".into(), options: Map::new() }, ..starting.clone() };
         assert!(format!("{:#}", ActiveTheme::check(&widget_as_background, &packages).unwrap_err()).contains("not a background"));
         let bad_stream = Theme { stream: Some("Big Screen".into()), ..starting };
         assert!(ActiveTheme::check(&bad_stream, &packages).is_err());

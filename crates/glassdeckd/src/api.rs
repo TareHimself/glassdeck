@@ -116,7 +116,7 @@ impl Api {
 
     fn status(&self) -> Status {
         Status {
-            link: LinkStatus { keyboard: self.keyboard.to_string(), connected: self.uplink.is_connected() },
+            link: LinkStatus { keyboard: self.keyboard.to_string(), connection: self.uplink.link() },
             stream: self.runner.status(),
         }
     }

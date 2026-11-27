@@ -25,7 +25,7 @@ use active::ActivePackages;
 use api::Api;
 use config::Paths;
 use link::Uplink;
-use glassdeck_api::Event;
+use glassdeck_api::{Event, KeyboardLink};
 use runner::{Runner, RunnerEvent, StatusBoard};
 use tokio::sync::broadcast;
 
@@ -95,11 +95,11 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let (link_up, link_changed) = (events.clone(), published.clone());
     let (reported, keyboard_reports) = mpsc::channel::<()>();
     let uplink = Arc::new(Uplink::new(
-        move |connected| {
-            if connected {
+        move |connection| {
+            if connection == KeyboardLink::Connected {
                 let _ = link_up.send(RunnerEvent::LinkUp);
             }
-            let _ = link_changed.send(Event::Link { connected });
+            let _ = link_changed.send(Event::Link { connection });
         },
         move || {
             let _ = reported.send(());

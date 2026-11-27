@@ -9,7 +9,7 @@ import { Segments } from "../components/Segments";
 import { describeLibraryError, slug } from "../library";
 import styles from "./NewWidgetDialog.module.css";
 
-const ID_PREFIX = "local.me";
+const ID_PREFIX = "local.user";
 
 type Mode = Sizing["kind"];
 type Bound = "min" | "size" | "max";

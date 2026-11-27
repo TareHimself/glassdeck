@@ -157,7 +157,7 @@ mod tests {
     use crate::zip;
 
     const CLOCK: &str = r#"{
-        "id": "local.me.clock",
+        "id": "local.user.clock",
         "title": "Clock",
         "version": "1.0.0",
         "type": "widget",
@@ -197,8 +197,8 @@ mod tests {
         let scratch = Scratch::new("widget-pack");
         let script = r#"local face = keyboard.resource("dial/face.svg") return {}"#;
         let folder = clock_folder(&scratch, script, &[("keyboard/dial/face.svg", "<svg/>"), ("host/zones.json", "{}")]);
-        let package = pack_folder(&folder, &scratch.0.join("widget.local.me.clock.deck")).unwrap();
-        assert_eq!(package.id().as_str(), "widget.local.me.clock");
+        let package = pack_folder(&folder, &scratch.0.join("widget.local.user.clock.deck")).unwrap();
+        assert_eq!(package.id().as_str(), "widget.local.user.clock");
         assert!(package.manifest().widget().is_some());
         assert_eq!(package.keyboard_script().unwrap().as_deref(), Some(script));
         assert_eq!(package.host_script().unwrap(), None);
@@ -213,7 +213,7 @@ mod tests {
         let refused = |name: &str, script: &str, files: &[(&str, &str)]| {
             let scratch = Scratch::new(name);
             let folder = clock_folder(&scratch, script, files);
-            format!("{:#}", pack_folder(&folder, &scratch.0.join("widget.local.me.clock.deck")).err().expect("refused"))
+            format!("{:#}", pack_folder(&folder, &scratch.0.join("widget.local.user.clock.deck")).err().expect("refused"))
         };
         assert!(refused("widget-flat-asset", "return {}", &[("face.svg", "<svg/>")]).contains("holds only the keyboard/ and host/"));
         assert!(refused("widget-bad-name", "return {}", &[("keyboard/Face.svg", "<svg/>")]).contains("isn't a resource name"));
@@ -228,7 +228,7 @@ mod tests {
         let folder = scratch.0.join("cpu");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join(DECK_SOURCE), CLOCK).unwrap();
-        assert!(pack_folder(&folder, &scratch.0.join("widget.local.me.clock.deck")).is_err());
+        assert!(pack_folder(&folder, &scratch.0.join("widget.local.user.clock.deck")).is_err());
     }
 
     #[test]
@@ -237,7 +237,7 @@ mod tests {
         let folder = clock_folder(&scratch, "return {}", &[("keyboard/face.svg", "<svg/>"), ("host/zones.json", "{}")]);
         fs::write(folder.join(HOST_SCRIPT), "every(1, function() end)").unwrap();
         fs::write(folder.join(OPTIONS_SCRIPT), r#"option("seconds", toggle(true))"#).unwrap();
-        let package = pack_folder(&folder, &scratch.0.join("widget.local.me.clock.deck")).unwrap();
+        let package = pack_folder(&folder, &scratch.0.join("widget.local.user.clock.deck")).unwrap();
         assert!(package.runs_on_host());
         let copy = package.write_keyboard_copy(&scratch.0.join("keyboard.deck")).unwrap();
 
