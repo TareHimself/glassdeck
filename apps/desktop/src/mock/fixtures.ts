@@ -1,14 +1,14 @@
 import { BUILT_IN_BACKGROUND, type BackgroundSummary, type PanelLayout, type PanelRect, type SourceFile, type Status, type StreamEntry, type Theme, type WidgetSummary } from "../bindings";
 
 export const WIDGETS: WidgetSummary[] = [
-  { id: "widget.local.user.clock", title: "Clock", version: "1.0.0", sizing: { kind: "range", size: { w: 320, h: 160 }, min: { w: 160, h: 80 }, max: { w: 640, h: 248 } }, has_options: true, runs_on_host: false },
-  { id: "widget.local.user.now-playing", title: "Now playing", version: "1.0.0", sizing: { kind: "any", size: { w: 400, h: 160 } }, has_options: false, runs_on_host: true },
-  { id: "widget.local.user.pomodoro", title: "Pomodoro", version: "1.0.0", sizing: { kind: "fixed", size: { w: 160, h: 160 } }, has_options: false, runs_on_host: false },
+  { id: "widget.local.user.clock", title: "Clock", version: "1.0.0", sizing: { kind: "range", size: { w: 320, h: 160 }, min: { w: 160, h: 80 }, max: { w: 640, h: 248 } }, has_options: true, runs_on_host: false, preview: null },
+  { id: "widget.local.user.now-playing", title: "Now playing", version: "1.0.0", sizing: { kind: "any", size: { w: 400, h: 160 } }, has_options: false, runs_on_host: true, preview: null },
+  { id: "widget.local.user.pomodoro", title: "Pomodoro", version: "1.0.0", sizing: { kind: "fixed", size: { w: 160, h: 160 } }, has_options: false, runs_on_host: false, preview: null },
 ];
 
 export const BACKGROUNDS: BackgroundSummary[] = [
-  { id: "background.local.user.aurora", title: "Aurora", version: "1.0.0", kind: "canvas" },
-  { id: "background.local.user.rain", title: "Rain on glass", version: "1.0.0", kind: "video" },
+  { id: "background.local.user.aurora", title: "Aurora", version: "1.0.0", kind: "canvas", preview: null },
+  { id: "background.local.user.rain", title: "Rain on glass", version: "1.0.0", kind: "video", preview: null },
 ];
 
 export const THEME: Theme = {

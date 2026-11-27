@@ -9,6 +9,7 @@ mod library;
 mod lsp;
 mod options;
 mod preview;
+mod stills;
 
 use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};
 use canvas_preview::{CanvasPreview, CanvasUpdate};
@@ -115,12 +116,32 @@ async fn list_backgrounds() -> Result<Vec<BackgroundSummary>, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
-async fn create_background(app: AppHandle, conversions: State<'_, Conversions>, background: NewBackground) -> Result<BackgroundSummary, LibraryError> {
+async fn create_background(
+    app: AppHandle,
+    conversions: State<'_, Conversions>,
+    stills: State<'_, stills::Stills>,
+    background: NewBackground,
+) -> Result<BackgroundSummary, LibraryError> {
     let (made, conversion) = in_library(move |root| backgrounds::create_background(root, background)).await?;
-    if let Some(conversion) = conversion {
-        conversions.start(app, conversion);
+    match conversion {
+        Some(conversion) => conversions.start(app, conversion),
+        None => stills.request(made.id.clone()),
     }
     Ok(made)
+}
+
+/// Draws the package's still again in the background; a `StillUpdate` says when it's done.
+#[tauri::command]
+#[specta::specta]
+fn request_still(stills: State<'_, stills::Stills>, id: String) {
+    stills.request(id);
+}
+
+/// The built-in gradient's still, once drawn; it has no library folder or summary to carry it.
+#[tauri::command]
+#[specta::specta]
+async fn built_in_still() -> Result<Option<stills::Still>, LibraryError> {
+    in_library(|root| Ok(stills::built_in(root))).await
 }
 
 /// Runs every widget of the Overview's layout; their tiles arrive as `LayoutUpdate`s.
@@ -202,8 +223,10 @@ async fn read_canvas(id: String) -> Result<CanvasSource, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
-async fn save_canvas(id: String, edit: SourceEdit) -> Result<BackgroundSummary, LibraryError> {
-    in_library(move |root| backgrounds::save_canvas(root, &id, edit)).await
+async fn save_canvas(stills: State<'_, stills::Stills>, id: String, edit: SourceEdit) -> Result<BackgroundSummary, LibraryError> {
+    let saved = in_library(move |root| backgrounds::save_canvas(root, &id, edit)).await?;
+    stills.request(saved.id.clone());
+    Ok(saved)
 }
 
 /// Compiles the canvas as saved and type-checks its scripts.
@@ -293,8 +316,10 @@ async fn lsp_stop(sessions: State<'_, lsp::Sessions>, session: lsp::LspSession) 
 
 #[tauri::command]
 #[specta::specta]
-async fn create_widget(widget: NewWidget) -> Result<WidgetSummary, LibraryError> {
-    in_library(move |root| library::create_widget(root, widget)).await
+async fn create_widget(stills: State<'_, stills::Stills>, widget: NewWidget) -> Result<WidgetSummary, LibraryError> {
+    let made = in_library(move |root| library::create_widget(root, widget)).await?;
+    stills.request(made.id.clone());
+    Ok(made)
 }
 
 /// Copies a widget or background; the copy's qualified id.
@@ -338,8 +363,10 @@ async fn read_widget(id: String) -> Result<WidgetSource, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
-async fn save_widget(id: String, edit: SourceEdit) -> Result<WidgetSummary, LibraryError> {
-    in_library(move |root| library::save_widget(root, &id, edit)).await
+async fn save_widget(stills: State<'_, stills::Stills>, id: String, edit: SourceEdit) -> Result<WidgetSummary, LibraryError> {
+    let saved = in_library(move |root| library::save_widget(root, &id, edit)).await?;
+    stills.request(saved.id.clone());
+    Ok(saved)
 }
 
 /// Where the native libraries are: `GLASSDECK_NATIVE`, else beside this program, else (a dev build in
@@ -516,8 +543,10 @@ fn bindings() -> Builder<tauri::Wry> {
             lsp_start,
             lsp_send,
             lsp_stop,
+            request_still,
+            built_in_still,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited, stills::StillUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .constant("BUILT_IN_BACKGROUND", glassdeck_proto::BUILT_IN_BACKGROUND)
@@ -551,6 +580,15 @@ fn main() {
             app.manage(Conversions::default());
             app.manage(LayoutPreview::start(app.handle().clone()));
             app.manage(CanvasPreview::start(app.handle().clone(), native_libraries().ok()));
+            app.manage(stills::Stills::start(app.handle().clone(), native_libraries().ok()));
+            if let Ok(root) = library::root() {
+                let scope = app.asset_protocol_scope();
+                for folder in [root.clone(), root.parent().unwrap_or(&root).join("stills")] {
+                    if let Err(e) = scope.allow_directory(&folder, true) {
+                        eprintln!("allowing stills in {}: {e}", folder.display());
+                    }
+                }
+            }
             let lsp_events = app.handle().clone();
             app.manage(lsp::Sessions::new(move |output| {
                 let emitted = match output {

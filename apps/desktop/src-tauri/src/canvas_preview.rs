@@ -37,6 +37,8 @@ const PREVIEW_WIDTH: u32 = 960;
 /// The fastest the preview draws, whatever the canvas asks for.
 const MAX_FPS: u32 = 30;
 const JPEG_QUALITY: u8 = 82;
+/// A still's width, the same as a video background's preview image
+const STILL_WIDTH: u32 = 480;
 const INPUTS_EVERY: Duration = Duration::from_millis(200);
 const IDLE: Duration = Duration::from_secs(1);
 
@@ -293,8 +295,14 @@ fn script<'a>(files: &'a [SourceFile], name: &str) -> Option<&'a str> {
     files.iter().find(|f| f.name == name).map(|f| f.text.as_str()).filter(|text| !is_blank_script(text))
 }
 
-/// Compiles the editor's files and starts the canvas and its host half.
-fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String, serde_json::Value>) -> Result<Running> {
+/// The editor's files compiled for the GPU, with the scripts the host half runs.
+struct Compiled<'a> {
+    files: CanvasFiles,
+    options: Option<&'a str>,
+    host: Option<&'a str>,
+}
+
+fn compile<'a>(slang: &Slang, files: &'a [SourceFile]) -> Result<Compiled<'a>> {
     let shader = files.iter().find(|f| f.name == CANVAS_SOURCE).map(|f| f.text.as_str()).with_context(|| format!("there's no {CANVAS_SOURCE}"))?;
     let sources = CanvasSources {
         shader,
@@ -303,19 +311,53 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         options: script(files, OPTIONS_SCRIPT),
         host: script(files, HOST_SCRIPT),
     };
-    let compiled = compile_canvas(cx.slang()?, &sources)?;
-    let files = CanvasFiles {
+    let compiled = compile_canvas(slang, &sources)?;
+    let canvas_files = CanvasFiles {
         origin: Origin::Packed { from: "preview".into(), sources: String::new() },
         canvas: compiled.canvas,
         fragment: compiled.fragment,
         script: sources.keyboard.map(str::to_owned),
     };
+    Ok(Compiled { files: canvas_files, options: sources.options, host: sources.host })
+}
+
+/// The canvas drawn once at `at` seconds, as a JPEG: options at their defaults, and nothing from the PC
+/// (no media, no timers), the way it first appears. Makes its own GL context, so any thread may call it.
+pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<u8>> {
+    let compiled = compile(slang, files)?;
+    let offscreen = Offscreen::new(render_size(compiled.files.canvas.scale))?;
+    let mut program = CanvasProgram::new(&offscreen.gl, compiled.files, None)?;
+    let sources = Sources {
+        label: "host.luau".into(),
+        options: compiled.options.map(str::to_owned),
+        host: compiled.host.map(str::to_owned),
+        reader: None,
+        send_limit: None,
+        print: None,
+    };
+    let nothing_playing: SharedNowPlaying = Arc::new(Mutex::new(None));
+    if let Some(host) = HostSide::start(sources, &glassdeck_host::system(), &nothing_playing)? {
+        host.apply_options(&read_values("still", host.first(), serde_json::Map::new().iter()), None)?;
+        if let Some(payload) = host.take_sent() {
+            program.deliver(&payload)?;
+        }
+    }
+    let size = offscreen.size();
+    program.draw(&offscreen.gl, offscreen.framebuffer(), size, at)?;
+    jpeg_bytes(&offscreen.read_rgb(), size, STILL_WIDTH)
+}
+
+/// Compiles the editor's files and starts the canvas and its host half.
+fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String, serde_json::Value>) -> Result<Running> {
+    let compiled = compile(cx.slang()?, files)?;
+    let sources = (compiled.options, compiled.host);
+    let files = compiled.files;
     let offscreen = Offscreen::new(render_size(files.canvas.scale))?;
     let program = CanvasProgram::new(&offscreen.gl, files.clone(), Some(cx.printer(LogSource::Keyboard)))?;
     let host_sources = Sources {
         label: "host.luau".into(),
-        options: sources.options.map(str::to_owned),
-        host: sources.host.map(str::to_owned),
+        options: sources.0.map(str::to_owned),
+        host: sources.1.map(str::to_owned),
         reader: None,
         send_limit: None,
         print: Some(cx.printer(LogSource::Host)),
@@ -350,15 +392,20 @@ fn restart(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
 }
 
 /// 0RGB pixels to a base64 JPEG, scaled down to the preview's width.
-fn jpeg_of(pixels: &[u32], (width, height): (u32, u32)) -> Result<String> {
+fn jpeg_of(pixels: &[u32], size: (u32, u32)) -> Result<String> {
+    Ok(base64::engine::general_purpose::STANDARD.encode(jpeg_bytes(pixels, size, PREVIEW_WIDTH)?))
+}
+
+/// 0RGB pixels as JPEG bytes, scaled down to at most `max_width`.
+fn jpeg_bytes(pixels: &[u32], (width, height): (u32, u32), max_width: u32) -> Result<Vec<u8>> {
     let rgb: Vec<u8> = pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
     let mut image = RgbImage::from_raw(width, height, rgb).context("the frame isn't its size")?;
-    if width > PREVIEW_WIDTH {
-        image = image::imageops::thumbnail(&image, PREVIEW_WIDTH, height * PREVIEW_WIDTH / width);
+    if width > max_width {
+        image = image::imageops::thumbnail(&image, max_width, height * max_width / width);
     }
     let mut bytes = Vec::new();
     JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY).encode_image(&image).context("encoding a frame")?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    Ok(bytes)
 }
 
 #[cfg(test)]

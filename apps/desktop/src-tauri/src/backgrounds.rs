@@ -33,6 +33,8 @@ pub struct BackgroundSummary {
     pub title: String,
     pub version: String,
     pub kind: BackgroundKind,
+    /// Its still, once drawn
+    pub preview: Option<crate::stills::Still>,
 }
 
 #[derive(Clone, Debug, Deserialize, Type)]
@@ -97,7 +99,7 @@ fn starting_files(new: &ValidNewBackground) -> Vec<(&'static str, String)> {
 }
 
 /// What the folder holds decides the kind: `canvas.slang` or `video.json`.
-fn kind_of(folder: &Path) -> Option<BackgroundKind> {
+pub(crate) fn kind_of(folder: &Path) -> Option<BackgroundKind> {
     if folder.join(CANVAS_SOURCE).is_file() {
         Some(BackgroundKind::Canvas)
     } else if folder.join(VIDEO_RECORD).is_file() {
@@ -122,6 +124,7 @@ fn summarize(folder: &Path) -> Result<Option<BackgroundSummary>, LibraryError> {
         title: deck.title,
         version: deck.version.to_string(),
         kind,
+        preview: crate::stills::still_of(folder),
     }))
 }
 

@@ -169,11 +169,20 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
 
 impl Session {
     pub(crate) fn new(out: Out) -> Result<Self> {
-        let font = glassdeck_widget::load_font(None)?;
         let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
             out(PreviewChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
             Arc::new(Mutex::new(None))
         });
+        Self::with_media(out, now_playing)
+    }
+
+    /// A session that reports nothing playing, for stills: widgets draw their placeholders.
+    pub(crate) fn without_media(out: Out) -> Result<Self> {
+        Self::with_media(out, Arc::new(Mutex::new(None)))
+    }
+
+    fn with_media(out: Out, now_playing: SharedNowPlaying) -> Result<Self> {
+        let font = glassdeck_widget::load_font(None)?;
         static SESSIONS: AtomicU32 = AtomicU32::new(0);
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         let scratch = std::env::temp_dir().join(format!("glassdeck-preview-{}-{session}", std::process::id()));

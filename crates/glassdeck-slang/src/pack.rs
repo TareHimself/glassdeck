@@ -97,7 +97,11 @@ pub fn pack_canvas(slang: &Slang, luau: &LuauChecker, folder: &Path, out: &Path)
 
     let from = folder.file_name().and_then(|n| n.to_str()).unwrap_or("canvas").to_owned();
     let origin = Origin::Packed { from, sources: canvas_sources(&deck_text, API_MODULE, &shader, sources.scripts()) };
-    let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(compiled.canvas))))?;
+    let preview = glassdeck_package::folder_preview(folder);
+    let mut writer = PackageWriter::create(out, deck.manifest(origin, Kind::Background(Content::Canvas(compiled.canvas)), preview.as_ref()))?;
+    if let Some(preview) = &preview {
+        writer.add_file(&preview.entry, &preview.path)?;
+    }
     writer.add_bytes(SHADER, compiled.fragment.as_bytes())?;
     for (entry, text) in [(KEYBOARD_SCRIPT, &keyboard), (OPTIONS_SCRIPT, &options), (HOST_SCRIPT, &host)] {
         if let Some(text) = text {

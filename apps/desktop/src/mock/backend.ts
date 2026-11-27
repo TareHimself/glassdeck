@@ -1,5 +1,6 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC } from "@tauri-apps/api/mocks";
+import { BUILT_IN_BACKGROUND } from "../bindings";
 import type {
   BackgroundSummary,
   Dims,
@@ -118,7 +119,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   list_widgets: () => state.widgets,
   create_widget: ({ widget: created }) => {
     const { title, id, sizing } = created as NewWidget;
-    const summary: WidgetSummary = { id: `widget.${id}`, title, version: "1.0.0", sizing, has_options: false, runs_on_host: false };
+    const summary: WidgetSummary = { id: `widget.${id}`, title, version: "1.0.0", sizing, has_options: false, runs_on_host: false, preview: null };
     state.widgets.push(summary);
     return summary;
   },
@@ -142,7 +143,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   list_backgrounds: () => state.backgrounds,
   create_background: ({ background: created }) => {
     const { title, id, content } = created as NewBackground;
-    const summary: BackgroundSummary = { id: `background.${id}`, title, version: "1.0.0", kind: content.kind };
+    const summary: BackgroundSummary = { id: `background.${id}`, title, version: "1.0.0", kind: content.kind, preview: null };
     state.backgrounds.push(summary);
     return summary;
   },
@@ -177,6 +178,11 @@ const handlers: Record<string, (args: Args) => unknown> = {
   preview_resize: () => undefined,
   preview_options: () => undefined,
   stop_preview: () => undefined,
+  request_still: ({ id }) => {
+    window.setTimeout(() => drawStill(id as string), 50);
+    return undefined;
+  },
+  built_in_still: () => null,
   lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package", settings: {} }),
   lsp_send: ({ session, message }) => {
     fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);
@@ -217,6 +223,19 @@ function fakeLanguageServer(session: number, request: LspRequest) {
     default:
       if (request.id !== undefined) reply({ id: request.id, result: null });
   }
+}
+
+/** A still the way the real worker draws one: a widget's first tile, or a canvas at time 0. Videos have none until converted. */
+function drawStill(id: string) {
+  const found = state.widgets.find((w) => w.id === id);
+  const canvas = id === BUILT_IN_BACKGROUND || state.backgrounds.some((b) => b.id === id && b.kind === "canvas");
+  const path = found
+    ? `data:image/png;base64,${widgetTile(found.title, found.sizing.size.w, found.sizing.size.h, 0)}`
+    : canvas
+      ? `data:image/jpeg;base64,${canvasFrame(id, 0)}`
+      : null;
+  const update = path ? { state: "ready", id, still: { path, stamp: Date.now() } } : { state: "failed", id, reason: "a video's still comes from converting it" };
+  void emit("still-update", update);
 }
 
 /** Lets a test put the fake keyboard in another state, as glassdeckd would report it. */

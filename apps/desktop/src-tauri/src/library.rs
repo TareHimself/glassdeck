@@ -34,6 +34,8 @@ pub struct WidgetSummary {
     pub sizing: Sizing,
     pub has_options: bool,
     pub runs_on_host: bool,
+    /// Its still, once drawn
+    pub preview: Option<crate::stills::Still>,
 }
 
 #[derive(Clone, Debug, Deserialize, Type)]
@@ -194,6 +196,7 @@ fn summarize(folder: &Path) -> Result<Option<WidgetSummary>, LibraryError> {
         sizing,
         has_options: has_script(folder, OPTIONS_SCRIPT)?,
         runs_on_host: has_script(folder, HOST_SCRIPT)?,
+        preview: crate::stills::still_of(folder),
     }))
 }
 

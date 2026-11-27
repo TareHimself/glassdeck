@@ -67,6 +67,10 @@ export const commands = {
 	/**  Sends one JSON-RPC message to a running language server. */
 	lspSend: (session: LspSession, message: string, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_send", { session, message }, options)),
 	lspStop: (session: LspSession, options?: InvokeOptions) => typedError<null, LspError>(__TAURI_INVOKE("lsp_stop", { session }, options)),
+	/**  Draws the package's still again in the background; a `StillUpdate` says when it's done. */
+	requestStill: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<void>("request_still", { id }, options),
+	/**  The built-in gradient's still, once drawn; it has no library folder or summary to carry it. */
+	builtInStill: (options?: InvokeOptions) => typedError<Still | null, LibraryError>(__TAURI_INVOKE("built_in_still", undefined, options)),
 };
 
 /** Events */
@@ -77,6 +81,7 @@ export const events = {
 	lspExited: makeEvent<LspExited, LspExited>("lsp-exited"),
 	lspMessage: makeEvent<LspMessage, LspMessage>("lsp-message"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
+	stillUpdate: makeEvent<StillUpdate, StillUpdate>("still-update"),
 	videoUpdate: makeEvent<VideoUpdate, VideoUpdate>("video-update"),
 };
 
@@ -106,6 +111,8 @@ export type BackgroundSummary = {
 	title: string,
 	version: string,
 	kind: BackgroundKind,
+	/**  Its still, once drawn */
+	preview: Still | null,
 };
 
 export type CanvasChange = { state: "frame"; jpeg: string; time: number | null } | 
@@ -378,6 +385,14 @@ export type Status = {
 	stream: StreamStatus,
 };
 
+/**  A still on disk, with a stamp that changes whenever it's redrawn, so the webview doesn't show a stale copy. */
+export type Still = {
+	path: string,
+	stamp: number,
+};
+
+export type StillUpdate = { state: "ready"; id: string; still: Still } | { state: "failed"; id: string; reason: string };
+
 export type StreamEntry = {
 	name: string,
 	mode: StreamMode,
@@ -509,6 +524,8 @@ export type WidgetSummary = {
 	sizing: Sizing,
 	has_options: boolean,
 	runs_on_host: boolean,
+	/**  Its still, once drawn */
+	preview: Still | null,
 };
 
 /* Tauri Specta runtime */

@@ -51,3 +51,36 @@
 .footprint[data-empty] {
   border: 1px dashed rgba(255, 255, 255, 0.4);
 }
+
+/* The live view fades in over the still when its first frame is in */
+.live {
+  animation: fade-in 180ms ease-out;
+}
+
+.live[data-hidden] {
+  visibility: hidden;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.spinner {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

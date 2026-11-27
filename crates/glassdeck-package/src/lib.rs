@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 
 pub use canvas::{CANVAS_API, Canvas, CanvasFiles, CanvasScripts, InputField, InputKind, canvas_sources, source_digest};
-pub use folder::{DECK_SOURCE, DeckSource, is_blank_script, pack_folder, read_script};
+pub use folder::{DECK_SOURCE, DeckSource, FolderPreview, PREVIEW_FILES, folder_preview, is_blank_script, pack_folder, read_script};
 pub use manifest::{
     Content, FrameRate, Kind, Manifest, Origin, PackageId, PackageType, ProbedCodec, QualifiedId, ProbedVideo, Resize, Size, SpecMismatch, Version, VideoFormat,
     WidgetSize, check,

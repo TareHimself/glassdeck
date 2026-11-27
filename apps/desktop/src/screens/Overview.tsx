@@ -7,7 +7,7 @@ import { Select } from "../components/Select";
 import { BackgroundThumb } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
 import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
-import { nextPreviewRun, pngUrl, rememberThumbnail, useThumbnails } from "../previews";
+import { nextPreviewRun } from "../previews";
 import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError } from "../library";
 import { NewBackgroundDialog } from "./NewBackgroundDialog";
@@ -32,7 +32,7 @@ const KEY_LABELS = [
 const MISSING_BACKGROUND = "Missing background";
 
 /** The built-in gradient, offered beside the library's backgrounds. */
-const BUILT_IN: BackgroundSummary = { id: BUILT_IN_BACKGROUND, title: "Gradient", version: "", kind: "canvas" };
+const BUILT_IN: BackgroundSummary = { id: BUILT_IN_BACKGROUND, title: "Gradient", version: "", kind: "canvas", preview: null };
 
 /** A rectangle on the panel as percentages of the preview, which shows the whole panel. */
 function placed(rect: PanelRect) {
@@ -105,8 +105,6 @@ function useWidgetTiles(widgets: ThemeWidget[]): Tile[] {
     const listening = events.layoutUpdate.listen(({ payload }) => {
       if (payload.run !== run.current) return;
       const change = payload.change;
-      const id = placedWidgets.current[change.index]?.package;
-      if (change.state === "tile" && id && !useThumbnails.getState()[id]) rememberThumbnail(id, pngUrl(change.png));
       setTiles((all) => {
         const next = [...all];
         next[change.index] = change.state === "tile" ? { png: change.png } : { stopped: change.reason };
@@ -135,11 +133,13 @@ function useWidgetTiles(widgets: ThemeWidget[]): Tile[] {
 function useLibrary() {
   const [backgrounds, setBackgrounds] = useState<BackgroundSummary[]>([]);
   const [widgets, setWidgets] = useState<WidgetSummary[]>([]);
+  const [builtIn, setBuiltIn] = useState<BackgroundSummary>(BUILT_IN);
   useEffect(() => {
     void commands.listBackgrounds().then((r) => r.status === "ok" && setBackgrounds(r.data));
     void commands.listWidgets().then((r) => r.status === "ok" && setWidgets(r.data));
+    void commands.builtInStill().then((r) => r.status === "ok" && setBuiltIn({ ...BUILT_IN, preview: r.data }));
   }, []);
-  return { backgrounds: [BUILT_IN, ...backgrounds], widgets };
+  return { backgrounds: [builtIn, ...backgrounds], widgets };
 }
 
 export function Overview() {

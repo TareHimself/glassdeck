@@ -36,3 +36,21 @@ test("a late frame from the previous preview never shows on the next", async ({ 
   expect(shown.length).toBeGreaterThan(0);
   expect(shown.filter((src) => src.includes(stale))).toEqual([]);
 });
+
+test("cards ask for a missing still and show it", async ({ page }) => {
+  await page.goto("/widgets");
+  for (const title of ["Clock", "Now playing", "Pomodoro"]) {
+    await expect(page.getByRole("img", { name: title })).toBeVisible();
+  }
+});
+
+test("hovering a card plays it over its still", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Change" }).click();
+  const aurora = page.getByRole("dialog", { name: "Change background" }).getByRole("button", { name: /Aurora/ });
+  await expect(aurora.locator("img")).toHaveCount(1);
+  await aurora.hover();
+  await expect(aurora.locator("img")).toHaveCount(2);
+  const [still, live] = await aurora.locator("img").evaluateAll((images) => images.map((image) => (image as HTMLImageElement).src));
+  expect(still).not.toBe(live);
+});

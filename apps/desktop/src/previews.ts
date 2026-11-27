@@ -1,15 +1,41 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
-import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Value } from "./bindings";
+import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Still, type Value } from "./bindings";
 
 type Values = { [key: string]: Value };
 
-/** The last frame seen of each package, by qualified id, as an image URL. Lasts while the app runs. */
-export const useThumbnails = create<{ [id: string]: string }>(() => ({}));
+/** Fresh stills by package id, from `StillUpdate`s, newer than what the summaries carried. */
+const useFreshStills = create<{ [id: string]: Still }>(() => ({}));
+const requested = new Set<string>();
+let listeningForStills = false;
 
-export function rememberThumbnail(id: string, url: string) {
-  useThumbnails.setState({ [id]: url });
+function listenForStills() {
+  if (listeningForStills) return;
+  listeningForStills = true;
+  void events.stillUpdate.listen(({ payload }) => {
+    if (payload.state === "ready") useFreshStills.setState({ [payload.id]: payload.still });
+    else console.warn(`no still for ${payload.id}: ${payload.reason}`);
+  });
+}
+
+/** Where the webview loads a still from. One already inline as a data URL is used as it is. */
+export function stillSrc(still: Still): string {
+  if (still.path.startsWith("data:")) return still.path;
+  return `${convertFileSrc(still.path)}?v=${still.stamp}`;
+}
+
+/** The package's still as an image URL: the freshest one known, asked for once when there's none yet. */
+export function useStill(id: string, fromSummary: Still | null | undefined): string | null {
+  listenForStills();
+  const fresh = useFreshStills((s) => s[id]);
+  const still = fresh ?? fromSummary ?? null;
+  useEffect(() => {
+    if (still || requested.has(id)) return;
+    requested.add(id);
+    void commands.requestStill(id);
+  }, [id, still]);
+  return still ? stillSrc(still) : null;
 }
 
 export const jpegUrl = (base64: string) => `data:image/jpeg;base64,${base64}`;
@@ -81,12 +107,9 @@ export function useCanvasPreview(id: string | null, values: Values = {}): string
   useEffect(() => {
     setJpeg(null);
     if (id === null) return;
-    let last: string | null = null;
     let alive = true;
     const claim = claimCanvas((change) => {
       if (change.state === "frame") {
-        if (last === null) rememberThumbnail(id, jpegUrl(change.jpeg));
-        last = change.jpeg;
         setJpeg(change.jpeg);
       } else if (change.state === "cleared") {
         setJpeg(null);
@@ -98,7 +121,6 @@ export function useCanvasPreview(id: string | null, values: Values = {}): string
     return () => {
       alive = false;
       claim.release();
-      if (last) rememberThumbnail(id, jpegUrl(last));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, valuesKey]);
@@ -111,19 +133,14 @@ export function useWidgetPreview(id: string | null, size: Dims): string | null {
   useEffect(() => {
     setPng(null);
     if (id === null) return;
-    let last: string | null = null;
     const run = nextPreviewRun();
     const listening = events.previewUpdate.listen(({ payload }) => {
-      if (payload.run !== run || payload.change.state !== "frame") return;
-      if (last === null) rememberThumbnail(id, pngUrl(payload.change.png));
-      last = payload.change.png;
-      setPng(payload.change.png);
+      if (payload.run === run && payload.change.state === "frame") setPng(payload.change.png);
     });
     void commands.previewWidget(id, [], size, {}, run);
     return () => {
       void listening.then((unlisten) => unlisten());
       void commands.stopPreview();
-      if (last) rememberThumbnail(id, pngUrl(last));
     };
   }, [id, size.w, size.h]);
   return png;
