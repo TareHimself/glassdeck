@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ToggleGroup } from "radix-ui";
 import styles from "./Segments.module.css";
 
 export function Segments<T extends string>(props: {
@@ -9,12 +10,22 @@ export function Segments<T extends string>(props: {
   compact?: boolean;
 }) {
   return (
-    <div role="group" aria-label={props.label} className={styles.segments} data-compact={props.compact || undefined}>
+    <ToggleGroup.Root
+      type="single"
+      aria-label={props.label}
+      className={styles.segments}
+      data-compact={props.compact || undefined}
+      value={props.value}
+      onValueChange={(value) => {
+        const picked = props.options.find((option) => option.value === value);
+        if (picked) props.onChange(picked.value);
+      }}
+    >
       {props.options.map(({ value, name }) => (
-        <button key={value} type="button" className={styles.segment} aria-pressed={value === props.value} onClick={() => props.onChange(value)}>
+        <ToggleGroup.Item key={value} value={value} className={styles.segment}>
           {name}
-        </button>
+        </ToggleGroup.Item>
       ))}
-    </div>
+    </ToggleGroup.Root>
   );
 }

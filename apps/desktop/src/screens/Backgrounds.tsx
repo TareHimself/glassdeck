@@ -22,7 +22,7 @@ const FILTERS: { value: Filter; name: string }[] = [
   { value: "video", name: KIND_NAMES.video },
 ];
 
-function BackgroundCard(props: { background: BackgroundSummary; active: boolean; menuOpen: boolean; onMenu: (open: boolean) => void; actions: CardActions }) {
+function BackgroundCard(props: { background: BackgroundSummary; active: boolean; actions: CardActions }) {
   const { background } = props;
   return (
     <LibraryCard
@@ -47,7 +47,6 @@ export function Backgrounds() {
   const [library, setLibrary] = useState<Library>({ state: "loading" });
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const reload = async () => {
@@ -98,8 +97,6 @@ export function Backgrounds() {
             key={background.id}
             background={background}
             active={theme?.background.package === background.id}
-            menuOpen={openMenu === background.id}
-            onMenu={(open) => setOpenMenu(open ? background.id : null)}
             actions={actions}
           />
         ))}

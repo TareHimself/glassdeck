@@ -1,9 +1,8 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { Input } from "./Input";
 import { Menu, MenuDivider, MenuItem, MenuLink } from "./Menu";
 import { Tag } from "./Tag";
-import { useClickOutside } from "./useClickOutside";
 import styles from "./LibraryCard.module.css";
 
 export type CardActions = {
@@ -22,8 +21,6 @@ type Props = {
   preview: ReactNode;
   tags?: ReactNode;
   active: boolean;
-  menuOpen: boolean;
-  onMenu: (open: boolean) => void;
   actions: CardActions;
 };
 
@@ -37,19 +34,12 @@ function DotsIcon() {
   );
 }
 
-/** A widget or background in the library: its preview, title, id and tags, with the ⋯ menu. */
-export function LibraryCard({ id, title, version, href, preview, tags, active, menuOpen, onMenu, actions }: Props) {
+/** A widget or background in the library: its preview, title and tags, with the ⋯ menu. */
+export function LibraryCard({ id, title, version, href, preview, tags, active, actions }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
-  const slotRef = useRef<HTMLDivElement>(null);
-
-  useClickOutside(menuOpen, slotRef, useCallback(() => onMenu(false), [onMenu]));
-
-  const act = (run: () => void) => () => {
-    onMenu(false);
-    run();
-  };
-
+  const focusRenameField = useRef(false);
+  const renameField = useRef<HTMLInputElement>(null);
   const finishRename = () => {
     setRenaming(false);
     if (draft.trim() && draft !== title) actions.rename(id, draft);
@@ -63,8 +53,8 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, m
         <div className={styles.nameRow}>
           {renaming ? (
             <Input
+              ref={renameField}
               variant="inline"
-              autoFocus
               aria-label="Title"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -82,7 +72,6 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, m
           )}
           <span className={styles.small}>{version}</span>
         </div>
-        <span className={styles.small}>{id}</span>
         <div className={styles.tags}>
           {tags}
           {active && <Tag tone="active">Active</Tag>}
@@ -92,7 +81,7 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, m
   );
 
   return (
-    <div className={styles.slot} ref={slotRef}>
+    <div className={styles.slot}>
       {renaming ? (
         <div className={styles.card}>{body}</div>
       ) : (
@@ -100,26 +89,40 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, m
           {body}
         </Link>
       )}
-      <button type="button" className={styles.more} aria-label={`More actions for ${title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => onMenu(!menuOpen)}>
-        <DotsIcon />
-      </button>
-      {menuOpen && (
-        <Menu className={styles.menu}>
-          <MenuLink to={href}>Edit</MenuLink>
-          <MenuItem onClick={act(() => actions.duplicate(id))}>Duplicate</MenuItem>
-          <MenuItem onClick={act(() => setRenaming(true))}>Rename</MenuItem>
-          <MenuItem onClick={act(() => actions.export(id))}>Export .deck</MenuItem>
-          <MenuItem onClick={act(() => actions.reveal(id))}>Show in folder</MenuItem>
-          <MenuDivider />
-          {active ? (
-            <MenuItem disabled>Delete (active)</MenuItem>
-          ) : (
-            <MenuItem danger onClick={act(() => actions.remove(id))}>
-              Delete
-            </MenuItem>
-          )}
-        </Menu>
-      )}
+      <Menu
+        onCloseAutoFocus={(e) => {
+          if (!focusRenameField.current) return;
+          focusRenameField.current = false;
+          e.preventDefault();
+          renameField.current?.select();
+        }}
+        trigger={
+          <button type="button" className={styles.more} aria-label={`More actions for ${title}`}>
+            <DotsIcon />
+          </button>
+        }
+      >
+        <MenuLink to={href}>Edit</MenuLink>
+        <MenuItem onSelect={() => actions.duplicate(id)}>Duplicate</MenuItem>
+        <MenuItem
+          onSelect={() => {
+            focusRenameField.current = true;
+            setRenaming(true);
+          }}
+        >
+          Rename
+        </MenuItem>
+        <MenuItem onSelect={() => actions.export(id)}>Export .deck</MenuItem>
+        <MenuItem onSelect={() => actions.reveal(id)}>Show in folder</MenuItem>
+        <MenuDivider />
+        {active ? (
+          <MenuItem disabled>Delete (active)</MenuItem>
+        ) : (
+          <MenuItem danger onSelect={() => actions.remove(id)}>
+            Delete
+          </MenuItem>
+        )}
+      </Menu>
     </div>
   );
 }

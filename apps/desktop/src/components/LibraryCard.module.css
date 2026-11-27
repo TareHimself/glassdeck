@@ -66,9 +66,3 @@
   justify-content: center;
 }
 
-.menu {
-  position: absolute;
-  right: 8px;
-  top: 52px;
-  z-index: 5;
-}

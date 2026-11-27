@@ -23,7 +23,11 @@
   cursor: pointer;
 }
 
-.item:hover {
+.item {
+  outline: none;
+}
+
+.item[data-highlighted] {
   background: var(--selected);
   color: var(--ink);
 }
@@ -32,7 +36,7 @@
   color: var(--danger);
 }
 
-.item:disabled {
+.item[data-disabled] {
   color: #6b7483;
   cursor: not-allowed;
   background: transparent;

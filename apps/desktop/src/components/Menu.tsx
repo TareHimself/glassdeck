@@ -1,20 +1,55 @@
-import type { ButtonHTMLAttributes, HTMLAttributes } from "react";
+import type { ReactElement, ReactNode } from "react";
+import { DropdownMenu } from "radix-ui";
 import { Link, type LinkProps } from "react-router";
 import { classes } from "./classes";
 import styles from "./Menu.module.css";
 
-export function Menu({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
-  return <div role="menu" className={classes(styles.menu, className)} {...rest} />;
+/** A dropdown opened by `trigger`; arrow keys, Escape and clicking outside work as expected. */
+export function Menu({
+  trigger,
+  className,
+  onCloseAutoFocus,
+  children,
+}: {
+  trigger: ReactElement;
+  className?: string;
+  /** Call `preventDefault` to leave focus where an item put it instead of returning it to the trigger */
+  onCloseAutoFocus?: (e: Event) => void;
+  children: ReactNode;
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>{trigger}</DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className={classes(styles.menu, className)}
+          align="end"
+          sideOffset={6}
+          onCloseAutoFocus={onCloseAutoFocus}
+        >
+          {children}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
 }
 
-export function MenuItem({ danger, className, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
-  return <button type="button" role="menuitem" className={classes(styles.item, className)} data-danger={danger || undefined} {...rest} />;
+export function MenuItem({ danger, disabled, onSelect, children }: { danger?: boolean; disabled?: boolean; onSelect?: () => void; children: ReactNode }) {
+  return (
+    <DropdownMenu.Item className={styles.item} data-danger={danger || undefined} disabled={disabled} onSelect={onSelect}>
+      {children}
+    </DropdownMenu.Item>
+  );
 }
 
 export function MenuLink(props: LinkProps) {
-  return <Link role="menuitem" className={styles.item} {...props} />;
+  return (
+    <DropdownMenu.Item asChild className={styles.item}>
+      <Link {...props} />
+    </DropdownMenu.Item>
+  );
 }
 
 export function MenuDivider() {
-  return <div className={styles.divider} />;
+  return <DropdownMenu.Separator className={styles.divider} />;
 }

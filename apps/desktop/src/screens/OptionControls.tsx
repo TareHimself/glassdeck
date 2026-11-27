@@ -1,4 +1,5 @@
 import type { OptionView, PanelItem, Value } from "../bindings";
+import { Select } from "../components/Select";
 import styles from "./OptionControls.module.css";
 
 export type Chosen = { [path: string]: Value };
@@ -71,16 +72,16 @@ function Control({ option, onChange }: { option: OptionView; onChange: (value: V
       );
     case "choice":
       return (
-        <label className={styles.row}>
-          <span>{option.label}</span>
-          <select id={id} value={typeof option.value === "string" ? option.value : kind.default} onChange={(e) => onChange(e.target.value)}>
-            {kind.values.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className={styles.row}>
+          <label htmlFor={id}>{option.label}</label>
+          <Select
+            id={id}
+            className={styles.choice}
+            value={typeof option.value === "string" ? option.value : kind.default}
+            onChange={onChange}
+            options={kind.values.map((v) => ({ value: v, label: v }))}
+          />
+        </div>
       );
     case "color": {
       const rgba = typeof option.value === "string" ? option.value : kind.default;

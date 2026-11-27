@@ -22,7 +22,7 @@
   cursor: pointer;
 }
 
-.segment[aria-pressed="true"] {
+.segment[data-state="on"] {
   background: var(--selected);
   color: var(--ink);
 }

@@ -186,19 +186,6 @@
   text-decoration: none;
 }
 
-.select {
-  flex: 1;
-  min-width: 0;
-  min-height: 44px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line-strong);
-  background: var(--sunken);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 14px;
-}
-
 .live {
   padding: 3px 10px;
   border-radius: 999px;

@@ -7,7 +7,6 @@ import styles from "./LibraryPicker.module.css";
 
 export type PickerCard = {
   title: string;
-  id: string;
   /** Beside the title, such as a kind icon or a size */
   detail?: ReactNode;
   current?: boolean;
@@ -40,7 +39,7 @@ export function LibraryPicker<T>({ title, searchLabel, items, keyOf, searchText,
       <div className={styles.grid}>
         {shown.map((item) => {
           const key = keyOf(item);
-          const { title: name, id, detail, current } = card(item);
+          const { title: name, detail, current } = card(item);
           const start = () => setLive(key);
           const stop = () => setLive((was) => (was === key ? null : was));
           return (
@@ -60,11 +59,8 @@ export function LibraryPicker<T>({ title, searchLabel, items, keyOf, searchText,
                 {current && <span className={styles.current}>Current</span>}
               </div>
               <div className={styles.text}>
-                <div className={styles.titleRow}>
-                  <span className={styles.title}>{name}</span>
-                  {detail}
-                </div>
-                <span className={styles.id}>{id}</span>
+                <span className={styles.title}>{name}</span>
+                {detail}
               </div>
             </button>
           );

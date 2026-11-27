@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
+import { Select } from "../components/Select";
 import { BackgroundThumb } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
 import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
@@ -319,20 +320,17 @@ export function Overview() {
                 Live
               </span>
             </div>
-            <select
-              aria-label="Stream"
-              className={styles.select}
+            <Select
+              label="Stream"
+              mono
               value={draft.stream ?? ""}
-              onChange={(e) => setDraft((d) => ({ ...d, stream: e.target.value || null }))}
-            >
-              <option value="">None</option>
-              {!knownStream && <option value={draft.stream ?? ""}>{draft.stream}</option>}
-              {streams.map((s) => (
-                <option key={s.name} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+              onChange={(stream) => setDraft((d) => ({ ...d, stream: stream || null }))}
+              options={[
+                { value: "", label: "None" },
+                ...(knownStream ? [] : [{ value: draft.stream ?? "", label: draft.stream }]),
+                ...streams.map((s) => ({ value: s.name, label: s.name })),
+              ]}
+            />
           </section>
 
           <section className={styles.card}>

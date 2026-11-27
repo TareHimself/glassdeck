@@ -26,7 +26,7 @@ function HostIcon() {
   );
 }
 
-function WidgetCard(props: { widget: WidgetSummary; active: boolean; menuOpen: boolean; onMenu: (open: boolean) => void; actions: CardActions }) {
+function WidgetCard(props: { widget: WidgetSummary; active: boolean; actions: CardActions }) {
   const { widget } = props;
   return (
     <LibraryCard
@@ -56,7 +56,6 @@ export function Widgets() {
   const [library, setLibrary] = useState<Library>({ state: "loading" });
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [query, setQuery] = useState("");
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const active = useMemo(() => new Set((theme?.widgets ?? []).map((w) => w.package)), [theme]);
 
@@ -122,8 +121,6 @@ export function Widgets() {
             key={widget.id}
             widget={widget}
             active={active.has(widget.id)}
-            menuOpen={openMenu === widget.id}
-            onMenu={(open) => setOpenMenu(open ? widget.id : null)}
             actions={actions}
           />
         ))}

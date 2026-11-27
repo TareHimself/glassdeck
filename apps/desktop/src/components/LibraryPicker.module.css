@@ -60,12 +60,6 @@
 .text {
   padding: 10px 12px;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.titleRow {
-  display: flex;
   align-items: center;
   gap: 8px;
 }
@@ -74,13 +68,6 @@
   flex: 1;
   min-width: 0;
   font-weight: 600;
-}
-
-.id {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
 }
 
 .none {

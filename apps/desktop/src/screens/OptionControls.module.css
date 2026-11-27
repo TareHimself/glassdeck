@@ -29,7 +29,6 @@
   background: var(--sunken);
 }
 
-.row > select,
 .row > input[type="number"],
 .row > input[type="text"] {
   min-height: 40px;
@@ -82,4 +81,9 @@
 .hint {
   font-size: 13px;
   color: var(--muted);
+}
+
+.choice {
+  width: 160px;
+  min-height: 40px;
 }
