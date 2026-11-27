@@ -194,7 +194,7 @@ impl Host {
     fn handle(&mut self, input: Input) {
         match input {
             Input::Data { instance, payload } => match self.instances.get_mut(usize::from(instance)) {
-                Some(target) => target.on_data(&payload),
+                Some(target) => target.deliver_options(&payload),
                 None => eprintln!("error: data for widget {instance}, but the profile has {}", self.instances.len()),
             },
             Input::Message { instance, message, payload } => match self.instances.get_mut(usize::from(instance)) {

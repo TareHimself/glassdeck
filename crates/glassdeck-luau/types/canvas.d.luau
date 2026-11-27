@@ -1,5 +1,5 @@
 -- keyboard.luau in a canvas: holds the canvas's state and writes the shader's inputs. What the user can
--- set lives in options.luau; the host half turns it into data, which arrives here in on_data.
+-- set lives in options.luau; the host half sends what the canvas needs over bridge.
 -- Callbacks are registered with a call, script.on_frame(function(frame) ... end), so their parameters are typed.
 -- `glassdeck pack` writes this beside inputs.d.luau, which declares `inputs` from the shader's [Inputs].
 -- Vectors come from Luau's own vector.create(x, y, z?, w?).
@@ -28,8 +28,6 @@ declare color: {
 declare function drift(t: number, centre: vector, amount: vector, speed: vector, phase: vector?): vector
 
 export type Canvas = {
-    -- Called with what the host half sends; without a host.luau, the options as they are
-    on_data: (callback: (data: any) -> ()) -> (),
     -- Called every frame; a canvas that never registers one does nothing per frame
     on_frame: (callback: (frame: Frame) -> ()) -> (),
 }

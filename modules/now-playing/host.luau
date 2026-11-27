@@ -10,7 +10,7 @@ every(1, function()
             live.clear("cover")
             sent_track = nil
         end
-        send({})
+        keyboard.bridge.nowPlaying({})
         return
     end
     if now.track ~= sent_track then
@@ -21,5 +21,7 @@ every(1, function()
             live.clear("cover")
         end
     end
-    send({ title = now.title, artist = now.artist, playing = now.playing, position = now.position, duration = now.duration })
+    keyboard.bridge.nowPlaying({
+        track = { title = now.title, artist = now.artist, playing = now.playing, position = now.position, duration = now.duration },
+    })
 end)

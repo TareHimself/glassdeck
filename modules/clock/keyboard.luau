@@ -1,13 +1,11 @@
--- options.luau's options, forwarded as they are (no host.luau)
-type Options = { seconds: boolean }
-
 local seconds = false
 
 script.every(1, function()
     script.redraw()
 end)
 
-script.on_data(function(options: Options)
+-- options.luau's options, forwarded as they are (no host.luau)
+bridge.on.options(function(options)
     seconds = options.seconds
 end)
 

@@ -19,7 +19,7 @@ use glassdeck_luau::options::read_values;
 use glassdeck_luau::ResourceReader;
 use glassdeck_package::{Package, QualifiedId, is_package};
 use glassdeck_proto::ScriptTarget;
-use glassdeck_proto::compositor::MAX_DATA_LEN;
+use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 
 use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
 use crate::link::Uplink;
@@ -156,7 +156,7 @@ impl Host {
             for sent in widget.side.take_messages() {
                 self.uplink.put_script_message(ScriptTarget::Widget(number), sent);
             }
-            if let Some(payload) = widget.side.take_sent() {
+            if let Some(payload) = widget.side.take_options() {
                 self.uplink.put_module_data(number, payload);
             }
             for (name, data) in widget.side.take_live() {
@@ -167,7 +167,7 @@ impl Host {
             if !side.take_live().is_empty() {
                 eprintln!("error: {}: backgrounds can't use live resources", side.label);
             }
-            if let Some(payload) = side.take_sent() {
+            if let Some(payload) = side.take_options() {
                 self.uplink.put_background_data(payload);
             }
             for sent in side.take_messages() {
@@ -256,8 +256,8 @@ impl Host {
         };
         let started = (|| -> Result<Option<HostSide>> {
             let readable = Rc::clone(package);
-            let (reader, send_limit): (Option<ResourceReader>, _) = match target {
-                ScriptTarget::Background => (None, Some(MAX_DATA_LEN)),
+            let (reader, message_limit): (Option<ResourceReader>, _) = match target {
+                ScriptTarget::Background => (None, Some(MAX_SCRIPT_PAYLOAD_LEN)),
                 ScriptTarget::Widget(_) => (Some(Rc::new(move |resource| readable.resource(resource))), None),
             };
             let sources = Sources {
@@ -265,7 +265,7 @@ impl Host {
                 options: package.options_script()?,
                 host: package.host_script()?,
                 reader,
-                send_limit,
+                message_limit,
                 print: None,
                 messages: package.bridge_script()?,
             };

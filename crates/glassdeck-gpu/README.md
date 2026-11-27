@@ -17,7 +17,7 @@ flowchart LR
 |---|---|
 | `program::CanvasProgram` | A canvas's GLSL ES shader and its script. `new(gl, files)`, `deliver(payload)`, `draw(gl, framebuffer, size, seconds)` |
 | `program::render_size(scale)` | Render size for a canvas's scale |
-| `script::CanvasScript` | `keyboard.luau`: `load`, `deliver` (host data to `canvas.on_data`), `frame`, `take_changes` |
+| `script::CanvasScript` | `keyboard.luau`: `load`, `deliver_options` (the implicit host's options to `bridge.on.options`), `deliver_message`, `frame`, `take_changes` |
 | `script::InputValue` | A written input value |
 | `offscreen::Offscreen` | Windows only: a hidden WGL context (GL 4.3 core, which takes GLSL ES 3.00) and a framebuffer to read back |
 | `BUILT_IN` | `canvases/gradient`, packed as `builtin/gradient.deck` (id `core.glassdeck.gradient`), included with `include_bytes!` |

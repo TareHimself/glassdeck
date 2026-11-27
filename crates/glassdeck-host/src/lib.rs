@@ -1,6 +1,6 @@
-//! A package's host half: its options (from `options.luau`) and its `host.luau`, which turns them into
-//! data for the keyboard half. A package with options but no `host.luau` gets an implicit one that
-//! forwards them as they are. glassdeckd runs these for the active setup and sends what they make over
+//! A package's host half: its options (from `options.luau`) and its `host.luau`, which talks to the
+//! keyboard half over `bridge`. A package with options but no `host.luau` gets an implicit one that
+//! forwards them as they are, to the keyboard's `bridge.on.options`. glassdeckd runs these for the active setup and sends what they make over
 //! the Link; the desktop app runs one in the widget editor's preview.
 
 mod api;
@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use glassdeck_luau::color::color_api;
 use glassdeck_luau::options::{OptionsScript, Panel, Values, any_function, changed_table, options_table};
 use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
@@ -32,14 +32,13 @@ pub fn system() -> SharedSystem {
     Rc::new(RefCell::new(System::new_with_specifics(refresh).expect("system stats are readable")))
 }
 
-/// Where a `send()` waits to be taken; a newer one replaces it.
+/// The implicit host's latest options, waiting to be taken; newer ones replace them.
 type Slot = Rc<RefCell<Option<Vec<u8>>>>;
 
 /// A running `host.luau`.
 struct HostVm {
     messages: ScriptMessages,
     vm: Vm,
-    slot: Slot,
     live: LiveOutbox,
     on_options: Rc<RefCell<Option<Function>>>,
 }
@@ -72,8 +71,8 @@ pub struct Sources {
     pub host: Option<String>,
     /// Serves `host.resource` and `keyboard.resource`
     pub reader: Option<ResourceReader>,
-    /// The most one `send()` may carry
-    pub send_limit: Option<usize>,
+    /// The most one message's packed values may be
+    pub message_limit: Option<usize>,
     /// Where `print` goes, instead of the process's own output
     pub print: Option<Print>,
     /// `bridge.luau`: what `host.luau` and the keyboard half send each other
@@ -85,7 +84,7 @@ static NO_OPTIONS: Panel = Panel { items: Vec::new() };
 impl HostSide {
     /// `None` when there's nothing to run: no options and no `host.luau`.
     pub fn start(sources: Sources, system: &SharedSystem, now_playing: &SharedNowPlaying) -> Result<Option<Self>> {
-        let Sources { label, options, host, reader, send_limit, print, messages } = sources;
+        let Sources { label, options, host, reader, message_limit, print, messages } = sources;
         if options.is_none() && host.is_none() {
             return Ok(None);
         }
@@ -98,7 +97,7 @@ impl HostSide {
             None => None,
         };
         let run = match host {
-            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), reader, send_limit, print, system, now_playing)?),
+            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), reader, message_limit, print, system, now_playing)?),
             None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
         };
         Ok(Some(Self { label, options, run }))
@@ -135,13 +134,12 @@ impl HostSide {
         }
     }
 
-    /// What the side sent since the last call, the latest only.
-    pub fn take_sent(&self) -> Option<Vec<u8>> {
-        let slot = match &self.run {
-            Run::Script(host) => &host.slot,
-            Run::Forward { slot, .. } => slot,
-        };
-        slot.borrow_mut().take()
+    /// The implicit host's options since the last call, the latest only; a `host.luau` sends its own messages.
+    pub fn take_options(&self) -> Option<Vec<u8>> {
+        match &self.run {
+            Run::Script(_) => None,
+            Run::Forward { slot, .. } => slot.borrow_mut().take(),
+        }
     }
 
     /// What `host.luau` sent the keyboard half since the last call.
@@ -181,22 +179,13 @@ impl HostSide {
     }
 }
 
-fn check_size(len: usize, limit: Option<usize>) -> Result<()> {
-    if let Some(limit) = limit
-        && len > limit
-    {
-        bail!("{len} bytes is more than the {limit} one send may be");
-    }
-    Ok(())
-}
-
 impl HostVm {
-    /// `reader` serves `host.resource` and `keyboard.resource`; `send_limit` caps one `send()`.
+    /// `reader` serves `host.resource` and `keyboard.resource`; `message_limit` caps one message.
     fn start(
         script: &str,
         messages: Option<&str>,
         reader: Option<ResourceReader>,
-        send_limit: Option<usize>,
+        message_limit: Option<usize>,
         print: Option<Print>,
         system: &SharedSystem,
         now_playing: &SharedNowPlaying,
@@ -205,20 +194,9 @@ impl HostVm {
         if let Some(print) = print {
             vm.install_print(print)?;
         }
-        let slot: Slot = Rc::new(RefCell::new(None));
         let lua = vm.lua();
         let globals = lua.globals();
         globals.set("every", vm.every_function()?).lua_context("installing every")?;
-        let outgoing = Rc::clone(&slot);
-        let send = lua
-            .create_function(move |_, data: Value| {
-                let bytes = encode(data).map_err(|e| mlua::Error::runtime(format!("send: {e:#}")))?;
-                check_size(bytes.len(), send_limit).map_err(|e| mlua::Error::runtime(format!("send: {e:#}")))?;
-                *outgoing.borrow_mut() = Some(bytes);
-                Ok(())
-            })
-            .lua_context("creating send")?;
-        globals.set("send", send).lua_context("installing send")?;
         globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
         let live: LiveOutbox = Rc::default();
         globals.set("live", live_api(lua, &live)?).lua_context("installing live")?;
@@ -231,10 +209,10 @@ impl HostVm {
         }
         let on_options = Rc::new(RefCell::new(None));
         install_on_options(lua, &on_options)?;
-        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Host)?;
+        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Host, message_limit)?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
-        Ok(Self { messages, vm, slot, live, on_options })
+        Ok(Self { messages, vm, live, on_options })
     }
 }
 

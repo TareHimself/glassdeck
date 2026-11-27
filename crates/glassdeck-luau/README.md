@@ -4,7 +4,7 @@ The Luau core both script hosts share: glassdeckd runs host halves on the host, 
 
 ```mermaid
 flowchart LR
-  h[host.luau<br/>glassdeckd] -- "send(), encode()" --> L[Link<br/>MessagePack] -- "decode()" --> k[keyboard.luau<br/>receiver / glassdeck-gpu]
+  h[host.luau<br/>glassdeckd] -- "keyboard.bridge.x(), packed by position" --> L[Link] -- "bridge.on.x" --> k[keyboard.luau<br/>receiver / glassdeck-gpu]
 ```
 
 ## API

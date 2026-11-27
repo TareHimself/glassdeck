@@ -1,13 +1,16 @@
-type Data = { title: string?, artist: string?, playing: boolean?, position: number?, duration: number? }
-
 local cover = live.resource("cover")
 
 local title, artist, playing = "", "", false
 local progress: number? = nil
 
-script.on_data(function(data: Data)
-    title, artist, playing = data.title or "", data.artist or "", data.playing == true
-    progress = if data.position and data.duration then data.position / data.duration else nil
+bridge.on.nowPlaying(function(now)
+    local track = now.track
+    if track == nil then
+        title, artist, playing, progress = "", "", false, nil
+        return
+    end
+    title, artist, playing = track.title, track.artist, track.playing
+    progress = if track.position and track.duration then track.position / track.duration else nil
 end)
 
 script.on_draw(function(ui: Ui)

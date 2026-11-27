@@ -140,7 +140,7 @@ mod linux {
                     continue;
                 }
                 Received::Message(FromCompositor::Data(payload)) => {
-                    canvas.deliver(&payload)?;
+                    canvas.deliver_options(&payload)?;
                     continue;
                 }
                 Received::Message(FromCompositor::ScriptMessage { message, payload, .. }) => {

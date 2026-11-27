@@ -59,8 +59,6 @@ end
 export type Widget = {
     -- Draws the widget, with the only Ui there is; required
     on_draw: (callback: (ui: Ui) -> ()) -> (),
-    -- What the host half sent, or the options as they are with no host.luau; the widget redraws after
-    on_data: (callback: (data: any) -> ()) -> (),
     -- The widget was resized; it redraws after
     on_resize: (callback: (w: number, h: number) -> ()) -> (),
     -- Before a hot reload; what it returns is script.saved in the next run

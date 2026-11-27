@@ -1,5 +1,5 @@
-//! A canvas's `keyboard.luau`: it holds the canvas's state, takes what the host half sends in
-//! `script.on_data`, and writes the shader's inputs through the injected `inputs`. Writes are
+//! A canvas's `keyboard.luau`: it holds the canvas's state, hears the host half on `bridge`, and
+//! writes the shader's inputs through the injected `inputs`. Writes are
 //! recorded, and the renderer uploads only what changed.
 
 use std::cell::RefCell;
@@ -9,9 +9,10 @@ use std::rc::Rc;
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_luau::color::color_api;
 use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
-use glassdeck_luau::{LuaResultExt, Print, Vm, decode};
+use glassdeck_luau::{LuaResultExt, Print, Vm};
 use glassdeck_messages::Half;
 use glassdeck_package::{InputField, InputKind};
+use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 use mlua::{Function, Lua, Table, Value, Vector};
 
 /// A value the script wrote to one input, ready to upload.
@@ -30,14 +31,11 @@ pub struct CanvasScript {
     inputs: Rc<RefCell<Inputs>>,
 }
 
-/// What the script registered with `script.on_data(...)` and `script.on_frame(...)`.
+/// What the script registered with `script.on_frame(...)`.
 #[derive(Default)]
 struct Callbacks {
-    on_data: Option<Function>,
     on_frame: Option<Function>,
 }
-
-const CALLBACKS: [&str; 2] = ["on_data", "on_frame"];
 
 struct Inputs {
     kinds: BTreeMap<String, InputKind>,
@@ -63,39 +61,30 @@ impl CanvasScript {
             changed: BTreeMap::new(),
         }));
         let callbacks = Rc::new(RefCell::new(Callbacks::default()));
-        for name in CALLBACKS {
-            let registered = Rc::clone(&callbacks);
-            let register = lua
-                .create_function(move |_, callback: Function| {
-                    let mut callbacks = registered.borrow_mut();
-                    let slot = if name == "on_data" { &mut callbacks.on_data } else { &mut callbacks.on_frame };
-                    if slot.is_some() {
-                        return Err(mlua::Error::runtime(format!("script.{name} was already called; register one function")));
-                    }
-                    *slot = Some(callback);
-                    Ok(())
-                })
-                .lua_context("creating script")?;
-            canvas.raw_set(name, register).lua_context("creating script")?;
-        }
+        let registered = Rc::clone(&callbacks);
+        let on_frame = lua
+            .create_function(move |_, callback: Function| {
+                let mut callbacks = registered.borrow_mut();
+                if callbacks.on_frame.is_some() {
+                    return Err(mlua::Error::runtime("script.on_frame was already called; register one function"));
+                }
+                callbacks.on_frame = Some(callback);
+                Ok(())
+            })
+            .lua_context("creating script")?;
+        canvas.raw_set("on_frame", on_frame).lua_context("creating script")?;
         let globals = lua.globals();
         globals.set("script", &canvas).lua_context("injecting script")?;
         globals.set("inputs", inputs_table(lua, Rc::clone(&state))?).lua_context("injecting inputs")?;
-        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Keyboard)?;
+        let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Keyboard, Some(MAX_SCRIPT_PAYLOAD_LEN))?;
         vm.load::<()>(source, "keyboard.luau")?;
         let frame = lua.create_table().lua_context("creating frame")?;
         Ok(Self { messages, vm, frame, callbacks, inputs: state })
     }
 
-    /// Hands the script what the host half sent: MessagePack-encoded plain data.
-    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
-        if self.messages.deliver_options(&self.vm, payload)? {
-            return Ok(());
-        }
-        let on_data = self.callbacks.borrow().on_data.clone();
-        let Some(on_data) = on_data else { return Ok(()) };
-        let data = decode(self.vm.lua(), payload)?;
-        self.vm.call::<()>(&on_data, data).context("in script.on_data")
+    /// The options from the implicit host (a blank `host.luau`), to `bridge.on.options` if it registered one.
+    pub fn deliver_options(&self, payload: &[u8]) -> Result<()> {
+        self.messages.deliver_options(&self.vm, payload).map(drop)
     }
 
     /// What the script sent its host half since the last call.
@@ -231,7 +220,7 @@ mod tests {
     const CANVAS: &str = r##"
         inputs.night = color.hex("#ff8000")
         local speed = 0.5
-        script.on_data(function(data) speed = data.speed end)
+        bridge.on.options(function(options) speed = options.speed end)
         script.on_frame(function(frame)
             inputs.roseAt = drift(frame.time * speed, vector.create(0.5, 0.3), vector.create(0.1, 0.1), vector.create(1, 1))
         end)
@@ -252,7 +241,7 @@ mod tests {
 
         script.frame(0.0, 0.0, 0).unwrap();
         assert_eq!(script.take_changes()["roseAt"], InputValue::Float(vec![0.5, 0.4]));
-        script.deliver(&payload("return { speed = 2 }")).unwrap();
+        script.deliver_options(&payload("return { speed = 2 }")).unwrap();
         script.frame(std::f32::consts::FRAC_PI_4, 0.0, 1).unwrap();
         let InputValue::Float(at) = &script.take_changes()["roseAt"] else { panic!() };
         assert!((at[0] - 0.6).abs() < 1e-5, "speed 2 moved it a quarter turn: {at:?}");
@@ -282,15 +271,15 @@ mod tests {
         let script = CanvasScript::load("inputs.night = color.hex('#000')", None, &fields(), None).unwrap();
         script.take_changes();
         script.frame(1.0, 0.1, 1).unwrap();
-        script.deliver(&payload("return { a = 1 }")).unwrap();
+        script.deliver_options(&payload("return { a = 1 }")).unwrap();
         assert!(script.take_changes().is_empty());
     }
 
     #[test]
     fn callbacks_are_registered_once_with_a_function() {
         assert!(CanvasScript::load("script.on_frame(3)", None, &fields(), None).is_err());
-        let twice = CanvasScript::load("script.on_data(function() end) script.on_data(function() end)", None, &fields(), None);
-        assert!(format!("{:#}", twice.err().unwrap()).contains("script.on_data was already called"));
+        let twice = CanvasScript::load("script.on_frame(function() end) script.on_frame(function() end)", None, &fields(), None);
+        assert!(format!("{:#}", twice.err().unwrap()).contains("script.on_frame was already called"));
     }
 
     #[test]

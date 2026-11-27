@@ -59,10 +59,10 @@ impl CanvasProgram {
         Ok(Self { canvas, program, uniforms, animated, script, values: BTreeMap::new(), last: None, index: 0, drawn: false })
     }
 
-    /// What the host half sent, for the script's `on_data`; a canvas without a script has nothing to give it to.
-    pub fn deliver(&self, payload: &[u8]) -> Result<()> {
+    /// The options from the implicit host; a canvas without a script has nothing to give them to.
+    pub fn deliver_options(&self, payload: &[u8]) -> Result<()> {
         match &self.script {
-            Some(script) => script.deliver(payload),
+            Some(script) => script.deliver_options(payload),
             None => Ok(()),
         }
     }

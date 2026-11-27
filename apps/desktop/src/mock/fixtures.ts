@@ -27,11 +27,9 @@ export const STATUS: Status = {
 export const STREAMS: StreamEntry[] = [{ name: "monitor-1", mode: "live", from: "built in", shown: false }];
 
 export const CLOCK_KEYBOARD = `--[[ Draws the time ]]
-type Options = { seconds: boolean }
+local seconds: boolean = false
 
-local seconds = false
-
-script.on_data(function(options: Options)
+bridge.on.options(function(options: Options)
     seconds = options.seconds
 end)
 

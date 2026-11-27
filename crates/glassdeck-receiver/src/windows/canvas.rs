@@ -125,7 +125,7 @@ fn run(label: &str, files: CanvasFiles, mailbox: &Mailbox, stop: &AtomicBool, in
     while !stop.load(Ordering::Relaxed) {
         while let Ok(input) = inbox.try_recv() {
             match input {
-                ToCanvas::Data(payload) => canvas.deliver(&payload)?,
+                ToCanvas::Data(payload) => canvas.deliver_options(&payload)?,
                 ToCanvas::Message { message, payload } => canvas.deliver_message(message, &payload)?,
             }
         }

@@ -262,8 +262,8 @@ pub(crate) fn step(cx: &Session, r: &mut Running) -> Drawn {
 /// Carries what each half sent to the other, as the Link will between the PC and the keyboard.
 fn deliver(cx: &Session, r: &mut Running) {
     let Some(host) = &r.host else { return };
-    if let Some(payload) = host.take_sent() {
-        r.instance.on_data(&payload);
+    if let Some(payload) = host.take_options() {
+        r.instance.deliver_options(&payload);
     }
     for sent in host.take_messages() {
         r.instance.deliver_message(sent.message, &sent.payload);
@@ -325,7 +325,7 @@ pub(crate) fn show(
         options: package.options_script()?,
         host: package.host_script()?,
         reader: Some(Rc::new(move |resource| readable.resource(resource))),
-        send_limit: None,
+        message_limit: None,
         print: Some(cx.printer(LogSource::Host)),
         messages: package.bridge_script()?,
     };
@@ -402,12 +402,13 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-preview-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let folder = new_widget(&root);
-        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nscript.on_data(function(data) text = data.label end)\nscript.on_draw(function(ui) ui:text(text) end)\n".into() };
-        let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nscript.on_options(function(options) send({ label = options.label }) end)\n".into() };
+        let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nbridge.on.label(function(l) text = l.text end)\nscript.on_draw(function(ui) ui:text(text) end)\n".into() };
+        let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nscript.on_options(function(options) keyboard.bridge.label({ text = options.label }) end)\n".into() };
+        let bridge = SourceFile { name: "bridge.luau".into(), text: "export type label = KeyboardState<{ text: string }>\n".into() };
         let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))\n".into() };
         let (cx, seen) = session();
         let values = serde_json::json!({ "label": "Hi" });
-        let mut running = show(&cx, "test", &folder, &[keyboard, host, options], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
+        let mut running = show(&cx, "test", &folder, &[keyboard, host, options, bridge], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
         let drawn = step(&cx, &mut running);
         assert!(matches!(drawn, Drawn::Frame { width: 320, .. }), "a frame was drawn");
         let seen = seen.borrow();

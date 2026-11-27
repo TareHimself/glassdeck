@@ -1,5 +1,3 @@
-type Data = { cpu: number, memory: number }
-
 local HISTORY = 60
 
 local cpu, shown, memory = 0, 0, 0
@@ -24,10 +22,10 @@ local function animate()
     script.request_frame(step)
 end
 
-script.on_data(function(data: Data)
-    cpu = data.cpu
-    memory = data.memory
-    table.insert(history, data.cpu)
+bridge.on.usage(function(usage)
+    cpu = usage.cpu
+    memory = usage.memory
+    table.insert(history, usage.cpu)
     if #history > HISTORY then
         table.remove(history, 1)
     end

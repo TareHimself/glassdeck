@@ -72,8 +72,8 @@ fn strict(lua: &Lua, table: &Table, what: &'static str, names: Vec<String>) -> R
 
 impl ScriptMessages {
     /// Installs `bridge.on` and the other half's `bridge` for `half`. Call after the API has made its
-    /// own `script` table, and before `seal`.
-    pub fn install(lua: &Lua, messages: Rc<Messages>, half: Half) -> Result<Self> {
+    /// own `script` table, and before `seal`. `limit`: the most one message's packed values may be.
+    pub fn install(lua: &Lua, messages: Rc<Messages>, half: Half, limit: Option<usize>) -> Result<Self> {
         let heard = Rc::new(RefCell::new(HashMap::new()));
         let outbox = Rc::new(RefCell::new(Outbox::default()));
         let (here, there): (Vec<_>, Vec<_>) = messages.0.iter().enumerate().partition(|(_, m)| m.kind.to() == half);
@@ -121,6 +121,12 @@ impl ScriptMessages {
                 .create_function(move |_, value: Value| {
                     let carried = carried(&message.shape, &value, &message.name).map_err(mlua::Error::runtime)?;
                     let payload = encode(&message.shape, &carried);
+                    if let Some(limit) = limit
+                        && payload.len() > limit
+                    {
+                        let len = payload.len();
+                        return Err(mlua::Error::runtime(format!("{}: {len} bytes is more than the {limit} one message may be", message.name)));
+                    }
                     let mut outbox = outbox.borrow_mut();
                     match message.kind {
                         Kind::KeyboardState => {
@@ -257,7 +263,7 @@ mod tests {
     fn half(half: Half) -> (Vm, ScriptMessages) {
         let vm = Vm::new().unwrap();
         let messages = Rc::new(glassdeck_messages::parse(MESSAGES).unwrap());
-        let api = ScriptMessages::install(vm.lua(), messages, half).unwrap();
+        let api = ScriptMessages::install(vm.lua(), messages, half, None).unwrap();
         (vm, api)
     }
 

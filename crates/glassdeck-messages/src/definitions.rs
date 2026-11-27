@@ -55,7 +55,7 @@ pub fn definitions(messages: &Messages, half: Half, implicit_options: bool) -> S
     }
     let sent: Vec<String> = messages.0.iter().filter(|m| m.kind.to() != half).map(|m| format!("    {}: (value: {}) -> (),\n", m.name, luau(&m.shape))).collect();
     format!(
-        "-- From bridge.luau. Made by Glassdeck; edits here are lost.\n\n-- What this half hears: bridge.on.<message>(callback)\nexport type MessagesHeard = {{\n{}}}\n\n-- What this half sends to the other: {}.script.<message>(value)\nexport type MessagesSent = {{\n{}}}\n",
+        "-- From bridge.luau. Made by Glassdeck; edits here are lost.\n\n-- What this half hears: bridge.on.<message>(callback)\nexport type MessagesHeard = {{\n{}}}\n\n-- What this half sends to the other: {}.bridge.<message>(value)\nexport type MessagesSent = {{\n{}}}\n",
         heard.concat(),
         match half {
             Half::Keyboard => "host",

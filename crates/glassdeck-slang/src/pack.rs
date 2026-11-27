@@ -213,8 +213,8 @@ fn check_scripts(luau: &LuauChecker, types: &Types, sources: &CanvasSources) -> 
     }
     if let Some(keyboard) = sources.keyboard {
         let definitions = [
-            LuauFile { name: "keyboard-bridge.d.luau", text: &types.messages.keyboard },
             LuauFile { name: "options.d.luau", text: &types.options },
+            LuauFile { name: "keyboard-bridge.d.luau", text: &types.messages.keyboard },
             LuauFile { name: "canvas.d.luau", text: definitions::CANVAS },
             LuauFile { name: "inputs.d.luau", text: &types.inputs },
         ];

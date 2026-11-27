@@ -1,5 +1,5 @@
-//! The Luau core both module hosts share: VM setup, the hang guard, timers, and the plain-data
-//! encoding of `send()`, so a table sent on the host arrives identical on the keyboard.
+//! The Luau core both module hosts share: VM setup, the hang guard, timers, the `bridge` between a
+//! package's halves, and the plain-data encoding the implicit host forwards options in.
 
 pub mod color;
 pub mod messages;

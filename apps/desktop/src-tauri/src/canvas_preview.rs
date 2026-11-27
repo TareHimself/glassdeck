@@ -17,6 +17,7 @@ use glassdeck_gpu::program::{CanvasProgram, render_size};
 use glassdeck_gpu::script::{CanvasScript, InputValue};
 use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
 use glassdeck_luau::Print;
+use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 use glassdeck_luau::options::read_values;
 use glassdeck_package::{CanvasFiles, HOST_SCRIPT, InputField, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, Origin, is_blank_script};
 use glassdeck_slang::Slang;
@@ -292,9 +293,9 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
         if let Err(e) = host.run_timers(now) {
             cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; host.luau stopped"));
             r.host = None;
-        } else if let Some(payload) = host.take_sent() {
+        } else if let Some(payload) = host.take_options() {
             if let Some(script) = &r.script {
-                script.deliver(&payload)?;
+                script.deliver_options(&payload)?;
             }
             r.next_frame = now;
         }
@@ -413,15 +414,15 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
         options: compiled.options.map(str::to_owned),
         host: compiled.host.map(str::to_owned),
         reader: None,
-        send_limit: None,
+        message_limit: Some(MAX_SCRIPT_PAYLOAD_LEN),
         print: None,
         messages,
     };
     let nothing_playing: SharedNowPlaying = Arc::new(Mutex::new(None));
     if let Some(host) = HostSide::start(sources, &glassdeck_host::system(), &nothing_playing)? {
         host.apply_options(&read_values("still", host.first(), serde_json::Map::new().iter()), None)?;
-        if let Some(payload) = host.take_sent() {
-            program.deliver(&payload)?;
+        if let Some(payload) = host.take_options() {
+            program.deliver_options(&payload)?;
         }
     }
     let size = offscreen.size();
@@ -442,7 +443,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         options: sources.0.map(str::to_owned),
         host: sources.1.map(str::to_owned),
         reader: None,
-        send_limit: None,
+        message_limit: Some(MAX_SCRIPT_PAYLOAD_LEN),
         print: Some(cx.printer(LogSource::Host)),
         messages: files.messages.clone(),
     };

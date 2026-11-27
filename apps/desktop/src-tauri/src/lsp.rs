@@ -113,9 +113,9 @@ pub struct Launch {
 /// The `.glassdeck/` definition files a Luau script kind is typed by, the same ones its save-time check uses.
 pub fn definitions(server: LspServer, package: PackageType) -> &'static [&'static str] {
     match (server, package) {
-        (LspServer::LuauKeyboard, PackageType::Widget) => &["keyboard-bridge.d.luau", "options.d.luau", "common.d.luau", "keyboard.d.luau"],
-        (LspServer::LuauKeyboard, PackageType::Background) => &["keyboard-bridge.d.luau", "options.d.luau", "canvas.d.luau", "inputs.d.luau"],
-        (LspServer::LuauHost, _) => &["host-bridge.d.luau", "options.d.luau", "common.d.luau", "host.d.luau"],
+        (LspServer::LuauKeyboard, PackageType::Widget) => &["options.d.luau", "keyboard-bridge.d.luau", "common.d.luau", "keyboard.d.luau"],
+        (LspServer::LuauKeyboard, PackageType::Background) => &["options.d.luau", "keyboard-bridge.d.luau", "canvas.d.luau", "inputs.d.luau"],
+        (LspServer::LuauHost, _) => &["options.d.luau", "host-bridge.d.luau", "common.d.luau", "host.d.luau"],
         (LspServer::LuauOptions, _) => &["options-api.d.luau", "options.d.luau", "current.d.luau"],
         (LspServer::LuauBridge, _) => &["bridge-api.d.luau"],
         (LspServer::Slang, _) => &[],

@@ -52,12 +52,11 @@ enum Run {
 #[derive(Default)]
 struct Callbacks {
     on_draw: Option<Function>,
-    on_data: Option<Function>,
     on_resize: Option<Function>,
     on_unload: Option<Function>,
 }
 
-const CALLBACKS: [&str; 4] = ["on_draw", "on_data", "on_resize", "on_unload"];
+const CALLBACKS: [&str; 3] = ["on_draw", "on_resize", "on_unload"];
 
 /// Field order matters: the Lua values drop before the VM that owns them.
 struct Live {
@@ -96,16 +95,12 @@ impl Instance {
         }
     }
 
-    pub fn on_data(&mut self, payload: &[u8]) {
+    /// The options from the implicit host (a blank `host.luau`), to `bridge.on.options`; the widget redraws after.
+    pub fn deliver_options(&mut self, payload: &[u8]) {
         self.with_live(|live| {
             if live.messages.deliver_options(&live.vm, payload)? {
                 live.ui.request_redraw();
-                return Ok(());
             }
-            let data = decode(live.vm.lua(), payload)?;
-            let on_data = live.callbacks.borrow().on_data.clone().context("got data from its host half but never called script.on_data")?;
-            live.vm.call::<()>(&on_data, data).context("in script.on_data")?;
-            live.ui.request_redraw();
             Ok(())
         });
     }
@@ -293,7 +288,7 @@ impl Live {
         let callbacks = Rc::new(RefCell::new(Callbacks::default()));
         let api = widget_api(&vm, &ui, &callbacks, saved)?;
         vm.lua().globals().set("script", api).lua_context("injecting script")?;
-        let messages = ScriptMessages::install(vm.lua(), read_messages(package.bridge_script()?.as_deref())?, Half::Keyboard)?;
+        let messages = ScriptMessages::install(vm.lua(), read_messages(package.bridge_script()?.as_deref())?, Half::Keyboard, None)?;
         vm.load::<()>(&source, "keyboard.luau")?;
         if callbacks.borrow().on_draw.is_none() {
             bail!("keyboard.luau must register a draw function with script.on_draw");
@@ -323,7 +318,6 @@ fn widget_api(vm: &Vm, ui: &Ui, callbacks: &Rc<RefCell<Callbacks>>, saved: Value
                 let mut callbacks = registered.borrow_mut();
                 let slot = match name {
                     "on_draw" => &mut callbacks.on_draw,
-                    "on_data" => &mut callbacks.on_data,
                     "on_resize" => &mut callbacks.on_resize,
                     _ => &mut callbacks.on_unload,
                 };
@@ -462,7 +456,7 @@ mod tests {
     fn draws_once_then_only_when_asked() {
         let script = r##"
             local n = 3
-            script.on_data(function(data) n = data.n end)
+            bridge.on.options(function(options) n = options.n end)
             script.on_draw(function(ui) ui:rect(0, 0, ui.width / 2, ui.height, { fill = "#ff0000" }) end)
         "##;
         let (_scratch, installed) = module("draws", script);
@@ -471,7 +465,7 @@ mod tests {
         assert_eq!(opaque_pixels(&first), 32 * 32);
         assert!(instance.draw(&font(), &LiveCache::default()).is_none());
 
-        instance.on_data(&rmpv_map_n(5));
+        instance.deliver_options(&rmpv_map_n(5));
         assert!(instance.draw(&font(), &LiveCache::default()).is_some());
     }
 
@@ -489,7 +483,7 @@ mod tests {
         let tile = second.draw(&font(), &LiveCache::default()).expect("the first draw");
         assert_eq!(opaque_pixels(&tile), 2, "count was 1, then 2 after the reload");
 
-        let (_scratch, installed) = module("no-draw", "script.on_data(function() end)");
+        let (_scratch, installed) = module("no-draw", "script.on_resize(function() end)");
         let instance = Instance::start(0, &widget(), installed, None, None);
         assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("script.on_draw")));
 
@@ -593,12 +587,12 @@ mod tests {
         let script = r#"
             local kept
             script.on_draw(function(ui) kept = ui end)
-            script.on_data(function() kept:text("hi") end)
+            bridge.on.options(function() kept:text("hi") end)
         "#;
         let (_scratch, installed) = module("outside", script);
         let mut instance = Instance::start(0, &widget(), installed, None, None);
         instance.draw(&font(), &LiveCache::default());
-        instance.on_data(&rmpv_map_n(1));
+        instance.deliver_options(&rmpv_map_n(1));
         assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("only works inside script.on_draw")));
     }
 

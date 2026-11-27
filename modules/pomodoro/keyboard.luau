@@ -1,5 +1,3 @@
--- options.luau's options, forwarded as they are (no host.luau)
-type Options = { work_minutes: number, break_minutes: number }
 type Phase = "work" | "break"
 type Timer = { phase: Phase, ends: number, work: number, rest: number }
 
@@ -14,8 +12,9 @@ script.every(1, function()
     script.redraw()
 end)
 
--- New lengths apply from the next phase; the one running keeps its end.
-script.on_data(function(options: Options)
+-- options.luau's options, forwarded as they are (no host.luau). New lengths apply from the next
+-- phase; the one running keeps its end.
+bridge.on.options(function(options)
     timer.work, timer.rest = options.work_minutes * 60, options.break_minutes * 60
 end)
 
