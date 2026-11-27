@@ -6,6 +6,7 @@ export function describeLibraryError(error: LibraryError): string {
     case "invalid_id":
     case "invalid_size":
     case "invalid_version":
+    case "invalid_time":
     case "checker_unavailable":
     case "io":
       return error.reason;

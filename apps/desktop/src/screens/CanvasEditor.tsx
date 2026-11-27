@@ -14,6 +14,8 @@ const FILES = ["canvas.slang", "keyboard.luau", "options.luau", "host.luau"];
 const OPTIONS_SCRIPT = "options.luau";
 const PANEL = { w: 1920, h: 1080 };
 const EDIT_SETTLE_MS = 400;
+/** How long the button says the preview was set */
+const PREVIEW_SET_SHOWN_MS = 1500;
 
 type Files = Record<string, string>;
 type Check = { state: "checking" } | { state: "done"; result: CanvasCheck } | { state: "unavailable"; reason: string };
@@ -122,6 +124,19 @@ export function CanvasEditor({ id }: { id: string }) {
   }, [id]);
 
   const canvas = useRef<CanvasClaim | null>(null);
+  const [previewSet, setPreviewSet] = useState(false);
+  useEffect(() => {
+    if (!previewSet) return;
+    const timer = setTimeout(() => setPreviewSet(false), PREVIEW_SET_SHOWN_MS);
+    return () => clearTimeout(timer);
+  }, [previewSet]);
+
+  /** Makes this moment the canvas's still, on its cards and in its .deck. */
+  const choosePreviewFrame = async (at: number) => {
+    const set = await commands.setPreviewTime(id, at);
+    if (set.status === "error") return setProblem(set.error);
+    setPreviewSet(true);
+  };
   useEffect(() => {
     const claim = claimCanvas((change) => {
       switch (change.state) {
@@ -264,6 +279,9 @@ export function CanvasEditor({ id }: { id: string }) {
                 Restart
               </button>
               <span className={styles.time}>frame.time {frame.state === "frame" ? frame.time.toFixed(2) : "0.00"} s</span>
+              <button type="button" className={styles.control} disabled={frame.state !== "frame"} onClick={() => frame.state === "frame" && void choosePreviewFrame(frame.time)}>
+                {previewSet ? "Preview set" : "Use this frame"}
+              </button>
               <div className={styles.spacer} />
               <button type="button" className={styles.control} aria-pressed={showKeys} onClick={() => setShowKeys(!showKeys)}>
                 Keys

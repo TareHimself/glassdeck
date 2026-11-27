@@ -130,6 +130,15 @@ async fn create_background(
     Ok(made)
 }
 
+/// Draws the canvas's still from `at` seconds in, now and whenever it's redrawn.
+#[tauri::command]
+#[specta::specta]
+async fn set_preview_time(stills: State<'_, stills::Stills>, id: String, at: f32) -> Result<BackgroundSummary, LibraryError> {
+    let saved = in_library(move |root| backgrounds::set_preview_time(root, &id, at)).await?;
+    stills.request(saved.id.clone());
+    Ok(saved)
+}
+
 /// Draws the package's still again in the background; a `StillUpdate` says when it's done.
 #[tauri::command]
 #[specta::specta]
@@ -545,6 +554,7 @@ fn bindings() -> Builder<tauri::Wry> {
             lsp_stop,
             request_still,
             built_in_still,
+            set_preview_time,
         ])
         .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited, stills::StillUpdate])
         .constant("WIDGET_AREA", library::widget_area())

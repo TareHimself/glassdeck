@@ -116,7 +116,8 @@ fn render(id: &str, native: Option<&Path>, slang: &mut Option<Slang>) -> Result<
         PackageType::Background => match backgrounds::kind_of(&folder) {
             Some(BackgroundKind::Canvas) => {
                 let files = backgrounds::read_canvas(&root, id).map_err(|e| anyhow::anyhow!("{e:?}"))?.files;
-                write(&folder.join(CANVAS_STILL), &crate::canvas_preview::render_still(loaded(slang, native)?, &files, 0.0)?)?;
+                let at = glassdeck_package::DeckSource::read(&folder)?.0.preview_at.unwrap_or(0.0);
+                write(&folder.join(CANVAS_STILL), &crate::canvas_preview::render_still(loaded(slang, native)?, &files, at)?)?;
             }
             Some(BackgroundKind::Video) => {}
             None => bail!("{id} is neither a canvas nor a video"),
@@ -175,6 +176,8 @@ mod tests {
         assert_eq!(image.width(), 480, "the still's width");
         let pixels = image.to_rgb8();
         assert!(pixels.pixels().any(|p| p.0 != [0, 0, 0]), "the gradient drew something");
+        let later = crate::canvas_preview::render_still(slang, &backgrounds::canvas_template(), 20.0).unwrap();
+        assert_ne!(jpeg, later, "a still drawn at another time shows another moment");
     }
 
     #[test]

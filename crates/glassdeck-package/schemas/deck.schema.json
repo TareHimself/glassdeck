@@ -15,7 +15,8 @@
     "title": { "description": "Shown to people", "type": "string" },
     "version": { "description": "The package's own version, major.minor.patch", "type": "string", "pattern": "^\d+\.\d+\.\d+$" },
     "type": { "description": "background (with canvas.slang) or widget", "enum": ["background", "widget"] },
-    "details": { "$ref": "#/$defs/widget", "description": "A widget's sizes; a canvas has none, packing works them out" }
+    "details": { "$ref": "#/$defs/widget", "description": "A widget's sizes; a canvas has none, packing works them out" },
+    "preview_at": { "description": "Seconds into a canvas at which its still is drawn; 0 when left out", "type": "number", "minimum": 0 }
   },
   "if": { "properties": { "type": { "const": "widget" } } },
   "then": { "required": ["details"] },

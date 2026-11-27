@@ -71,6 +71,8 @@ export const commands = {
 	requestStill: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<void>("request_still", { id }, options),
 	/**  The built-in gradient's still, once drawn; it has no library folder or summary to carry it. */
 	builtInStill: (options?: InvokeOptions) => typedError<Still | null, LibraryError>(__TAURI_INVOKE("built_in_still", undefined, options)),
+	/**  Draws the canvas's still from `at` seconds in, now and whenever it's redrawn. */
+	setPreviewTime: (id: string, at: number | null, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("set_preview_time", { id, at }, options)),
 };
 
 /** Events */
@@ -222,6 +224,8 @@ export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "
 { kind: "bad_video"; reason: string } | 
 /**  A `.deck` to import that isn't a widget package this build reads */
 { kind: "not_a_widget"; reason: string } | { kind: "invalid_version"; reason: string } | 
+/**  A preview time that isn't a number of seconds from 0 on */
+{ kind: "invalid_time"; reason: string } | 
 /**  The type checker couldn't run, such as its native library missing */
 { kind: "checker_unavailable"; reason: string } | 
 /**  A widget folder in the library that can't be read as one */

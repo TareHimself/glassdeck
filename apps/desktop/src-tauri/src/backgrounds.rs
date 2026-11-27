@@ -205,6 +205,18 @@ pub fn save_canvas(root: &Path, id: &str, edit: SourceEdit) -> Result<Background
     summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
 }
 
+/// Makes `at` seconds the moment the canvas's still is drawn from, in its `deck.json`.
+pub fn set_preview_time(root: &Path, id: &str, at: f32) -> Result<BackgroundSummary, LibraryError> {
+    if !at.is_finite() || at < 0.0 {
+        return Err(LibraryError::InvalidTime { reason: format!("{at} isn't a time from 0 seconds on") });
+    }
+    let folder = canvas_folder(root, id)?;
+    let mut deck = crate::library::read_deck_json(&folder)?;
+    deck.insert("preview_at".into(), serde_json::json!(at));
+    crate::library::write_deck_json(&folder, &deck)?;
+    summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
+}
+
 /// The files a new canvas starts with, for previewing it before it exists.
 pub fn canvas_template() -> Vec<SourceFile> {
     [(CANVAS_SOURCE, CANVAS_TEMPLATE), (KEYBOARD_SCRIPT, CANVAS_SCRIPT_TEMPLATE), (OPTIONS_SCRIPT, ""), (HOST_SCRIPT, "")]
@@ -274,6 +286,18 @@ mod tests {
 
     fn new(title: &str, id: &str, content: NewContent) -> NewBackground {
         NewBackground { title: title.into(), id: id.into(), content }
+    }
+
+    #[test]
+    fn a_canvas_remembers_the_moment_its_still_is_drawn_from() {
+        let root = scratch("preview-time");
+        create_background(&root, new("Aurora", "local.user.aurora", NewContent::Canvas)).unwrap();
+        set_preview_time(&root, "background.local.user.aurora", 2.5).unwrap();
+        let (deck, _) = DeckSource::read(&root.join("background.local.user.aurora")).unwrap();
+        assert_eq!(deck.preview_at, Some(2.5));
+        assert!(matches!(set_preview_time(&root, "background.local.user.aurora", -1.0), Err(LibraryError::InvalidTime { .. })));
+        assert!(matches!(set_preview_time(&root, "background.local.user.aurora", f32::NAN), Err(LibraryError::InvalidTime { .. })));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub struct DeckSource {
     /// A widget's sizes; packing works out a canvas's details from its shader
     #[serde(default)]
     pub details: Option<serde_json::Value>,
+    /// Seconds into a canvas at which its still is drawn; 0 when left out
+    #[serde(default)]
+    pub preview_at: Option<f32>,
 }
 
 

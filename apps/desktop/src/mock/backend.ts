@@ -183,6 +183,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return undefined;
   },
   built_in_still: () => null,
+  set_preview_time: ({ id }) => {
+    window.setTimeout(() => drawStill(id as string), 50);
+    return background(id as string);
+  },
   lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package", settings: {} }),
   lsp_send: ({ session, message }) => {
     fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);

@@ -54,3 +54,12 @@ test("hovering a card plays it over its still", async ({ page }) => {
   const [still, live] = await aurora.locator("img").evaluateAll((images) => images.map((image) => (image as HTMLImageElement).src));
   expect(still).not.toBe(live);
 });
+
+test("Use this frame makes the moment on screen the canvas's still", async ({ page }) => {
+  await page.goto("/backgrounds/background.local.user.aurora");
+  const use = page.getByRole("button", { name: "Use this frame" });
+  await expect(use).toBeEnabled();
+  await use.click();
+  await expect(page.getByRole("button", { name: "Preview set" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use this frame" })).toBeVisible({ timeout: 3000 });
+});

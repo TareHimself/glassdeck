@@ -58,6 +58,8 @@ pub enum LibraryError {
     /// A `.deck` to import that isn't a widget package this build reads
     NotAWidget { reason: String },
     InvalidVersion { reason: String },
+    /// A preview time that isn't a number of seconds from 0 on
+    InvalidTime { reason: String },
     /// The type checker couldn't run, such as its native library missing
     CheckerUnavailable { reason: String },
     /// A widget folder in the library that can't be read as one
