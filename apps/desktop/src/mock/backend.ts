@@ -20,6 +20,25 @@ import { canvasFrame, staleFrame, widgetTile } from "./frames";
 
 const STALE_FRAME = staleFrame();
 
+/** A canvas's shader the way Slang names things (`frame_0.time_0`), drifting colour over time. */
+const MOCK_SHADER = `#version 300 es
+precision highp float;
+struct Frame_0 { float time_0; vec2 resolution_0; };
+uniform Frame_0 frame_0;
+out vec4 color;
+void main() {
+    vec2 uv = gl_FragCoord.xy / frame_0.resolution_0;
+    color = vec4(0.45 + 0.35 * sin(frame_0.time_0 + uv.x * 4.0), 0.25 + 0.5 * uv.y, 0.75, 1.0);
+}
+`;
+
+/** All black: what a late shader from a replaced run would draw, if it ever got through. */
+const STALE_SHADER = `#version 300 es
+precision highp float;
+out vec4 color;
+void main() { color = vec4(0.0, 0.0, 0.0, 1.0); }
+`;
+
 /** The app's native side, faked in memory for running the frontend in a plain browser. */
 const state = {
   widgets: structuredClone(WIDGETS),
@@ -55,14 +74,22 @@ const glassdeckd = (update: GlassdeckdUpdate) => void emit("glassdeckd-update", 
 function startCanvas(id: string, run: number) {
   const replaced = state.canvas?.run;
   stopCanvas();
+  const send = (forRun: number, change: object) => void emit("canvas-update", { run: forRun, change });
   if (replaced !== undefined) {
-    window.setTimeout(() => void emit("canvas-update", { run: replaced, change: { state: "frame", jpeg: STALE_FRAME, time: 0 } }), 150);
+    window.setTimeout(() => {
+      send(replaced, { state: "program", fragment: STALE_SHADER, width: 64, height: 36 });
+      send(replaced, { state: "frame", time: 0, delta: 0, index: 0, inputs: [] });
+    }, 150);
   }
+  send(run, { state: "program", fragment: MOCK_SHADER, width: 480, height: 270 });
   const started = performance.now();
+  let index = 0;
+  let last = 0;
   const timer = window.setInterval(() => {
     const time = (performance.now() - started) / 1000;
-    void emit("canvas-update", { run, change: { state: "frame", jpeg: canvasFrame(id, time), time } });
-  }, 100);
+    send(run, { state: "frame", time, delta: time - last, index: index++, inputs: [] });
+    last = time;
+  }, 33);
   state.canvas = { id, run, started, timer };
 }
 

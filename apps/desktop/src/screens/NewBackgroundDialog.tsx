@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { commands, type BackgroundKind, type LibraryError, type NewContent, type VideoFacts } from "../bindings";
-import { claimCanvas } from "../previews";
+import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
 import { Dialog, DialogActions } from "../components/Dialog";
 import { Field, Input } from "../components/Input";
@@ -35,23 +35,20 @@ const KINDS: { value: BackgroundKind; name: ReactNode }[] = [
   },
 ];
 
-/** The starting gradient, drawn live by the canvas preview while Canvas is chosen; its frame, or why it stopped. */
-function useCanvasPreview(running: boolean): { jpeg: string | null; error: string | null } {
-  const [jpeg, setJpeg] = useState<string | null>(null);
+/** The starting gradient, drawn live while Canvas is chosen, or why it stopped. */
+function useStartingCanvas() {
   const [error, setError] = useState<string | null>(null);
+  const live = useLiveCanvas((change) => {
+    if (change.state === "log" && change.level === "error") setError(change.text);
+  });
+  const { show } = live;
   useEffect(() => {
-    if (!running) return;
-    const claim = claimCanvas((change) => {
-      if (change.state === "frame") setJpeg(change.jpeg);
-      if (change.state === "log" && change.level === "error") setError(change.text);
-    });
     commands
       .canvasTemplate()
-      .then((files) => claim.show(files, {}))
+      .then((files) => show(files, {}))
       .catch((e: unknown) => setError(String(e)));
-    return () => claim.release();
-  }, [running]);
-  return { jpeg, error };
+  }, [show]);
+  return { ...live, error };
 }
 
 export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
@@ -62,7 +59,7 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
   const [cut, setCut] = useState<Cut | null>(null);
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [creating, setCreating] = useState(false);
-  const canvasFrame = useCanvasPreview(kind === "canvas");
+  const canvasFrame = useStartingCanvas();
   const id = `${ID_PREFIX}.${slug(title) || "background"}`;
 
   const chooseVideo = async () => {
@@ -101,7 +98,9 @@ export function NewBackgroundDialog({ onClose }: { onClose: () => void }) {
       <div className={styles.body}>
         <div className={styles.preview}>
           {kind === "canvas" && (
-            <div className={styles.stage}>{canvasFrame.jpeg && <img className={styles.canvas} alt="" src={`data:image/jpeg;base64,${canvasFrame.jpeg}`} />}</div>
+            <div className={styles.stage}>
+              <canvas ref={canvasFrame.ref} className={styles.canvas} data-hidden={!canvasFrame.drawing || undefined} />
+            </div>
           )}
           {kind === "canvas" && canvasFrame.error && <Problem>{canvasFrame.error}</Problem>}
           {kind === "video" && (chosenVideo ? <VideoCutter video={chosenVideo} onCut={setCut} /> : <div className={styles.stage} />)}

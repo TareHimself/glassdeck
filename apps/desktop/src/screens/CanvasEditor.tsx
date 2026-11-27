@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
-import { claimCanvas, type CanvasClaim } from "../previews";
+import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
@@ -19,7 +19,7 @@ const PREVIEW_SET_SHOWN_MS = 1500;
 
 type Files = Record<string, string>;
 type Check = { state: "checking" } | { state: "done"; result: CanvasCheck } | { state: "unavailable"; reason: string };
-type Frame = { state: "none" } | { state: "frame"; jpeg: string; time: number };
+type Frame = { state: "none" } | { state: "frame"; time: number };
 
 function filesOf(list: SourceFile[]): Files {
   return Object.fromEntries(list.map((f) => [f.name, f.text]));
@@ -123,7 +123,6 @@ export function CanvasEditor({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const canvas = useRef<CanvasClaim | null>(null);
   const [previewSet, setPreviewSet] = useState(false);
   useEffect(() => {
     if (!previewSet) return;
@@ -137,26 +136,18 @@ export function CanvasEditor({ id }: { id: string }) {
     if (set.status === "error") return setProblem(set.error);
     setPreviewSet(true);
   };
-  useEffect(() => {
-    const claim = claimCanvas((change) => {
-      switch (change.state) {
-        case "frame":
-          return setFrame({ state: "frame", jpeg: change.jpeg, time: change.time ?? 0 });
-        case "cleared":
-          return setFrame({ state: "none" });
-        case "inputs":
-          return setInputs(change.inputs);
-        case "log":
-          return log.add(change.source, change.level, change.text);
-      }
-    });
-    canvas.current = claim;
-    return () => {
-      claim.release();
-      canvas.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const live = useLiveCanvas((change) => {
+    switch (change.state) {
+      case "frame":
+        return setFrame({ state: "frame", time: change.time ?? 0 });
+      case "cleared":
+        return setFrame({ state: "none" });
+      case "inputs":
+        return setInputs(change.inputs);
+      case "log":
+        return log.add(change.source, change.level, change.text);
+    }
+  });
 
   const filesKey = JSON.stringify(files);
   useEffect(() => {
@@ -164,7 +155,7 @@ export function CanvasEditor({ id }: { id: string }) {
     const timer = setTimeout(
       () => {
         started.current = true;
-        canvas.current?.show(listOf(files), chosen);
+        live.show(listOf(files), chosen);
       },
       started.current ? EDIT_SETTLE_MS : 0,
     );
@@ -267,7 +258,7 @@ export function CanvasEditor({ id }: { id: string }) {
         <div className={styles.side}>
           <section aria-label="Preview" className={styles.preview}>
             <div className={styles.stage}>
-              {frame.state === "frame" && <img className={styles.frame} alt={`${background.title} preview`} src={`data:image/jpeg;base64,${frame.jpeg}`} />}
+              <canvas ref={live.ref} className={styles.frame} aria-label={`${background.title} preview`} data-hidden={frame.state !== "frame" || undefined} />
               {showArea && layout && <div className={styles.area} style={placed(layout.widget_area)} />}
               {showKeys && layout?.keys.map((key, i) => <div key={i} className={styles.key} style={placed(key)} />)}
             </div>

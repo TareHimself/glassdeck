@@ -85,3 +85,7 @@
   font-size: 12px;
   color: #f0d58f;
 }
+
+.canvas[data-hidden] {
+  visibility: hidden;
+}

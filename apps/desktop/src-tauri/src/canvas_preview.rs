@@ -11,11 +11,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use base64::Engine;
+use anyhow::{Context, Result, ensure};
 use glassdeck_gpu::offscreen::Offscreen;
 use glassdeck_gpu::program::{CanvasProgram, render_size};
-use glassdeck_gpu::script::InputValue;
+use glassdeck_gpu::script::{CanvasScript, InputValue};
 use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
 use glassdeck_luau::Print;
 use glassdeck_luau::options::read_values;
@@ -32,8 +31,6 @@ use tauri_specta::Event as _;
 use crate::library::SourceFile;
 use crate::preview::{LogLevel, LogSource, PreviewRun};
 
-/// The preview is shown at most this wide, so frames stay small enough to send many a second.
-const PREVIEW_WIDTH: u32 = 960;
 /// The fastest the preview draws, whatever the canvas asks for.
 const MAX_FPS: u32 = 30;
 const JPEG_QUALITY: u8 = 82;
@@ -41,6 +38,34 @@ const JPEG_QUALITY: u8 = 82;
 const STILL_WIDTH: u32 = 480;
 const INPUTS_EVERY: Duration = Duration::from_millis(200);
 const IDLE: Duration = Duration::from_secs(1);
+
+/// An input `keyboard.luau` wrote, for the shader.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct InputUpdate {
+    pub name: String,
+    pub value: InputPayload,
+}
+
+/// An input's new value, the way the shader takes it.
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputPayload {
+    /// One to four floats: a float or a vector
+    Float { values: Vec<f32> },
+    Uint { value: u32 },
+    Array { values: Vec<f32> },
+}
+
+impl InputUpdate {
+    fn of(name: &str, value: &InputValue) -> Self {
+        let value = match value {
+            InputValue::Float(values) => InputPayload::Float { values: values.clone() },
+            InputValue::Uint(value) => InputPayload::Uint { value: *value },
+            InputValue::Array(values) => InputPayload::Array { values: values.clone() },
+        };
+        Self { name: name.to_owned(), value }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct InputReading {
@@ -58,7 +83,10 @@ pub struct CanvasUpdate {
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CanvasChange {
-    Frame { jpeg: String, time: f32 },
+    /// A run's shader, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too), and its size
+    Program { fragment: String, width: u32, height: u32 },
+    /// One frame: the clock, and the inputs `keyboard.luau` wrote since the last one
+    Frame { time: f32, delta: f32, index: u32, inputs: Vec<InputUpdate> },
     /// Nothing to show: the canvas didn't compile, or stopped on an error
     Cleared,
     Inputs { inputs: Vec<InputReading> },
@@ -128,12 +156,18 @@ impl Clock {
     }
 }
 
+/// A canvas running live: its script and host half here, its shader in the webview.
 struct Running {
     files: CanvasFiles,
-    program: CanvasProgram,
-    offscreen: Offscreen,
+    script: Option<CanvasScript>,
+    /// Every input's latest value, as the script last wrote it
+    values: BTreeMap<String, InputValue>,
     host: Option<HostSide>,
     clock: Clock,
+    last: Option<f32>,
+    index: u32,
+    /// The first frame has gone out (so every input has been written)
+    started: bool,
     frame: Duration,
     next_frame: Instant,
     inputs_sent: Option<Instant>,
@@ -245,7 +279,9 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
             cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; host.luau stopped"));
             r.host = None;
         } else if let Some(payload) = host.take_sent() {
-            r.program.deliver(&payload)?;
+            if let Some(script) = &r.script {
+                script.deliver(&payload)?;
+            }
             r.next_frame = now;
         }
     }
@@ -254,13 +290,29 @@ fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
     }
     r.next_frame = now + r.frame;
     let time = r.clock.at(now);
-    let size = r.offscreen.size();
-    if r.program.draw(&r.offscreen.gl, r.offscreen.framebuffer(), size, time)?.is_some() {
-        (cx.out)(CanvasChange::Frame { jpeg: jpeg_of(&r.offscreen.read_rgb(), size)?, time });
+    let delta = r.last.map_or(0.0, |last| time - last);
+    let changes = match &r.script {
+        Some(script) => {
+            script.frame(time, delta, r.index)?;
+            if !r.started {
+                let unwritten = script.unwritten();
+                ensure!(unwritten.is_empty(), "keyboard.luau never wrote these inputs: {}", unwritten.join(", "));
+            }
+            script.take_changes()
+        }
+        None => BTreeMap::new(),
+    };
+    if playing || !r.started || !changes.is_empty() {
+        let inputs = changes.iter().map(|(name, value)| InputUpdate::of(name, value)).collect();
+        (cx.out)(CanvasChange::Frame { time, delta, index: r.index, inputs });
+        r.last = Some(time);
+        r.index = r.index.wrapping_add(1);
+        r.started = true;
+        r.values.extend(changes);
     }
     if r.inputs_sent.is_none_or(|at| now.saturating_duration_since(at) >= INPUTS_EVERY) {
         r.inputs_sent = Some(now);
-        (cx.out)(CanvasChange::Inputs { inputs: readings(&r.program.canvas.inputs, r.program.inputs()) });
+        (cx.out)(CanvasChange::Inputs { inputs: readings(&r.files.canvas.inputs, &r.values) });
     }
     if !playing {
         r.next_frame = now + IDLE;
@@ -352,8 +404,9 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
     let compiled = compile(cx.slang()?, files)?;
     let sources = (compiled.options, compiled.host);
     let files = compiled.files;
-    let offscreen = Offscreen::new(render_size(files.canvas.scale))?;
-    let program = CanvasProgram::new(&offscreen.gl, files.clone(), Some(cx.printer(LogSource::Keyboard)))?;
+    let script = load_script(cx, &files)?;
+    let (width, height) = render_size(files.canvas.scale);
+    (cx.out)(CanvasChange::Program { fragment: files.fragment.clone(), width, height });
     let host_sources = Sources {
         label: "host.luau".into(),
         options: sources.0.map(str::to_owned),
@@ -370,10 +423,13 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
     let now = Instant::now();
     let running = Running {
         files,
-        program,
-        offscreen,
+        script,
+        values: BTreeMap::new(),
         host,
         clock: Clock::started(now),
+        last: None,
+        index: 0,
+        started: false,
         frame: Duration::from_secs(1) / fps,
         next_frame: now,
         inputs_sent: None,
@@ -382,18 +438,24 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
     Ok(running)
 }
 
+/// `keyboard.luau`, ready for its first frame; a canvas without one has none.
+fn load_script(cx: &Session, files: &CanvasFiles) -> Result<Option<CanvasScript>> {
+    match &files.script {
+        Some(source) => Ok(Some(CanvasScript::load(source, &files.canvas.inputs, Some(cx.printer(LogSource::Keyboard)))?)),
+        None => Ok(None),
+    }
+}
+
 /// Starts the canvas's script over from its first frame, at time 0.
 fn restart(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
-    r.program = CanvasProgram::new(&r.offscreen.gl, r.files.clone(), Some(cx.printer(LogSource::Keyboard)))?;
+    r.script = load_script(cx, &r.files)?;
+    r.last = None;
+    r.index = 0;
+    r.started = false;
     let now = Instant::now();
     r.clock = Clock::started(now).played(playing, now);
     r.next_frame = now;
     Ok(())
-}
-
-/// 0RGB pixels to a base64 JPEG, scaled down to the preview's width.
-fn jpeg_of(pixels: &[u32], size: (u32, u32)) -> Result<String> {
-    Ok(base64::engine::general_purpose::STANDARD.encode(jpeg_bytes(pixels, size, PREVIEW_WIDTH)?))
 }
 
 /// 0RGB pixels as JPEG bytes, scaled down to at most `max_width`.
@@ -443,14 +505,26 @@ mod tests {
         let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new()).unwrap();
         step(&cx, &mut running, true).unwrap();
         let seen = seen.borrow();
-        assert!(seen.iter().any(|u| matches!(u, CanvasChange::Frame { .. })), "a frame: {seen:?}");
+        let program = seen.iter().position(|u| matches!(u, CanvasChange::Program { fragment, .. } if fragment.starts_with("#version 300 es")));
+        let frame = seen.iter().position(|u| matches!(u, CanvasChange::Frame { index: 0, .. }));
+        assert!(program.is_some() && frame.is_some() && program < frame, "the shader, then the first frame: {seen:?}");
+        let Some(CanvasChange::Frame { inputs, .. }) = frame.map(|i| &seen[i]) else { unreachable!("found above") };
+        assert!(!inputs.is_empty(), "the first frame writes the inputs the gradient's script sets");
+    }
+
+    /// e2e/canvas.spec.ts draws this fixture in WebGL2; it must stay the shader the gradient packs.
+    #[test]
+    fn the_webgl_fixture_is_the_packed_gradient_shader() {
+        let deck = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/glassdeck-gpu/builtin/gradient.deck");
+        let packed = glassdeck_package::Package::open(&deck).unwrap().bytes("shader.essl").unwrap();
+        let fixture = include_bytes!("../../e2e/fixtures/gradient.essl");
+        assert!(packed == fixture, "copy shader.essl out of builtin/gradient.deck into apps/desktop/e2e/fixtures/gradient.essl");
     }
 
     #[test]
-    fn frames_are_scaled_down_to_the_preview_width() {
+    fn stills_are_scaled_down_to_their_width() {
         let pixels = vec![0x00ff_8000u32; 1920 * 1080];
-        let jpeg = base64::engine::general_purpose::STANDARD.decode(jpeg_of(&pixels, (1920, 1080)).unwrap()).unwrap();
-        let decoded = image::load_from_memory(&jpeg).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (PREVIEW_WIDTH, 540));
+        let decoded = image::load_from_memory(&jpeg_bytes(&pixels, (1920, 1080), STILL_WIDTH).unwrap()).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (STILL_WIDTH, 270));
     }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { BackgroundSummary, Value, WidgetSummary } from "../bindings";
-import { jpegUrl, pngUrl, useCanvasPreview, useStill, useVideoSource, useWidgetPreview } from "../previews";
+import { pngUrl, useLivePackageCanvas, useStill, useVideoSource, useWidgetPreview } from "../previews";
 import { classes } from "./classes";
 import styles from "./Thumbs.module.css";
 
@@ -20,10 +20,25 @@ function Layers({ still, live, liveSrc, alt }: { still: string | null; live: boo
   );
 }
 
+/** The canvas drawn live in WebGL over its still, shown from its first frame. */
+function LiveCanvasLayer({ id, values }: { id: string; values?: Values }) {
+  const { ref, drawing } = useLivePackageCanvas(id, values);
+  return (
+    <>
+      <canvas ref={ref} className={classes(styles.fill, styles.live)} data-hidden={!drawing || undefined} />
+      {!drawing && <span className={styles.spinner} role="status" aria-label="Loading the live preview" />}
+    </>
+  );
+}
+
 function CanvasFrame({ background, live, values }: { background: Pick<BackgroundSummary, "id" | "preview">; live: boolean; values?: Values }) {
-  const jpeg = useCanvasPreview(live ? background.id : null, values);
   const still = useStill(background.id, background.preview);
-  return <Layers still={still} live={live} liveSrc={jpeg && jpegUrl(jpeg)} alt="" />;
+  return (
+    <>
+      {still && <img className={styles.fill} alt="" src={still} />}
+      {live && <LiveCanvasLayer id={background.id} values={values} />}
+    </>
+  );
 }
 
 function VideoFrame({ background, live }: { background: Pick<BackgroundSummary, "id" | "preview">; live: boolean }) {

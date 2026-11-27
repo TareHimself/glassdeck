@@ -1,0 +1,146 @@
+#version 300 es
+precision highp float;
+precision highp int;
+
+#line 8731 0
+struct Frame_std140_0
+{
+    float time_0;
+    float delta_0;
+    uint index_0;
+    vec2 resolution_0;
+    vec2 panel_0;
+};
+
+
+#line 18 1
+struct GdInputs_std140_0
+{
+    vec3 night_0;
+    vec3 violet_0;
+    vec3 rose_0;
+    vec3 teal_0;
+    vec2 roseAt_0;
+    vec2 tealAt_0;
+    vec2 glowAt_0;
+};
+
+
+#line 18
+struct GlobalParams_std140_0
+{
+    Frame_std140_0 frame_0;
+    GdInputs_std140_0 gd_inputs_0;
+};
+
+
+#line 18
+uniform Frame_std140_0 frame_0;
+uniform GdInputs_std140_0 gd_inputs_0;
+
+
+#line 4 2
+struct Inputs_0
+{
+    mediump vec3 night_1;
+    mediump vec3 violet_1;
+    mediump vec3 rose_1;
+    mediump vec3 teal_1;
+    vec2 roseAt_1;
+    vec2 tealAt_1;
+    vec2 glowAt_1;
+};
+
+
+#line 16 1
+Inputs_0 gd_load_0()
+{
+
+#line 17
+    Inputs_0 i_0;
+    i_0.night_1 = vec3(gd_inputs_0.night_0);
+    i_0.violet_1 = vec3(gd_inputs_0.violet_0);
+    i_0.rose_1 = vec3(gd_inputs_0.rose_0);
+    i_0.teal_1 = vec3(gd_inputs_0.teal_0);
+    i_0.roseAt_1 = gd_inputs_0.roseAt_0;
+    i_0.tealAt_1 = gd_inputs_0.tealAt_0;
+    i_0.glowAt_1 = gd_inputs_0.glowAt_0;
+    return i_0;
+}
+
+
+#line 12920 0
+float saturate_0(float x_0)
+{
+
+#line 12928
+    return clamp(x_0, 0.0, 1.0);
+}
+
+
+#line 56 3
+mediump float bump_0(vec2 p_0, vec2 centre_0, float radius_0)
+{
+
+#line 57
+    vec2 d_0 = p_0 - centre_0;
+    mediump float x_1 = float(saturate_0(1.0 - dot(d_0, d_0) / (radius_0 * radius_0)));
+    return x_1 * x_1 * (3.0 - 2.0 * x_1);
+}
+
+
+#line 48
+struct Pixel_0
+{
+    vec2 uv_0;
+    vec2 position_0;
+};
+
+
+#line 63
+mediump vec3 dither_0(mediump vec3 c_0, Pixel_0 p_1)
+{
+
+    return c_0 + float((fract(52.98291778564453125 * fract(dot(p_1.uv_0 * frame_0.resolution_0, vec2(0.06711056083440781, 0.00583714991807938)))) - 0.5) / 255.0);
+}
+
+
+#line 10 2
+mediump vec4 gradient_0(Pixel_0 p_2, Inputs_0 i_1)
+{
+
+#line 11
+    float _S1 = p_2.uv_0.y;
+
+#line 11
+    vec2 q_0 = vec2(p_2.uv_0.x * frame_0.resolution_0.x / frame_0.resolution_0.y, _S1);
+
+#line 16
+    return vec4(dither_0(mix(mix(mix(mix(i_1.night_1, i_1.violet_1, vec3(float(_S1))), i_1.rose_1, vec3(bump_0(q_0, i_1.roseAt_1, 0.89999997615814209) * 0.75)), i_1.teal_1, vec3(bump_0(q_0, i_1.tealAt_1, 1.0) * 0.7001953125)), i_1.violet_1 * 1.5, vec3(bump_0(q_0, i_1.glowAt_1, 0.75) * 0.60009765625)), p_2), 1.0);
+}
+
+
+#line 29 1
+layout(location = 0)
+out vec4 entryPointParam_gd_fragment_0;
+
+
+#line 29
+void main()
+{
+
+#line 30
+    Pixel_0 p_3;
+    vec2 _S2 = gl_FragCoord.xy / frame_0.resolution_0;
+
+#line 31
+    p_3.uv_0 = _S2;
+    p_3.position_0 = _S2 * frame_0.panel_0;
+
+#line 32
+    entryPointParam_gd_fragment_0 = vec4(gradient_0(p_3, gd_load_0()));
+
+#line 32
+    return;
+}
+

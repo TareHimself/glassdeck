@@ -117,7 +117,11 @@ export type BackgroundSummary = {
 	preview: Still | null,
 };
 
-export type CanvasChange = { state: "frame"; jpeg: string; time: number | null } | 
+export type CanvasChange = 
+/**  A run's shader, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too), and its size */
+{ state: "program"; fragment: string; width: number; height: number } | 
+/**  One frame: the clock, and the inputs `keyboard.luau` wrote since the last one */
+{ state: "frame"; time: number | null; delta: number | null; index: number; inputs: InputUpdate[] } | 
 /**  Nothing to show: the canvas didn't compile, or stopped on an error */
 { state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
 
@@ -197,9 +201,20 @@ export type GlassdeckdError =
 /**  What the frontend hears about the connection to glassdeckd and what it sends. */
 export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; event: Event } | { state: "lost"; error: GlassdeckdError };
 
+/**  An input's new value, the way the shader takes it. */
+export type InputPayload = 
+/**  One to four floats: a float or a vector */
+{ kind: "float"; values: (number | null)[] } | { kind: "uint"; value: number } | { kind: "array"; values: (number | null)[] };
+
 export type InputReading = {
 	name: string,
 	values: (number | null)[],
+};
+
+/**  An input `keyboard.luau` wrote, for the shader. */
+export type InputUpdate = {
+	name: string,
+	value: InputPayload,
 };
 
 /**  Whether glassdeckd can talk to the keyboard. */

@@ -176,3 +176,7 @@
   color: var(--danger);
   overflow-wrap: anywhere;
 }
+
+.frame[data-hidden] {
+  visibility: hidden;
+}

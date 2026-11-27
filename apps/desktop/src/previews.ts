@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
+import { CanvasRenderer } from "./canvasRenderer";
 import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Still, type Value } from "./bindings";
 
 type Values = { [key: string]: Value };
@@ -100,31 +101,81 @@ export function claimCanvas(onChange: (change: CanvasChange) => void): CanvasCla
   };
 }
 
-/** The canvas `id` drawn live, as base64 JPEG frames, while `id` isn't null. */
-export function useCanvasPreview(id: string | null, values: Values = {}): string | null {
-  const [jpeg, setJpeg] = useState<string | null>(null);
-  const valuesKey = JSON.stringify(values);
+/**
+ * A `<canvas>` (give it `ref`) drawing whatever `show` gets, live, through the one canvas preview: the
+ * shader runs here in WebGL2, and the app's side runs `keyboard.luau` and sends each frame's inputs.
+ * `drawing` turns true at the first frame. `onChange` also hears every change (for an editor's log,
+ * inputs and clock).
+ */
+export function useLiveCanvas(onChange?: (change: CanvasChange) => void) {
+  const [element, setElement] = useState<HTMLCanvasElement | null>(null);
+  const [drawing, setDrawing] = useState(false);
+  const listener = useRef(onChange);
+  listener.current = onChange;
+  const claim = useRef<CanvasClaim | null>(null);
+  const wanted = useRef<{ files: SourceFile[]; values: Values } | null>(null);
+
   useEffect(() => {
-    setJpeg(null);
-    if (id === null) return;
-    let alive = true;
-    const claim = claimCanvas((change) => {
-      if (change.state === "frame") {
-        setJpeg(change.jpeg);
-      } else if (change.state === "cleared") {
-        setJpeg(null);
+    if (!element) return;
+    const report = (text: string) => listener.current?.({ state: "log", source: "keyboard", level: "error", text });
+    let renderer: CanvasRenderer;
+    try {
+      renderer = new CanvasRenderer(element);
+    } catch (e) {
+      report(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const own = claimCanvas((change) => {
+      try {
+        if (change.state === "program") renderer.useProgram(change.fragment, change.width, change.height);
+        if (change.state === "frame") {
+          renderer.frame({ time: change.time ?? 0, delta: change.delta ?? 0, index: change.index, inputs: change.inputs });
+          setDrawing(true);
+        }
+        if (change.state === "cleared") {
+          renderer.clear();
+          setDrawing(false);
+        }
+      } catch (e) {
+        console.error("drawing a canvas preview:", e);
+        report(e instanceof Error ? e.message : String(e));
       }
+      listener.current?.(change);
     });
+    claim.current = own;
+    if (wanted.current) own.show(wanted.current.files, wanted.current.values);
+    return () => {
+      own.release();
+      if (claim.current === own) claim.current = null;
+      renderer.dispose();
+      setDrawing(false);
+    };
+  }, [element]);
+
+  const show = useCallback((files: SourceFile[], values: Values) => {
+    wanted.current = { files, values };
+    claim.current?.show(files, values);
+  }, []);
+
+  return { ref: setElement, drawing, show };
+}
+
+/** The canvas `id` drawn live into a `<canvas>`, while mounted. */
+export function useLivePackageCanvas(id: string, values: Values = {}) {
+  const live = useLiveCanvas();
+  const valuesKey = JSON.stringify(values);
+  const { show } = live;
+  useEffect(() => {
+    let alive = true;
     void canvasFiles(id).then((files) => {
-      if (alive && files.length > 0) claim.show(files, values);
+      if (alive && files.length > 0) show(files, values);
     });
     return () => {
       alive = false;
-      claim.release();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, valuesKey]);
-  return jpeg;
+  }, [id, valuesKey, show]);
+  return live;
 }
 
 /** The widget `id` running alone at `size`, as base64 PNG frames, while `id` isn't null. */
