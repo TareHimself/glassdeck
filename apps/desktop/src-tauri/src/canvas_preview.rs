@@ -133,6 +133,8 @@ pub enum Command {
     Stop,
     /// A `net` answer arrived for host.luau
     Answered,
+    /// The window was shown or hidden; hidden, the canvas holds still and nothing is drawn
+    Visible(bool),
 }
 
 pub struct CanvasPreview(Mutex<Sender<Command>>);
@@ -226,8 +228,9 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>, wake: Wak
     let mut cx = Session { out, native, slang: None, services: Services::new(now_playing), wake };
     let mut running: Option<Running> = None;
     let mut playing = true;
+    let mut hidden = false;
     loop {
-        let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, playing, Instant::now()));
+        let wait = if hidden { crate::preview::HIDDEN_WAIT } else { running.as_ref().map_or(IDLE, |r| wait_for(r, playing, Instant::now())) };
         match rx.recv_timeout(wait) {
             Ok(Command::Show { run, folder, files, values }) => {
                 current.set(run);
@@ -279,8 +282,18 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>, wake: Wak
                 running = None;
                 playing = true;
             }
+            Ok(Command::Visible(visible)) => {
+                hidden = !visible;
+                if let Some(r) = &mut running {
+                    r.clock = r.clock.played(playing && visible, Instant::now());
+                    r.next_frame = Instant::now();
+                }
+            }
             Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if hidden {
+            continue;
         }
         if let Some(r) = &mut running
             && let Err(e) = step(&cx, r, playing)

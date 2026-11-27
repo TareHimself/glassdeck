@@ -12,6 +12,7 @@ mod options;
 mod preview;
 mod script_errors;
 mod stills;
+mod tray;
 
 use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};
 use canvas_preview::{CanvasPreview, CanvasUpdate};
@@ -674,19 +675,18 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let Some(window) = app.get_webview_window("main") else {
-                eprintln!("a second launch found no main window to focus");
-                return;
-            };
-            if let Err(e) = window.unminimize().and_then(|()| window.set_focus()) {
-                eprintln!("focusing the main window for a second launch: {e}");
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                tray::hide(window.app_handle());
             }
-        }))
+        })
         .manage(Glassdeckd::new())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             bindings.mount_events(app);
+            tray::install(app.handle())?;
             app.manage(Preview::start(app.handle().clone()));
             app.manage(Conversions::default());
             app.manage(LayoutPreview::start(app.handle().clone()));

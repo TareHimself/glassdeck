@@ -29,6 +29,8 @@ use crate::library::{Dims, SourceFile};
 
 const FRAME: Duration = Duration::from_millis(16);
 const IDLE: Duration = Duration::from_secs(1);
+/// While the window is hidden a preview draws nothing; it only waits for commands.
+pub(crate) const HIDDEN_WAIT: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Copy, Debug, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +81,8 @@ pub enum Command {
     Stop,
     /// A `net` answer arrived for host.luau
     Answered,
+    /// The window was shown or hidden; hidden, nothing is drawn
+    Visible(bool),
 }
 
 pub struct Preview(Mutex<Sender<Command>>);
@@ -138,8 +142,9 @@ fn run(app: AppHandle, rx: Receiver<Command>, wake: Wake) {
         Err(e) => return eprintln!("preview: {e:#}"),
     };
     let mut running: Option<Running> = None;
+    let mut hidden = false;
     loop {
-        let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, Instant::now()));
+        let wait = if hidden { HIDDEN_WAIT } else { running.as_ref().map_or(IDLE, |r| wait_for(r, Instant::now())) };
         match rx.recv_timeout(wait) {
             Ok(Command::Show { run, folder, files, size, values }) => {
                 current.set(run);
@@ -167,8 +172,12 @@ fn run(app: AppHandle, rx: Receiver<Command>, wake: Wake) {
                 }
             }
             Ok(Command::Stop) => running = None,
+            Ok(Command::Visible(visible)) => hidden = !visible,
             Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if hidden {
+            continue;
         }
         if let Some(r) = &mut running {
             match step(&cx, r) {

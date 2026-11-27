@@ -51,6 +51,8 @@ pub enum Command {
     Stop,
     /// A `net` answer arrived for one of the widgets' host halves
     Answered,
+    /// The window was shown or hidden; hidden, nothing is drawn
+    Visible(bool),
 }
 
 pub struct LayoutPreview(Mutex<Sender<Command>>);
@@ -98,17 +100,23 @@ fn run(app: AppHandle, rx: Receiver<Command>, wake: Wake) {
         Err(e) => return eprintln!("layout preview: {e:#}"),
     };
     let mut slots: Vec<Slot> = Vec::new();
+    let mut hidden = false;
     loop {
         let now = Instant::now();
-        let wait = slots.iter().filter_map(|s| s.running.as_ref()).map(|r| preview::wait_for(r, now)).min().unwrap_or(IDLE);
+        let drawing = slots.iter().filter_map(|s| s.running.as_ref()).map(|r| preview::wait_for(r, now)).min().unwrap_or(IDLE);
+        let wait = if hidden { preview::HIDDEN_WAIT } else { drawing };
         match rx.recv_timeout(wait) {
             Ok(Command::Show(run, layout)) => {
                 current.set(run);
                 slots = arrange(&cx, &emit, slots, layout);
             }
             Ok(Command::Stop) => slots.clear(),
+            Ok(Command::Visible(visible)) => hidden = !visible,
             Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if hidden {
+            continue;
         }
         for (index, slot) in slots.iter_mut().enumerate() {
             let Some(running) = &mut slot.running else { continue };
