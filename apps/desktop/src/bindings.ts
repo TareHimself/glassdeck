@@ -10,12 +10,17 @@ export const commands = {
 	theme: (options?: InvokeOptions) => typedError<Theme, GlassdeckdError>(__TAURI_INVOKE("theme", undefined, options)),
 	listWidgets: (options?: InvokeOptions) => typedError<WidgetSummary[], LibraryError>(__TAURI_INVOKE("list_widgets", undefined, options)),
 	createWidget: (widget: NewWidget, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("create_widget", { widget }, options)),
-	duplicateWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("duplicate_widget", { id }, options)),
-	renameWidget: (id: string, title: string, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("rename_widget", { id, title }, options)),
-	deleteWidget: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("delete_widget", { id }, options)),
-	revealWidget: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("reveal_widget", { id }, options)),
-	/**  Asks where to save, then packs the widget there. `None` when the dialog is cancelled. */
-	exportWidget: (id: string, options?: InvokeOptions) => typedError<string | null, LibraryError>(__TAURI_INVOKE("export_widget", { id }, options)),
+	/**  Copies a widget or background; the copy's qualified id. */
+	duplicatePackage: (id: string, options?: InvokeOptions) => typedError<string, LibraryError>(__TAURI_INVOKE("duplicate_package", { id }, options)),
+	renamePackage: (id: string, title: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("rename_package", { id, title }, options)),
+	deletePackage: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("delete_package", { id }, options)),
+	revealPackage: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("reveal_package", { id }, options)),
+	listBackgrounds: (options?: InvokeOptions) => typedError<BackgroundSummary[], LibraryError>(__TAURI_INVOKE("list_backgrounds", undefined, options)),
+	createBackground: (background: NewBackground, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("create_background", { background }, options)),
+	/**  Asks where to save, then packs the widget or background there. `None` when the dialog is cancelled. */
+	exportPackage: (id: string, options?: InvokeOptions) => typedError<string | null, LibraryError>(__TAURI_INVOKE("export_package", { id }, options)),
+	/**  Asks for a video file to make a background from. `None` when the dialog is cancelled. */
+	pickVideo: (options?: InvokeOptions) => __TAURI_INVOKE<string | null>("pick_video", undefined, options),
 	/**  Asks for a `.deck`, then unpacks it into the library. `None` when the dialog is cancelled. */
 	importWidget: (options?: InvokeOptions) => typedError<WidgetSummary | null, LibraryError>(__TAURI_INVOKE("import_widget", undefined, options)),
 	readWidget: (id: string, options?: InvokeOptions) => typedError<WidgetSource, LibraryError>(__TAURI_INVOKE("read_widget", { id }, options)),
@@ -46,6 +51,15 @@ export type ApiError = {
 	code: ErrorCode,
 	/**  Says what went wrong, for showing to the user as is */
 	error: string,
+};
+
+export type BackgroundKind = "canvas" | "video";
+
+export type BackgroundSummary = {
+	id: string,
+	title: string,
+	version: string,
+	kind: BackgroundKind,
 };
 
 export type Dims = {
@@ -97,6 +111,8 @@ export type GlassdeckdError =
 export type GlassdeckdUpdate = { state: "connected" } | { state: "message"; event: Event } | { state: "lost"; error: GlassdeckdError };
 
 export type LibraryError = { kind: "invalid_title"; reason: string } | { kind: "invalid_id"; reason: string } | { kind: "invalid_size"; reason: string } | { kind: "already_exists"; id: string } | { kind: "not_found"; id: string } | 
+/**  A background's video file that can't be used */
+{ kind: "bad_video"; reason: string } | 
 /**  A `.deck` to import that isn't a widget package this build reads */
 { kind: "not_a_widget"; reason: string } | { kind: "invalid_version"; reason: string } | 
 /**  The type checker couldn't run, such as its native library missing */
@@ -115,6 +131,16 @@ export type LogLevel = "print" | "error";
 export type LogSource = 
 /**  Packing the editor's files, before anything runs */
 "pack" | "keyboard" | "host";
+
+export type NewBackground = {
+	title: string,
+	id: string,
+	content: NewContent,
+};
+
+export type NewContent = { kind: "canvas" } | 
+/**  `source`: the video file to convert */
+{ kind: "video"; source: string };
 
 export type NewWidget = {
 	title: string,

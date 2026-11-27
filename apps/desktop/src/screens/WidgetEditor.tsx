@@ -195,7 +195,7 @@ export function WidgetEditor() {
 
   const pack = async () => {
     if (dirty && !(await save())) return;
-    const result = await commands.exportWidget(id);
+    const result = await commands.exportPackage(id);
     if (result.status === "error") setProblem(result.error);
   };
 

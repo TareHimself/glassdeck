@@ -7,6 +7,7 @@ import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { Segments } from "../components/Segments";
 import { Stepper } from "../components/Stepper";
+import { WizardActions, WizardForm, WizardSteps } from "../components/Wizard";
 import { KeyboardIcon, MonitorIcon, SlidersIcon } from "../icons";
 import { describeLibraryError, slug } from "../library";
 import styles from "./NewWidget.module.css";
@@ -176,20 +177,9 @@ export function NewWidget() {
     <div className={styles.page}>
       <PageHeader back={{ to: "/widgets", label: "Widgets" }} title="New widget" />
 
-      <ol aria-label="Steps" className={styles.steps}>
-        {STEPS.map((name, i) => (
-          <li key={name}>
-            <button type="button" className={styles.step} aria-current={i === step ? "step" : undefined} onClick={() => setStep(i as Step)}>
-              <span className={styles.number} data-reached={i <= step || undefined}>
-                {i + 1}
-              </span>
-              {name}
-            </button>
-          </li>
-        ))}
-      </ol>
+      <WizardSteps steps={STEPS} step={step} onStep={(i) => setStep(i as Step)} />
 
-      <section className={styles.form}>
+      <WizardForm>
         {step === 0 && (
           <>
             <Field label="Title" htmlFor="ww-title">
@@ -235,7 +225,7 @@ export function NewWidget() {
 
         {problem && <Problem>{describeLibraryError(problem)}</Problem>}
 
-        <div className={styles.actions}>
+        <WizardActions>
           {step === 0 ? (
             <ButtonLink variant="quiet" to="/widgets">
               Cancel
@@ -254,8 +244,8 @@ export function NewWidget() {
               Create and edit
             </Button>
           )}
-        </div>
-      </section>
+        </WizardActions>
+      </WizardForm>
     </div>
   );
 }

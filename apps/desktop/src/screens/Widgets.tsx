@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { commands, type LibraryError, type WidgetSummary } from "../bindings";
 import { Button, ButtonLink } from "../components/Button";
 import { Input } from "../components/Input";
-import { Menu, MenuDivider, MenuItem, MenuLink } from "../components/Menu";
+import { LibraryCard, type CardActions } from "../components/LibraryCard";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { Tag } from "../components/Tag";
@@ -31,130 +31,31 @@ function HostIcon() {
   );
 }
 
-function DotsIcon() {
+function WidgetCard(props: { widget: WidgetSummary; active: boolean; menuOpen: boolean; onMenu: (open: boolean) => void; actions: CardActions }) {
+  const { widget } = props;
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" fill="currentColor">
-      <circle cx="4" cy="9" r="1.6" />
-      <circle cx="9" cy="9" r="1.6" />
-      <circle cx="14" cy="9" r="1.6" />
-    </svg>
-  );
-}
-
-type Actions = {
-  duplicate: (id: string) => void;
-  rename: (id: string, title: string) => void;
-  export: (id: string) => void;
-  reveal: (id: string) => void;
-  remove: (id: string) => void;
-};
-
-function WidgetCard(props: { widget: WidgetSummary; active: boolean; menuOpen: boolean; onMenu: (open: boolean) => void; actions: Actions }) {
-  const { widget, active, actions, menuOpen, onMenu } = props;
-  const [renaming, setRenaming] = useState(false);
-  const [title, setTitle] = useState(widget.title);
-  const slotRef = useRef<HTMLDivElement>(null);
-  const editor = `/widgets/${widget.id}`;
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: PointerEvent) => {
-      if (!slotRef.current?.contains(e.target as Node)) onMenu(false);
-    };
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [menuOpen, onMenu]);
-
-  const act = (run: () => void) => () => {
-    onMenu(false);
-    run();
-  };
-
-  const finishRename = () => {
-    setRenaming(false);
-    if (title.trim() && title !== widget.title) actions.rename(widget.id, title);
-    else setTitle(widget.title);
-  };
-
-  const body = (
-    <>
-      <div className={styles.preview}>
-        <div className={styles.footprint} style={footprint(widget.sizing.size)} />
-      </div>
-      <div className={styles.body}>
-        <div className={styles.nameRow}>
-          {renaming ? (
-            <Input
-              variant="inline"
-              autoFocus
-              aria-label="Title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={finishRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") finishRename();
-                if (e.key === "Escape") {
-                  setTitle(widget.title);
-                  setRenaming(false);
-                }
-              }}
-            />
-          ) : (
-            <span className={styles.name}>{widget.title}</span>
-          )}
-          <span className={styles.small}>{widget.version}</span>
+    <LibraryCard
+      {...props}
+      id={widget.id}
+      title={widget.title}
+      version={widget.version}
+      href={`/widgets/${widget.id}`}
+      preview={
+        <div className={styles.preview}>
+          <div className={styles.footprint} style={footprint(widget.sizing.size)} />
         </div>
-        <span className={styles.small}>{widget.id}</span>
-        <div className={styles.tags}>
+      }
+      tags={
+        <>
           <Tag>{widget.sizing.kind === "any" ? "Any size" : sizeLabel(widget.sizing)}</Tag>
           {widget.runs_on_host && (
             <Tag tone="host" role="img" aria-label="Runs on this device" title="Runs on this device">
               <HostIcon />
             </Tag>
           )}
-          {active && <Tag tone="active">Active</Tag>}
-        </div>
-      </div>
-    </>
-  );
-
-  return (
-    <div className={styles.slot} ref={slotRef}>
-      {renaming ? (
-        <div className={styles.card}>{body}</div>
-      ) : (
-        <Link className={styles.card} to={editor}>
-          {body}
-        </Link>
-      )}
-      <button
-        type="button"
-        className={styles.more}
-        aria-label={`More actions for ${widget.title}`}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onClick={() => onMenu(!menuOpen)}
-      >
-        <DotsIcon />
-      </button>
-      {menuOpen && (
-        <Menu className={styles.menu}>
-          <MenuLink to={editor}>Edit</MenuLink>
-          <MenuItem onClick={act(() => actions.duplicate(widget.id))}>Duplicate</MenuItem>
-          <MenuItem onClick={act(() => setRenaming(true))}>Rename</MenuItem>
-          <MenuItem onClick={act(() => actions.export(widget.id))}>Export .deck</MenuItem>
-          <MenuItem onClick={act(() => actions.reveal(widget.id))}>Show in folder</MenuItem>
-          <MenuDivider />
-          {active ? (
-            <MenuItem disabled>Delete (active)</MenuItem>
-          ) : (
-            <MenuItem danger onClick={act(() => actions.remove(widget.id))}>
-              Delete
-            </MenuItem>
-          )}
-        </Menu>
-      )}
-    </div>
+        </>
+      }
+    />
   );
 }
 
@@ -187,12 +88,12 @@ export function Widgets() {
     return result.data;
   };
 
-  const actions: Actions = {
-    duplicate: (id) => void run(commands.duplicateWidget(id)),
-    rename: (id, title) => void run(commands.renameWidget(id, title)),
-    export: (id) => void run(commands.exportWidget(id)),
-    reveal: (id) => void run(commands.revealWidget(id)),
-    remove: (id) => void run(commands.deleteWidget(id)),
+  const actions: CardActions = {
+    duplicate: (id) => void run(commands.duplicatePackage(id)),
+    rename: (id, title) => void run(commands.renamePackage(id, title)),
+    export: (id) => void run(commands.exportPackage(id)),
+    reveal: (id) => void run(commands.revealPackage(id)),
+    remove: (id) => void run(commands.deletePackage(id)),
   };
 
   const importDeck = async () => {

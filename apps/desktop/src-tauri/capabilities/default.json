@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: core events and the app's own commands, nothing else",
   "windows": ["main"],
-  "permissions": ["core:event:default", "allow-status", "allow-theme", "allow-list-widgets", "allow-create-widget", "allow-duplicate-widget", "allow-rename-widget", "allow-delete-widget", "allow-reveal-widget", "allow-export-widget", "allow-import-widget", "allow-read-widget", "allow-save-widget", "allow-check-widget", "allow-widget-options", "allow-preview-widget", "allow-preview-resize", "allow-preview-options", "allow-stop-preview"]
+  "permissions": ["core:event:default", "allow-status", "allow-theme", "allow-list-widgets", "allow-create-widget", "allow-duplicate-package", "allow-rename-package", "allow-delete-package", "allow-reveal-package", "allow-export-package", "allow-pick-video", "allow-import-widget", "allow-read-widget", "allow-save-widget", "allow-check-widget", "allow-widget-options", "allow-preview-widget", "allow-preview-resize", "allow-preview-options", "allow-stop-preview", "allow-list-backgrounds", "allow-create-background"]
 }

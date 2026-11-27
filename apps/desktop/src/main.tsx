@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { Layout } from "./Layout";
 import { followGlassdeckd } from "./glassdeckd";
+import { BackgroundEditor } from "./screens/BackgroundEditor";
 import { Backgrounds } from "./screens/Backgrounds";
+import { NewBackground } from "./screens/NewBackground";
 import { NewWidget } from "./screens/NewWidget";
 import { Overview } from "./screens/Overview";
 import { WidgetEditor } from "./screens/WidgetEditor";
@@ -22,6 +24,8 @@ const router = createBrowserRouter([
       { path: "widgets/new", element: <NewWidget /> },
       { path: "widgets/:id", element: <WidgetEditor /> },
       { path: "backgrounds", element: <Backgrounds /> },
+      { path: "backgrounds/new", element: <NewBackground /> },
+      { path: "backgrounds/:id", element: <BackgroundEditor /> },
     ],
   },
 ]);

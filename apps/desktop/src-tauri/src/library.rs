@@ -8,7 +8,7 @@ use serde_json::json;
 use specta::Type;
 
 pub const GRID: u32 = 8;
-const FIRST_VERSION: &str = "1.0.0";
+pub(crate) const FIRST_VERSION: &str = "1.0.0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Dims {
@@ -53,6 +53,8 @@ pub enum LibraryError {
     InvalidSize { reason: String },
     AlreadyExists { id: String },
     NotFound { id: String },
+    /// A background's video file that can't be used
+    BadVideo { reason: String },
     /// A `.deck` to import that isn't a widget package this build reads
     NotAWidget { reason: String },
     InvalidVersion { reason: String },
@@ -63,7 +65,7 @@ pub enum LibraryError {
     Io { reason: String },
 }
 
-fn io(context: String) -> impl FnOnce(std::io::Error) -> LibraryError {
+pub(crate) fn io(context: String) -> impl FnOnce(std::io::Error) -> LibraryError {
     move |e| LibraryError::Io { reason: format!("{context}: {e}") }
 }
 
@@ -148,15 +150,15 @@ fn parse_new(new: NewWidget) -> Result<ValidNewWidget, LibraryError> {
     Ok(ValidNewWidget { title, id, qualified, options: new.options, runs_on_host: new.runs_on_host, sizing: new.sizing })
 }
 
-fn luau_string(text: &str) -> String {
+pub(crate) fn luau_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// The files a new widget starts with, by name.
 fn options_script(title: &str) -> String {
     format!("option(\"label\", \"Label\", text({}))\n", luau_string(title))
 }
 
+/// The files a new widget starts with, by name.
 fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
     let deck = json!({
         "id": new.id.as_str(),
@@ -217,7 +219,7 @@ fn summarize(folder: &Path) -> Result<Option<WidgetSummary>, LibraryError> {
 }
 
 /// A missing or blank script is the same as none.
-fn has_script(folder: &Path, name: &str) -> Result<bool, LibraryError> {
+pub(crate) fn has_script(folder: &Path, name: &str) -> Result<bool, LibraryError> {
     let unreadable = |e: anyhow::Error| LibraryError::Unreadable { folder: folder.display().to_string(), reason: format!("{e:#}") };
     Ok(read_script(folder, name).map_err(unreadable)?.is_some())
 }
@@ -257,23 +259,35 @@ pub fn create_widget(root: &Path, new: NewWidget) -> Result<WidgetSummary, Libra
     summarize(&folder)?.ok_or_else(|| LibraryError::Unreadable { folder: folder.display().to_string(), reason: "the new widget didn't read back".into() })
 }
 
-/// The folder of an existing widget, by qualified id.
-pub fn widget_folder(root: &Path, id: &str) -> Result<PathBuf, LibraryError> {
+/// The folder of an existing package of any type, by qualified id.
+pub fn package_folder(root: &Path, id: &str) -> Result<(QualifiedId, PathBuf), LibraryError> {
     let id = QualifiedId::parse(id).map_err(|e| LibraryError::InvalidId { reason: format!("{e:#}") })?;
     let folder = root.join(id.as_str());
-    if id.package_type() != PackageType::Widget || !folder.join(DECK_SOURCE).is_file() {
+    if !folder.join(DECK_SOURCE).is_file() {
         return Err(LibraryError::NotFound { id: id.to_string() });
     }
-    Ok(folder)
+    Ok((id, folder))
 }
 
-fn read_deck_json(folder: &Path) -> Result<serde_json::Map<String, serde_json::Value>, LibraryError> {
+/// The folder of an existing package of one type, by qualified id.
+pub fn typed_folder(root: &Path, id: &str, package_type: PackageType) -> Result<PathBuf, LibraryError> {
+    match package_folder(root, id)? {
+        (id, folder) if id.package_type() == package_type => Ok(folder),
+        (id, _) => Err(LibraryError::NotFound { id: id.to_string() }),
+    }
+}
+
+pub fn widget_folder(root: &Path, id: &str) -> Result<PathBuf, LibraryError> {
+    typed_folder(root, id, PackageType::Widget)
+}
+
+pub(crate) fn read_deck_json(folder: &Path) -> Result<serde_json::Map<String, serde_json::Value>, LibraryError> {
     let path = folder.join(DECK_SOURCE);
     let text = fs::read_to_string(&path).map_err(io(format!("reading {}", path.display())))?;
     serde_json::from_str(&text).map_err(|e| LibraryError::Unreadable { folder: folder.display().to_string(), reason: e.to_string() })
 }
 
-fn write_deck_json(folder: &Path, deck: &serde_json::Map<String, serde_json::Value>) -> Result<(), LibraryError> {
+pub(crate) fn write_deck_json(folder: &Path, deck: &serde_json::Map<String, serde_json::Value>) -> Result<(), LibraryError> {
     let path = folder.join(DECK_SOURCE);
     let text = format!("{}\n", serde_json::to_string_pretty(deck).expect("a JSON map serializes"));
     fs::write(&path, text).map_err(io(format!("writing {}", path.display())))
@@ -293,47 +307,46 @@ fn copy_folder(from: &Path, to: &Path) -> Result<(), LibraryError> {
     Ok(())
 }
 
-/// The first free id of the form `<id>-copy`, `<id>-copy-2`, ...
-fn free_copy_id(root: &Path, id: &PackageId) -> PackageId {
+/// The first free id of the form `<id>-copy`, `<id>-copy-2`, ... among packages of `id`'s type.
+fn free_copy_id(root: &Path, id: &QualifiedId) -> QualifiedId {
+    let bare = id.id();
     (1..)
-        .map(|n| if n == 1 { format!("{id}-copy") } else { format!("{id}-copy-{n}") })
-        .map(|text| PackageId::parse(&text).expect("a suffix on the last part keeps an id valid"))
-        .find(|candidate| !root.join(QualifiedId::new(PackageType::Widget, candidate).as_str()).exists())
+        .map(|n| if n == 1 { format!("{bare}-copy") } else { format!("{bare}-copy-{n}") })
+        .map(|text| QualifiedId::new(id.package_type(), &PackageId::parse(&text).expect("a suffix on the last part keeps an id valid")))
+        .find(|candidate| !root.join(candidate.as_str()).exists())
         .expect("an unbounded range finds a free id")
 }
 
-pub fn duplicate_widget(root: &Path, id: &str) -> Result<WidgetSummary, LibraryError> {
-    let from = widget_folder(root, id)?;
-    let original = QualifiedId::parse(id).expect("widget_folder checked it").id();
-    let copy_id = free_copy_id(root, &original);
-    let copy = QualifiedId::new(PackageType::Widget, &copy_id);
+/// Copies a package of any type under the next free `-copy` id, titled "<title> copy".
+pub fn duplicate_package(root: &Path, id: &str) -> Result<QualifiedId, LibraryError> {
+    let (original, from) = package_folder(root, id)?;
+    let copy = free_copy_id(root, &original);
     let staging = root.join(format!(".new-{copy}"));
     copy_folder(&from, &staging)?;
     let mut deck = read_deck_json(&staging)?;
     let title = deck.get("title").and_then(|t| t.as_str()).unwrap_or(id).to_owned();
-    deck.insert("id".into(), json!(copy_id.as_str()));
+    deck.insert("id".into(), json!(copy.id().as_str()));
     deck.insert("title".into(), json!(format!("{title} copy")));
     write_deck_json(&staging, &deck)?;
     let folder = root.join(copy.as_str());
     fs::rename(&staging, &folder).map_err(io(format!("moving {} into place", folder.display())))?;
-    summarize(&folder)?.ok_or(LibraryError::NotFound { id: copy.to_string() })
+    Ok(copy)
 }
 
-pub fn rename_widget(root: &Path, id: &str, title: &str) -> Result<WidgetSummary, LibraryError> {
+pub fn rename_package(root: &Path, id: &str, title: &str) -> Result<(), LibraryError> {
     let title = title.trim();
     if title.is_empty() {
-        return Err(LibraryError::InvalidTitle { reason: "Give the widget a title".into() });
+        return Err(LibraryError::InvalidTitle { reason: "Give it a title".into() });
     }
-    let folder = widget_folder(root, id)?;
+    let (_, folder) = package_folder(root, id)?;
     let mut deck = read_deck_json(&folder)?;
     deck.insert("title".into(), json!(title));
-    write_deck_json(&folder, &deck)?;
-    summarize(&folder)?.ok_or(LibraryError::NotFound { id: id.to_owned() })
+    write_deck_json(&folder, &deck)
 }
 
-/// Moves the widget's folder to the Recycle Bin, so a mistaken delete can be undone there.
-pub fn delete_widget(root: &Path, id: &str) -> Result<(), LibraryError> {
-    let folder = widget_folder(root, id)?;
+/// Moves the package's folder to the Recycle Bin, so a mistaken delete can be undone there.
+pub fn delete_package(root: &Path, id: &str) -> Result<(), LibraryError> {
+    let (_, folder) = package_folder(root, id)?;
     trash::delete(&folder).map_err(|e| LibraryError::Io { reason: format!("moving {} to the Recycle Bin: {e}", folder.display()) })
 }
 
@@ -515,10 +528,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("glassdeck-library-actions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         create_widget(&root, new(Sizing::Any { size: SIZE }, true, false)).unwrap();
-        assert_eq!(duplicate_widget(&root, "widget.local.me.weather").unwrap().id, "widget.local.me.weather-copy");
-        assert_eq!(duplicate_widget(&root, "widget.local.me.weather").unwrap().id, "widget.local.me.weather-copy-2");
-        assert_eq!(rename_widget(&root, "widget.local.me.weather-copy", "Sky").unwrap().title, "Sky");
-        assert!(matches!(rename_widget(&root, "widget.local.me.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
+        assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy");
+        assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy-2");
+        rename_package(&root, "widget.local.me.weather-copy", "Sky").unwrap();
+        assert!(list_widgets(&root).unwrap().iter().any(|w| w.title == "Sky" && w.id == "widget.local.me.weather-copy"));
+        assert!(matches!(rename_package(&root, "widget.local.me.weather-copy", " "), Err(LibraryError::InvalidTitle { .. })));
         let deck = root.join("out.deck");
         export_widget(&root, "widget.local.me.weather", &deck).unwrap();
         assert!(matches!(import_widget(&root, &deck), Err(LibraryError::AlreadyExists { .. })));

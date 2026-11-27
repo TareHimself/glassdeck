@@ -12,7 +12,9 @@ export function describeLibraryError(error: LibraryError): string {
     case "already_exists":
       return `A package with the id ${error.id} already exists`;
     case "not_found":
-      return `No widget ${error.id} in the library`;
+      return `Nothing with the id ${error.id} in the library`;
+    case "bad_video":
+      return error.reason;
     case "not_a_widget":
       return `That .deck can't be imported: ${error.reason}`;
     case "unreadable":

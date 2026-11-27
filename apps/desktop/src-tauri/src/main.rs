@@ -1,11 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backgrounds;
 mod glassdeckd;
 mod library;
 mod options;
 mod preview;
 
+use backgrounds::{BackgroundSummary, NewBackground};
 use glassdeck_api::{Status, Theme};
+use glassdeck_package::PackageType;
 use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
 use library::{Dims, LibraryError, NewWidget, SourceFile, WidgetEdit, WidgetSource, WidgetSummary};
 use options::OptionsPanel;
@@ -48,33 +51,46 @@ async fn list_widgets() -> Result<Vec<WidgetSummary>, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
+async fn list_backgrounds() -> Result<Vec<BackgroundSummary>, LibraryError> {
+    in_library(backgrounds::list_backgrounds).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn create_background(background: NewBackground) -> Result<BackgroundSummary, LibraryError> {
+    in_library(move |root| backgrounds::create_background(root, background)).await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn create_widget(widget: NewWidget) -> Result<WidgetSummary, LibraryError> {
     in_library(move |root| library::create_widget(root, widget)).await
 }
 
+/// Copies a widget or background; the copy's qualified id.
 #[tauri::command]
 #[specta::specta]
-async fn duplicate_widget(id: String) -> Result<WidgetSummary, LibraryError> {
-    in_library(move |root| library::duplicate_widget(root, &id)).await
+async fn duplicate_package(id: String) -> Result<String, LibraryError> {
+    in_library(move |root| library::duplicate_package(root, &id).map(|copy| copy.to_string())).await
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn rename_widget(id: String, title: String) -> Result<WidgetSummary, LibraryError> {
-    in_library(move |root| library::rename_widget(root, &id, &title)).await
+async fn rename_package(id: String, title: String) -> Result<(), LibraryError> {
+    in_library(move |root| library::rename_package(root, &id, &title)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn delete_widget(id: String) -> Result<(), LibraryError> {
-    in_library(move |root| library::delete_widget(root, &id)).await
+async fn delete_package(id: String) -> Result<(), LibraryError> {
+    in_library(move |root| library::delete_package(root, &id)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn reveal_widget(id: String) -> Result<(), LibraryError> {
+async fn reveal_package(id: String) -> Result<(), LibraryError> {
     in_library(move |root| {
-        let folder = library::widget_folder(root, &id)?;
+        let (_, folder) = library::package_folder(root, &id)?;
         std::process::Command::new("explorer")
             .arg(format!("/select,{}", folder.display()))
             .spawn()
@@ -169,25 +185,45 @@ fn stop_preview(preview: State<'_, Preview>) {
     preview.send(preview::Command::Stop);
 }
 
-/// Asks where to save, then packs the widget there. `None` when the dialog is cancelled.
+/// Asks where to save, then packs the widget or background there. `None` when the dialog is cancelled.
 #[tauri::command]
 #[specta::specta]
-async fn export_widget(app: AppHandle, id: String) -> Result<Option<String>, LibraryError> {
+async fn export_package(app: AppHandle, id: String) -> Result<Option<String>, LibraryError> {
     in_library(move |root| {
+        let (qualified, _) = library::package_folder(root, &id)?;
         let picked = app
             .dialog()
             .file()
             .add_filter("Glassdeck package", &[glassdeck_package::EXTENSION])
-            .set_file_name(format!("{id}.{}", glassdeck_package::EXTENSION))
+            .set_file_name(qualified.file_name())
             .blocking_save_file();
         let Some(out) = picked.and_then(|p| p.into_path().ok()) else {
             return Ok(None);
         };
-        library::export_widget(root, &id, &out)?;
+        match qualified.package_type() {
+            PackageType::Widget => library::export_widget(root, &id, &out)?,
+            PackageType::Background => backgrounds::export_background(root, &id, &out, &native_libraries()?)?,
+        }
         Ok(Some(out.display().to_string()))
     })
     .await
 }
+
+/// Asks for a video file to make a background from. `None` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+async fn pick_video(app: AppHandle) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().add_filter("Video", &VIDEO_EXTENSIONS).blocking_pick_file();
+        picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// What Media Foundation reads on Windows without extra codecs.
+const VIDEO_EXTENSIONS: [&str; 6] = ["mp4", "m4v", "mov", "mkv", "webm", "wmv"];
 
 /// Asks for a `.deck`, then unpacks it into the library. `None` when the dialog is cancelled.
 #[tauri::command]
@@ -210,11 +246,14 @@ fn bindings() -> Builder<tauri::Wry> {
             theme,
             list_widgets,
             create_widget,
-            duplicate_widget,
-            rename_widget,
-            delete_widget,
-            reveal_widget,
-            export_widget,
+            duplicate_package,
+            rename_package,
+            delete_package,
+            reveal_package,
+            list_backgrounds,
+            create_background,
+            export_package,
+            pick_video,
             import_widget,
             read_widget,
             save_widget,
