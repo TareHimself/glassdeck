@@ -67,7 +67,8 @@ pub fn compile_canvas(slang: &Slang, sources: &CanvasSources) -> Result<Compiled
     let fragment = essl::fragment_to_essl(&String::from_utf8(glsl).context("Slang's GLSL isn't UTF-8")?)?;
     let canvas = Canvas { api: CANVAS_API, scale: shape.scale, frame_rate: shape.frame_rate, inputs: shape.input_fields() };
     canvas.validate()?;
-    let types = Types { inputs: shape.inputs_definitions(), options: panel.definitions() };
+    let messages = message_types(sources.messages, sources.host.is_none());
+    let types = Types { inputs: shape.inputs_definitions(), options: panel.definitions(), messages };
     Ok(CompiledCanvas { canvas, fragment, types })
 }
 
@@ -124,13 +125,47 @@ fn read_optional(folder: &Path, name: &str) -> Result<Option<String>> {
 struct Types {
     inputs: String,
     options: String,
+    messages: MessageTypes,
+}
+
+/// What `messages.luau` gives each half's script, and its problems, as the checks report them.
+struct MessageTypes {
+    keyboard: String,
+    host: String,
+    problems: Vec<String>,
+}
+
+/// Each half's message types from `messages.luau` (none without one). `implicit_options`: `host.luau` is
+/// blank, so the keyboard half hears the built-in `options`. A `messages.luau` with problems gives no
+/// messages, and its problems.
+fn message_types(messages: Option<&str>, implicit_options: bool) -> MessageTypes {
+    let (parsed, problems) = match messages.map(glassdeck_messages::parse) {
+        None => (glassdeck_messages::Messages::default(), Vec::new()),
+        Some(Ok(parsed)) => (parsed, Vec::new()),
+        Some(Err(problems)) => (glassdeck_messages::Messages::default(), problems.iter().map(ToString::to_string).collect()),
+    };
+    MessageTypes {
+        keyboard: glassdeck_messages::definitions(&parsed, glassdeck_messages::Half::Keyboard, implicit_options),
+        host: glassdeck_messages::definitions(&parsed, glassdeck_messages::Half::Host, implicit_options),
+        problems,
+    }
+}
+
+/// The generated message files every package's `.glassdeck/` holds.
+fn message_files(types: &MessageTypes) -> [(&'static str, &str); 3] {
+    [
+        ("keyboard-messages.d.luau", types.keyboard.as_str()),
+        ("host-messages.d.luau", types.host.as_str()),
+        ("messages-api.d.luau", glassdeck_messages::wrapper_definitions()),
+    ]
 }
 
 /// `.glassdeck/`: the canvas API and the generated `inputs.d.luau` and `options.d.luau`, for editors and the checks.
 fn write_types(folder: &Path, types: &Types) -> Result<()> {
     let folder = folder.join(TYPES_FOLDER);
     fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
-    let files = [
+    let generated = message_files(&types.messages);
+    let files = generated.into_iter().chain([
         ("canvas.d.luau", definitions::CANVAS),
         ("inputs.d.luau", types.inputs.as_str()),
         ("options-api.d.luau", definitions::OPTIONS_API),
@@ -140,7 +175,7 @@ fn write_types(folder: &Path, types: &Types) -> Result<()> {
         ("host.d.luau", definitions::HOST),
         // For slangd, which finds `import glassdeck;` through its search path
         ("glassdeck.slang", API_MODULE),
-    ];
+    ]);
     for (name, text) in files {
         let path = folder.join(name);
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
@@ -152,9 +187,17 @@ fn write_types(folder: &Path, types: &Types) -> Result<()> {
 fn check_scripts(luau: &LuauChecker, types: &Types, sources: &CanvasSources) -> Result<ScriptCheck> {
     let mut problems = Vec::new();
     let mut checked = Vec::new();
+    problems.extend(types.messages.problems.iter().cloned());
+    if sources.messages.is_some() {
+        checked.push(MESSAGES_SCRIPT);
+    }
     if let Some(keyboard) = sources.keyboard {
-        let definitions =
-            [LuauFile { name: "canvas.d.luau", text: definitions::CANVAS }, LuauFile { name: "inputs.d.luau", text: &types.inputs }];
+        let definitions = [
+            LuauFile { name: "keyboard-messages.d.luau", text: &types.messages.keyboard },
+            LuauFile { name: "options.d.luau", text: &types.options },
+            LuauFile { name: "canvas.d.luau", text: definitions::CANVAS },
+            LuauFile { name: "inputs.d.luau", text: &types.inputs },
+        ];
         problems.extend(luau.check(&definitions, LuauFile { name: KEYBOARD_SCRIPT, text: keyboard })?);
         checked.push(KEYBOARD_SCRIPT);
     }
@@ -163,7 +206,7 @@ fn check_scripts(luau: &LuauChecker, types: &Types, sources: &CanvasSources) -> 
         checked.push(OPTIONS_SCRIPT);
     }
     if let Some(host) = sources.host {
-        problems.extend(luau.check_host(host, &types.options)?);
+        problems.extend(luau.check_host(host, &types.options, &types.messages.host)?);
         checked.push(HOST_SCRIPT);
     }
     Ok(ScriptCheck { problems, checked })
@@ -189,6 +232,8 @@ pub struct ScriptCheck {
 pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck> {
     let options = read_optional(folder, OPTIONS_SCRIPT)?;
     let host = read_optional(folder, HOST_SCRIPT)?;
+    let messages_source = read_optional(folder, MESSAGES_SCRIPT)?;
+    let messages = message_types(messages_source.as_deref(), host.is_none());
     let panel = match &options {
         Some(options) => OptionsScript::new(options).first_pass()?,
         None => Panel { items: Vec::new() },
@@ -196,25 +241,28 @@ pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck>
     let generated = panel.definitions();
     let types = folder.join(TYPES_FOLDER);
     fs::create_dir_all(&types).with_context(|| format!("creating {}", types.display()))?;
-    for (name, text) in [
+    for (name, text) in message_files(&messages).into_iter().chain([
         ("options-api.d.luau", definitions::OPTIONS_API),
         ("options.d.luau", generated.as_str()),
         ("current.d.luau", definitions::CURRENT),
         ("common.d.luau", definitions::COMMON),
         ("host.d.luau", definitions::HOST),
         ("keyboard.d.luau", definitions::KEYBOARD),
-    ] {
+    ]) {
         let path = types.join(name);
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     }
-    let mut problems = Vec::new();
+    let mut problems = messages.problems.clone();
     let mut checked = Vec::new();
+    if messages_source.is_some() {
+        checked.push(MESSAGES_SCRIPT);
+    }
     if let Some(options) = &options {
         problems.extend(luau.check_options(options, &generated)?);
         checked.push(OPTIONS_SCRIPT);
     }
     if let Some(host) = &host {
-        problems.extend(luau.check_host(host, &generated)?);
+        problems.extend(luau.check_host(host, &generated, &messages.host)?);
         checked.push(HOST_SCRIPT);
     }
     Ok(ScriptCheck { problems, checked })

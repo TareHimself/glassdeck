@@ -111,9 +111,9 @@ pub struct Launch {
 /// The `.glassdeck/` definition files a Luau script kind is typed by, the same ones its save-time check uses.
 pub fn definitions(server: LspServer, package: PackageType) -> &'static [&'static str] {
     match (server, package) {
-        (LspServer::LuauKeyboard, PackageType::Widget) => &["common.d.luau", "keyboard.d.luau"],
-        (LspServer::LuauKeyboard, PackageType::Background) => &["canvas.d.luau", "inputs.d.luau"],
-        (LspServer::LuauHost, _) => &["options.d.luau", "common.d.luau", "host.d.luau"],
+        (LspServer::LuauKeyboard, PackageType::Widget) => &["keyboard-messages.d.luau", "options.d.luau", "common.d.luau", "keyboard.d.luau"],
+        (LspServer::LuauKeyboard, PackageType::Background) => &["keyboard-messages.d.luau", "options.d.luau", "canvas.d.luau", "inputs.d.luau"],
+        (LspServer::LuauHost, _) => &["host-messages.d.luau", "options.d.luau", "common.d.luau", "host.d.luau"],
         (LspServer::LuauOptions, _) => &["options-api.d.luau", "options.d.luau", "current.d.luau"],
         (LspServer::Slang, _) => &[],
     }
@@ -400,6 +400,9 @@ mod tests {
         let native = native();
         let folder = std::env::temp_dir().join(format!("glassdeck-lsp-test-{}", std::process::id()));
         std::fs::create_dir_all(folder.join(TYPES_FOLDER)).unwrap();
+        let no_messages = glassdeck_messages::definitions(&glassdeck_messages::Messages::default(), glassdeck_messages::Half::Keyboard, false);
+        std::fs::write(folder.join(TYPES_FOLDER).join("keyboard-messages.d.luau"), no_messages).unwrap();
+        std::fs::write(folder.join(TYPES_FOLDER).join("options.d.luau"), glassdeck_luau::options::Panel { items: Vec::new() }.definitions()).unwrap();
         std::fs::write(folder.join(TYPES_FOLDER).join("common.d.luau"), glassdeck_luau_check::definitions::COMMON).unwrap();
         std::fs::write(folder.join(TYPES_FOLDER).join("keyboard.d.luau"), glassdeck_luau_check::definitions::KEYBOARD).unwrap();
         let Ok(launch) = launch(LspServer::LuauKeyboard, PackageType::Widget, &folder, &native) else {

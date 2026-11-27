@@ -10,5 +10,3 @@ declare extern type Resource with
     function read(self): string
 end
 
--- assets/keyboard/<name>: deployed with the module, usable on both sides
-declare keyboard: { resource: (name: string) -> Resource }

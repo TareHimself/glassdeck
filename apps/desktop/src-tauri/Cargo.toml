@@ -18,6 +18,7 @@ glassdeck-host.workspace = true
 glassdeck-layout.workspace = true
 glassdeck-luau.workspace = true
 glassdeck-luau-check.workspace = true
+glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true
 glassdeck-slang.workspace = true

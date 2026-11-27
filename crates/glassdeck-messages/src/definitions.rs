@@ -45,9 +45,14 @@ fn luau(shape: &Shape) -> String {
 
 /// What `half`'s script gets from `messages.luau`: `MessagesHeard`, the callbacks it can register for
 /// the messages that come to it, and `MessagesSent`, the calls that send to the other half.
-pub fn definitions(messages: &Messages, half: Half) -> String {
-    let heard: Vec<String> =
+/// `implicit_options`: `host.luau` is blank, so the keyboard half hears the built-in `options`, typed
+/// by the generated `Options`.
+pub fn definitions(messages: &Messages, half: Half, implicit_options: bool) -> String {
+    let mut heard: Vec<String> =
         messages.0.iter().filter(|m| m.kind.to() == half).map(|m| format!("    {}: (callback: (value: {}) -> ()) -> (),\n", m.name, luau(&m.shape))).collect();
+    if implicit_options && half == Half::Keyboard {
+        heard.push(format!("    {}: (callback: (options: Options) -> ()) -> (),\n", crate::OPTIONS));
+    }
     let sent: Vec<String> = messages.0.iter().filter(|m| m.kind.to() != half).map(|m| format!("    {}: (value: {}) -> (),\n", m.name, luau(&m.shape))).collect();
     format!(
         "-- From messages.luau. Made by Glassdeck; edits here are lost.\n\n-- What this half hears: script.on.<message>(callback)\nexport type MessagesHeard = {{\n{}}}\n\n-- What this half sends to the other: {}.script.<message>(value)\nexport type MessagesSent = {{\n{}}}\n",
@@ -68,10 +73,10 @@ mod tests {
     #[test]
     fn each_half_hears_what_comes_to_it_and_sends_the_rest() {
         let messages = parse("export type palette = KeyboardState<{ colours: { Color }, speed: number }>\nexport type tapped = HostEvent<{ key: number, label: string? }>\n").unwrap();
-        let keyboard = definitions(&messages, Half::Keyboard);
+        let keyboard = definitions(&messages, Half::Keyboard, false);
         assert!(keyboard.contains("palette: (callback: (value: { colours: { vector }, speed: number }) -> ()) -> (),"), "{keyboard}");
         assert!(keyboard.contains("tapped: (value: { key: number, label: string? }) -> (),"), "{keyboard}");
-        let host = definitions(&messages, Half::Host);
+        let host = definitions(&messages, Half::Host, false);
         assert!(host.contains("tapped: (callback: (value: { key: number, label: string? }) -> ()) -> (),"), "{host}");
         assert!(host.contains("palette: (value: { colours: { vector }, speed: number }) -> (),"), "{host}");
     }

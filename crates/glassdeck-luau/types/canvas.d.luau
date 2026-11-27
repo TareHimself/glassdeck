@@ -34,4 +34,8 @@ export type Canvas = {
     on_frame: (callback: (frame: Frame) -> ()) -> (),
 }
 
-declare script: Canvas
+-- This script: its callbacks, and script.on.<message> for what the host half sends (messages.luau)
+declare script: Canvas & { on: MessagesHeard }
+
+-- The host half: host.script.<message>(value) sends it one (messages.luau)
+declare host: { script: MessagesSent }
