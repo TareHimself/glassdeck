@@ -83,8 +83,12 @@ test("the keyboard address stays hidden until asked for", async ({ page }) => {
 
 test("Live shows only for a chosen stream, green while it's attached", async ({ page }) => {
   const streamCard = page.locator("section", { has: page.getByRole("heading", { name: "Stream", exact: true }) });
-  await expect(streamCard.getByText("Live")).toHaveCount(0);
+  const pill = streamCard.getByText("Live");
+  await expect(pill).toBeHidden();
+  const heightWithNone = (await streamCard.boundingBox())?.height;
   await streamCard.getByRole("combobox", { name: "Stream" }).click();
   await page.getByRole("option", { name: "monitor-1" }).click();
-  await expect(streamCard.getByText("Live")).toHaveAttribute("data-live", "true");
+  await expect(pill).toHaveAttribute("data-live", "true");
+  await expect(pill).toBeVisible();
+  expect((await streamCard.boundingBox())?.height, "the card doesn't grow when the pill appears").toBe(heightWithNone);
 });

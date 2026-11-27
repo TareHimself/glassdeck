@@ -256,3 +256,8 @@
 .widgetRow[aria-pressed="true"] {
   background: #1f2633;
 }
+
+/* Kept in the layout for None, so choosing a stream doesn't shift the card */
+.live[data-hidden] {
+  visibility: hidden;
+}

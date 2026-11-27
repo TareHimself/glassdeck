@@ -318,11 +318,9 @@ export function Overview() {
           <section className={styles.card}>
             <div className={styles.cardHead}>
               <h2 className={styles.cardTitle}>Stream</h2>
-              {draft.stream && (
-                <span className={styles.live} data-live={live || undefined}>
-                  Live
-                </span>
-              )}
+              <span className={styles.live} data-live={live || undefined} data-hidden={!draft.stream || undefined} aria-hidden={!draft.stream || undefined}>
+                Live
+              </span>
             </div>
             <Select
               label="Stream"
