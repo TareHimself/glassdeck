@@ -18,20 +18,46 @@ log() {
 
 run_stock() {
     log "running the stock launcher: $1"
+    pgrep -x weston >/dev/null 2>&1 || /etc/init.d/S49weston start >> "$LOG" 2>&1
     exec "$RESCUE"
 }
 
 [ -x "$RESCUE" ] || { log "no rescue copy of the stock launcher; nothing to fall back to"; exit 1; }
 [ -x "$BIN/glassdeck-receiver" ] || run_stock "the receiver isn't installed"
 
-# Filled in from the stock launcher in the probe report: the lines that start garfield (the
-# stock bridge) and whatever it needs, without Weston or garfunkel. Until then this launcher
-# runs stock unchanged, so an unfilled build is harmless.
+# Runs Flux's own launcher without its last line, which starts garfunkel (the stock UI) in the
+# foreground. Everything before it stays stock: the GPU clock cap, NTP, the IPK monitor and
+# garfield, each under its own watchdog in the background. A launcher that doesn't look like
+# the one we know (v1.0.13) isn't run this way.
+STOCK_BRIDGE=/tmp/glassdeck-stock-bridge.sh
+GARFIELD_WAIT_S=30
 start_stock_bridge() {
-    return 1
+    grep -qx 'start_garfield_with_watchdog &' "$RESCUE" || { log "the stock launcher doesn't start garfield the way we know"; return 1; }
+    grep -qx 'start_garfunkel_with_watchdog' "$RESCUE" || { log "the stock launcher doesn't end with garfunkel the way we know"; return 1; }
+    grep -vx 'start_garfunkel_with_watchdog' "$RESCUE" > "$STOCK_BRIDGE" || return 1
+    bash "$STOCK_BRIDGE" >> "$GLASSDECK/stock-bridge.log" 2>&1 &
+    waited=0
+    until pgrep -f "garfield /dev/ffs-garfield" >/dev/null 2>&1; do
+        [ "$waited" -ge "$GARFIELD_WAIT_S" ] && { log "garfield didn't start within ${GARFIELD_WAIT_S}s"; return 1; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    log "garfield is running under the stock watchdog"
 }
 
-start_stock_bridge || run_stock "start_stock_bridge isn't filled in yet"
+# Weston (started by init before this launcher) holds the display; the receiver needs KMS.
+stop_weston() {
+    /etc/init.d/S49weston stop >> "$LOG" 2>&1
+    waited=0
+    while pgrep -x weston >/dev/null 2>&1; do
+        [ "$waited" -ge 10 ] && { log "weston didn't stop"; return 1; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+start_stock_bridge || run_stock "garfield couldn't be started the stock way"
+stop_weston || run_stock "weston kept the display"
 
 # The receiver's packages and state need storage that survives a reboot.
 state_root() {

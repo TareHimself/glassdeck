@@ -1,0 +1,75 @@
+#!/bin/sh
+# Answers one question before Glassdeck adds its own USB function beside garfield's: does garfield
+# survive the USB controller being unbound and rebound with a second function in its gadget?
+# Adds an ACM serial function (needs no program behind it) for HOLD seconds, then takes it out
+# again, logging garfield's pid and the gadget each way to /home/root/glassdeck-usb-test.txt.
+# Touches only configfs, which a reboot rebuilds from scratch.
+REPORT=/home/root/glassdeck-usb-test.txt
+HOLD=${GLASSDECK_USB_TEST_HOLD:-60}
+WORKER=/tmp/glassdeck-usb-test-worker.sh
+
+if [ "${1:-}" != "--worker" ]; then
+    cp "$0" "$WORKER" && chmod +x "$WORKER"
+    setsid nohup "$WORKER" --worker </dev/null >/dev/null 2>&1 &
+    exit 0
+fi
+
+# opkg holds garfield's install lock until this returns; give it time to finish.
+sleep 5
+G=/sys/kernel/config/usb_gadget/g1
+F=acm.gs0
+# Windows reads the OS descriptors that pick WinUSB once per VID, PID and bcdDevice, and keeps the
+# single-function answer; a version of its own makes it read them again for the composite shape.
+COMPOSITE_BCD=0x4744
+SAVED_BCD=/tmp/glassdeck-usb-test-bcd
+
+note() {
+    echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "$REPORT.tmp"
+}
+
+state() {
+    note "$1: bcdDevice $(cat $G/bcdDevice 2>/dev/null), os_desc use $(cat $G/os_desc/use 2>/dev/null), garfield pid $(pidof garfield || echo none), UDC '$(cat $G/UDC 2>/dev/null)', state $(cat /sys/class/udc/*/state 2>/dev/null), config: $(ls $G/configs/c.1 2>/dev/null | tr '\n' ' ')"
+}
+
+rebind() {
+    udc=$(ls /sys/class/udc | head -1)
+    echo "" > "$G/UDC" 2>>"$REPORT.tmp" || note "unbind failed"
+    "$@"
+    echo "$udc" > "$G/UDC" 2>>"$REPORT.tmp" || note "bind failed"
+}
+
+add() {
+    cat "$G/bcdDevice" > "$SAVED_BCD"
+    echo "$COMPOSITE_BCD" > "$G/bcdDevice" 2>>"$REPORT.tmp" || note "setting bcdDevice failed"
+    mkdir "$G/functions/$F" 2>>"$REPORT.tmp" || note "mkdir $F failed"
+    ln -s "$G/functions/$F" "$G/configs/c.1/$F" 2>>"$REPORT.tmp" || note "link $F failed"
+}
+
+remove() {
+    rm -f "$G/configs/c.1/$F" 2>>"$REPORT.tmp" || note "unlink $F failed"
+    rmdir "$G/functions/$F" 2>>"$REPORT.tmp" || note "rmdir $F failed"
+    cat "$SAVED_BCD" > "$G/bcdDevice" 2>>"$REPORT.tmp" || note "restoring bcdDevice failed"
+}
+
+rm -f "$REPORT" "$REPORT.tmp"
+state "before"
+[ -d "$G" ] || { note "no gadget at $G"; mv -f "$REPORT.tmp" "$REPORT"; exit 0; }
+rebind add
+sleep 3
+state "added"
+i=0
+while [ "$i" -lt "$HOLD" ]; do
+    sleep 10
+    i=$((i + 10))
+    state "holding $i s"
+done
+rebind remove
+sleep 3
+state "removed"
+sleep 20
+state "after"
+tail -n 20 /home/root/flux/logs/autolaunch.log 2>/dev/null | sed 's/^/autolaunch: /' >> "$REPORT.tmp"
+tail -n 30 /home/root/flux/logs/garfield.log 2>/dev/null | sed 's/^/garfield: /' >> "$REPORT.tmp"
+mv -f "$REPORT.tmp" "$REPORT"
+sync
+exit 0

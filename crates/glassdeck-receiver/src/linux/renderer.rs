@@ -30,6 +30,23 @@ const RENDERER_SOCKET_FD: i32 = 3;
 const FIRST_SPARE_FD: i32 = 10;
 /// The unprivileged user renderers run as; it may use the GPU and display, nothing else of ours.
 pub const RENDERER_USER: &str = "glassdeck-local-web";
+
+/// The renderer user's uid and gid, from /etc/passwd (the keyboard has no runuser).
+fn renderer_account() -> Result<(u32, u32)> {
+    let passwd = std::fs::read_to_string("/etc/passwd").context("reading /etc/passwd")?;
+    account(&passwd, RENDERER_USER).with_context(|| format!("no {RENDERER_USER} user in /etc/passwd"))
+}
+
+/// `user`'s uid and gid in an /etc/passwd text.
+fn account(passwd: &str, user: &str) -> Option<(u32, u32)> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        (fields.next()? == user).then_some(())?;
+        let uid = fields.nth(1)?.parse().ok()?;
+        let gid = fields.next()?.parse().ok()?;
+        Some((uid, gid))
+    })
+}
 /// How long a renderer gets to exit after SIGTERM before it's killed.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const STOP_POLL: Duration = Duration::from_millis(10);
@@ -67,8 +84,8 @@ pub struct RendererProcess {
     label: &'static str,
     stop: Arc<AtomicBool>,
     socket: Arc<OwnedFd>,
-    /// runuser, which leads the process group the renderer runs in
-    runuser: Pid,
+    /// The renderer, which leads its own process group
+    renderer: Pid,
     thread: JoinHandle<()>,
 }
 
@@ -88,9 +105,12 @@ impl RendererProcess {
             .context("creating the compositor socket")?;
         let theirs = rustix::io::fcntl_dupfd_cloexec(&theirs, FIRST_SPARE_FD)?;
         let theirs_raw = theirs.as_raw_fd();
-        let mut command = Command::new("runuser");
-        command.args(["-u", RENDERER_USER, "--", program]).arg(format!("--compositor-fd={RENDERER_SOCKET_FD}")).args(args);
-        // Its own process group, so a last-resort SIGKILL takes the renderer along with runuser.
+        let (uid, gid) = renderer_account()?;
+        let mut command = Command::new(program);
+        command.arg(format!("--compositor-fd={RENDERER_SOCKET_FD}")).args(args);
+        // std drops every supplementary group when it sets the uid, leaving the user's own group.
+        command.uid(uid).gid(gid);
+        // Its own process group, so a last-resort SIGKILL takes anything it started along with it.
         command.process_group(0);
         // SAFETY: dup2 is async-signal-safe, and nothing else runs between fork and exec.
         unsafe {
@@ -100,7 +120,7 @@ impl RendererProcess {
             });
         }
         let mut child = command.spawn().with_context(|| format!("starting {label}"))?;
-        let runuser = Pid::from_child(&child);
+        let renderer = Pid::from_child(&child);
         drop(theirs);
         println!("{label} started (pid {})", child.id());
 
@@ -122,7 +142,7 @@ impl RendererProcess {
                 stopped(error);
             })?
         };
-        Ok(Self { label, stop, socket, runuser, thread })
+        Ok(Self { label, stop, socket, renderer, thread })
     }
 
     /// Data for the renderer's script (glassdeck-gpu); refused if it's larger than one message holds.
@@ -137,13 +157,10 @@ impl RendererProcess {
         send(&self.socket, &message).map_err(|RendererGone| anyhow!("{} hung up", self.label))
     }
 
-    /// Asks the renderer to exit, and kills it and runuser if it hasn't within `STOP_GRACE`. SIGTERM
-    /// goes to the renderer itself: runuser answers one by waiting 2 s and then killing it.
+    /// Asks the renderer to exit, and kills its process group if it hasn't within `STOP_GRACE`.
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
-        for renderer in self.renderers() {
-            self.signal(kill_process(renderer, Signal::TERM));
-        }
+        self.signal(kill_process(self.renderer, Signal::TERM));
         if let Err(e) = rustix::net::shutdown(&*self.socket, Shutdown::Both) {
             eprintln!("error: closing {}'s compositor socket: {e}", self.label);
         }
@@ -153,24 +170,10 @@ impl RendererProcess {
         }
         if !self.thread.is_finished() {
             eprintln!("{} ignored SIGTERM for {STOP_GRACE:?}; killing it", self.label);
-            self.signal(kill_process_group(self.runuser, Signal::KILL));
+            self.signal(kill_process_group(self.renderer, Signal::KILL));
         }
         if self.thread.join().is_err() {
             eprintln!("error: the {} thread panicked", self.label);
-        }
-    }
-
-    /// The renderer processes runuser started; none once they've exited.
-    fn renderers(&self) -> Vec<Pid> {
-        let pid = self.runuser.as_raw_nonzero();
-        let children = format!("/proc/{pid}/task/{pid}/children");
-        match std::fs::read_to_string(&children) {
-            Ok(text) => text.split_whitespace().filter_map(|n| n.parse().ok()).filter_map(Pid::from_raw).collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => {
-                eprintln!("error: reading {children}: {e}");
-                Vec::new()
-            }
         }
     }
 
@@ -234,5 +237,18 @@ fn serve(label: &str, socket: &Arc<OwnedFd>, registrar: &Registrar, mailbox: &Ma
                 None => bail!("{label} sent a script message, which only a canvas background can"),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account;
+
+    #[test]
+    fn finds_the_renderer_users_ids() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\nglassdeck-local-web:x:1000:28:Linux User,,,:/home/glassdeck-local-web:/bin/false\n";
+        assert_eq!(account(passwd, "glassdeck-local-web"), Some((1000, 28)));
+        assert_eq!(account(passwd, "glassdeck"), None);
+        assert_eq!(account("glassdeck-local-web:x:oops:28::/:/bin/false", "glassdeck-local-web"), None);
     }
 }

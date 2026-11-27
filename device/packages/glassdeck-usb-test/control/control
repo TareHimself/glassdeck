@@ -1,0 +1,7 @@
+Package: glassdeck-usb-test
+Version: 0.1.0
+Architecture: aarch64
+Maintainer: Glassdeck
+Description: Adds a serial function next to garfield's for a minute, rebinding the USB controller each way, and reports whether garfield kept working. A replug undoes everything.
+Section: utils
+Priority: optional
