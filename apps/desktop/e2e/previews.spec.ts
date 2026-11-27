@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { HOVER_PLAY_DELAY_MS } from "../src/components/hoverPlay";
 
 test("a late shader from the previous preview never shows on the next", async ({ page }) => {
   await page.goto("/");
@@ -36,6 +37,24 @@ test("cards ask for a missing still and show it", async ({ page }) => {
   await page.goto("/widgets");
   for (const title of ["Clock", "Now playing", "Pomodoro"]) {
     await expect(page.getByRole("img", { name: title })).toBeVisible();
+  }
+});
+
+test("library cards play once hovered for a moment, and stop when left", async ({ page }) => {
+  for (const [route, name, live, still] of [
+    ["/backgrounds", /Aurora/, "canvas", 0],
+    ["/widgets", /Now playing/, "img", 1],
+  ] as const) {
+    await page.goto(route);
+    const card = page.getByRole("link", { name });
+    await expect(card.locator(live), `${route}: its still`).toHaveCount(still);
+    const before = still;
+    await card.hover();
+    await page.waitForTimeout(HOVER_PLAY_DELAY_MS / 3);
+    await expect(card.locator(live), `${route}: not yet`).toHaveCount(before);
+    await expect.poll(() => card.locator(live).count(), { message: `${route}: playing` }).toBeGreaterThan(before);
+    await page.mouse.move(0, 0);
+    await expect(card.locator(live), `${route}: stopped`).toHaveCount(before);
   }
 });
 

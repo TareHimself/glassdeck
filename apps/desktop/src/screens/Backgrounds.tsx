@@ -31,13 +31,13 @@ function BackgroundCard(props: { background: BackgroundSummary; active: boolean;
       title={background.title}
       version={background.version}
       href={`/backgrounds/${background.id}`}
-      preview={
-        <BackgroundThumb className={styles.thumb} background={background}>
+      preview={(live) => (
+        <BackgroundThumb className={styles.thumb} background={background} live={live}>
           <span className={styles.kind} data-kind={background.kind}>
             {KIND_NAMES[background.kind]}
           </span>
         </BackgroundThumb>
-      }
+      )}
     />
   );
 }

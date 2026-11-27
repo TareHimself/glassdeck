@@ -1,5 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
+import { useHoverPlay } from "./hoverPlay";
 import { Input } from "./Input";
 import { Menu, MenuDivider, MenuItem, MenuLink } from "./Menu";
 import { Tag } from "./Tag";
@@ -18,7 +19,8 @@ type Props = {
   title: string;
   version: string;
   href: string;
-  preview: ReactNode;
+  /** The picture, playing while `live` (hovered or focused for a moment) */
+  preview: (live: boolean) => ReactNode;
   tags?: ReactNode;
   active: boolean;
   actions: CardActions;
@@ -40,6 +42,7 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, a
   const [draft, setDraft] = useState(title);
   const focusRenameField = useRef(false);
   const renameField = useRef<HTMLInputElement>(null);
+  const { live, start, stop } = useHoverPlay();
   const finishRename = () => {
     setRenaming(false);
     if (draft.trim() && draft !== title) actions.rename(id, draft);
@@ -48,7 +51,7 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, a
 
   const body = (
     <>
-      {preview}
+      {preview(live === id)}
       <div className={styles.body}>
         <div className={styles.nameRow}>
           {renaming ? (
@@ -81,7 +84,7 @@ export function LibraryCard({ id, title, version, href, preview, tags, active, a
   );
 
   return (
-    <div className={styles.slot}>
+    <div className={styles.slot} onPointerEnter={() => start(id)} onPointerLeave={() => stop(id)} onFocus={() => start(id)} onBlur={() => stop(id)}>
       {renaming ? (
         <div className={styles.card}>{body}</div>
       ) : (

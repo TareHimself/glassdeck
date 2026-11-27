@@ -35,7 +35,7 @@ function WidgetCard(props: { widget: WidgetSummary; active: boolean; actions: Ca
       title={widget.title}
       version={widget.version}
       href={`/widgets/${widget.id}`}
-      preview={<WidgetThumb className={styles.preview} widget={widget} />}
+      preview={(live) => <WidgetThumb className={styles.preview} widget={widget} live={live} />}
       tags={
         <>
           <Tag>{widget.sizing.kind === "any" ? "Any size" : sizeLabel(widget.sizing)}</Tag>

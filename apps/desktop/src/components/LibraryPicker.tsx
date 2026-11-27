@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useHoverPlay } from "./hoverPlay";
 import { matchesQuery } from "../search";
 import { Button } from "./Button";
 import { Dialog } from "./Dialog";
@@ -19,7 +20,7 @@ type Props<T> = {
   keyOf: (item: T) => string;
   searchText: (item: T) => string[];
   card: (item: T) => PickerCard;
-  /** The card's picture, playing while `live` (hovered or focused) */
+  /** The card's picture, playing while `live` (hovered or focused for a moment) */
   preview: (item: T, live: boolean) => ReactNode;
   newLabel: string;
   onNew: () => void;
@@ -30,7 +31,7 @@ type Props<T> = {
 /** Pick one thing from the library: search, a grid of cards that play on hover, and a way to make a new one. */
 export function LibraryPicker<T>({ title, searchLabel, items, keyOf, searchText, card, preview, newLabel, onNew, onPick, onClose }: Props<T>) {
   const [query, setQuery] = useState("");
-  const [live, setLive] = useState<string | null>(null);
+  const { live, start: play, stop: unplay } = useHoverPlay();
   const shown = items.filter((item) => matchesQuery(query, ...searchText(item)));
 
   return (
@@ -40,8 +41,8 @@ export function LibraryPicker<T>({ title, searchLabel, items, keyOf, searchText,
         {shown.map((item) => {
           const key = keyOf(item);
           const { title: name, detail, current } = card(item);
-          const start = () => setLive(key);
-          const stop = () => setLive((was) => (was === key ? null : was));
+          const start = () => play(key);
+          const stop = () => unplay(key);
           return (
             <button
               key={key}
