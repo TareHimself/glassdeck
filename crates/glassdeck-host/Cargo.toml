@@ -11,6 +11,7 @@ glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 mlua = { version = "0.12.3", features = ["luau", "serde"] }
+rustfft = "6.4"
 ureq = "3.5.2"
 sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 windows.workspace = true

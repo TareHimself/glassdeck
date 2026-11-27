@@ -21,7 +21,7 @@ use glassdeck_package::{Package, QualifiedId, is_package};
 use glassdeck_proto::ScriptTarget;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
+use glassdeck_host::{HostSide, Services, SharedNowPlaying, Sources, Wake};
 use crate::link::Uplink;
 use crate::theme::{self, ActiveTheme, Chosen};
 
@@ -58,8 +58,7 @@ struct Host {
     packages: PathBuf,
     theme: ActiveTheme,
     uplink: Arc<Uplink>,
-    system: SharedSystem,
-    now_playing: SharedNowPlaying,
+    services: Services,
     wake: Wake,
     background: Option<Running>,
     widgets: BTreeMap<u16, Running>,
@@ -120,8 +119,8 @@ fn widget_changes(running: &BTreeMap<u16, SideEntry>, wanted: &BTreeMap<u16, Sid
 
 impl Host {
     fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying, wake: Wake) -> Self {
-        let system = glassdeck_host::system();
-        Self { packages, theme, uplink, system, now_playing, wake, background: None, widgets: BTreeMap::new(), seen: None }
+        let services = Services::new(now_playing);
+        Self { packages, theme, uplink, services, wake, background: None, widgets: BTreeMap::new(), seen: None }
     }
 
     fn run(mut self, commands: &Receiver<HostCommand>) {
@@ -289,7 +288,7 @@ impl Host {
                 network: package.manifest().network.clone(),
                 wake: Some(Arc::clone(&self.wake)),
             };
-            let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
+            let Some(side) = HostSide::start(sources, &self.services)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
             Ok(Some(side))
         })();

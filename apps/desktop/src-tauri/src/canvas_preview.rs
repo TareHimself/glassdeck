@@ -15,7 +15,7 @@ use anyhow::{Context, Result, ensure};
 use glassdeck_gpu::offscreen::Offscreen;
 use glassdeck_gpu::program::{CanvasProgram, render_size};
 use glassdeck_gpu::script::{CanvasScript, InputValue};
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
+use glassdeck_host::{HostSide, Services, SharedNowPlaying, Sources, Wake};
 use glassdeck_luau::Print;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 use glassdeck_luau::options::read_values;
@@ -138,8 +138,7 @@ struct Session {
     out: Out,
     native: Option<PathBuf>,
     slang: Option<Slang>,
-    system: SharedSystem,
-    now_playing: SharedNowPlaying,
+    services: Services,
     wake: Wake,
 }
 
@@ -199,7 +198,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>, wake: Wak
         out(CanvasChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
         Arc::new(Mutex::new(None))
     });
-    let mut cx = Session { out, native, slang: None, system: glassdeck_host::system(), now_playing, wake };
+    let mut cx = Session { out, native, slang: None, services: Services::new(now_playing), wake };
     let mut running: Option<Running> = None;
     let mut playing = true;
     loop {
@@ -431,7 +430,7 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
         wake: None,
     };
     let nothing_playing: SharedNowPlaying = Arc::new(Mutex::new(None));
-    if let Some(host) = HostSide::start(sources, &glassdeck_host::system(), &nothing_playing)? {
+    if let Some(host) = HostSide::start(sources, &Services::new(nothing_playing))? {
         host.apply_options(&read_values("still", host.first(), serde_json::Map::new().iter()), None)?;
         if let Some(payload) = host.take_options() {
             program.deliver_options(&payload)?;
@@ -461,7 +460,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         network,
         wake: Some(Arc::clone(&cx.wake)),
     };
-    let host = HostSide::start(host_sources, &cx.system, &cx.now_playing).unwrap_or_else(|e| {
+    let host = HostSide::start(host_sources, &cx.services).unwrap_or_else(|e| {
         cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
         None
     });
@@ -546,8 +545,7 @@ mod tests {
             out: Rc::new(move |update| sink.borrow_mut().push(update)),
             native: Some(native),
             slang: None,
-            system: glassdeck_host::system(),
-            now_playing: Arc::new(Mutex::new(None)),
+            services: Services::new(Arc::new(Mutex::new(None))),
             wake: Arc::new(|| {}),
         };
         let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new(), Vec::new()).unwrap();

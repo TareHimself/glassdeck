@@ -68,6 +68,12 @@ export type NowPlaying = {
     duration: number?,
 }
 
+-- What the speakers are playing. Listening starts the first time a script asks, so the first answer is silence.
+declare audio: {
+    -- loudness from 0 to 1 in count bands (1 to 64), evenly spaced in pitch from 40 Hz to 16 kHz
+    bands: (count: number) -> { number },
+}
+
 declare media: {
     -- nil when nothing is playing or paused
     current: () -> NowPlaying?,

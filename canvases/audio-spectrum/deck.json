@@ -1,0 +1,7 @@
+{
+  "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
+  "id": "local.user.audio-spectrum",
+  "title": "Audio spectrum",
+  "version": "1.0.0",
+  "type": "background"
+}

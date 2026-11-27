@@ -4,12 +4,14 @@
 //! the Link; the desktop app runs one in the widget editor's preview.
 
 mod api;
+mod audio;
 mod media;
 mod net;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -25,12 +27,26 @@ use mlua::{Function, Lua, Table, Value};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 use api::{LiveOutbox, image_api, live_api, media_api};
+pub use audio::{SharedAudio, audio_tap};
 pub use media::{NowPlaying, SharedNowPlaying, Track, start as start_media};
 pub use net::Wake;
 use net::{Net, net_api};
 
 /// The host's system stats, shared by every host side on one thread.
 pub type SharedSystem = Rc<RefCell<System>>;
+
+/// What every host side on one thread shares.
+pub struct Services {
+    pub system: SharedSystem,
+    pub now_playing: SharedNowPlaying,
+    pub audio: SharedAudio,
+}
+
+impl Services {
+    pub fn new(now_playing: SharedNowPlaying) -> Self {
+        Self { system: system(), now_playing, audio: audio_tap() }
+    }
+}
 
 pub fn system() -> SharedSystem {
     let refresh = RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_usage()).with_memory(MemoryRefreshKind::nothing().with_ram());
@@ -94,7 +110,7 @@ static NO_OPTIONS: Panel = Panel { items: Vec::new() };
 
 impl HostSide {
     /// `None` when there's nothing to run: no options and no `host.luau`.
-    pub fn start(sources: Sources, system: &SharedSystem, now_playing: &SharedNowPlaying) -> Result<Option<Self>> {
+    pub fn start(sources: Sources, services: &Services) -> Result<Option<Self>> {
         let Sources { label, options, host, reader, message_limit, print, messages, network, wake } = sources;
         if options.is_none() && host.is_none() {
             return Ok(None);
@@ -108,7 +124,7 @@ impl HostSide {
             None => None,
         };
         let run = match host {
-            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), Net::new(network, wake, print.clone()), reader, message_limit, print, system, now_playing)?),
+            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), Net::new(network, wake, print.clone()), reader, message_limit, print, services)?),
             None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
         };
         Ok(Some(Self { label, options, run }))
@@ -206,8 +222,7 @@ impl HostVm {
         reader: Option<ResourceReader>,
         message_limit: Option<usize>,
         print: Option<Print>,
-        system: &SharedSystem,
-        now_playing: &SharedNowPlaying,
+        services: &Services,
     ) -> Result<Self> {
         let mut vm = Vm::new()?;
         if let Some(print) = print {
@@ -218,11 +233,12 @@ impl HostVm {
         globals_set_net(lua, &net, &waits, wait)?;
         let globals = lua.globals();
         globals.set("every", vm.every_function()?).lua_context("installing every")?;
-        globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
+        globals.set("system", system_api(lua, &services.system)?).lua_context("installing system")?;
         let live: LiveOutbox = Rc::default();
         globals.set("live", live_api(lua, &live)?).lua_context("installing live")?;
         globals.set("image", image_api(lua)?).lua_context("installing image")?;
-        globals.set("media", media_api(lua, now_playing)?).lua_context("installing media")?;
+        globals.set("media", media_api(lua, &services.now_playing)?).lua_context("installing media")?;
+        globals.set("audio", audio_api(lua, &services.audio)?).lua_context("installing audio")?;
         globals.set("color", color_api(lua)?).lua_context("installing color")?;
         globals.set("any", any_function(lua)?).lua_context("installing any")?;
         if let Some(reader) = reader {
@@ -266,6 +282,16 @@ fn install_on_options(lua: &Lua, slot: &Rc<RefCell<Option<Function>>>) -> Result
         })
         .lua_context("creating script.on_options")?;
     script.set("on_options", register).lua_context("installing script.on_options")
+}
+
+fn audio_api(lua: &Lua, audio: &SharedAudio) -> Result<Table> {
+    let api = lua.create_table().lua_context("creating audio")?;
+    let tap = Arc::clone(audio);
+    let bands = lua
+        .create_function(move |_, count: usize| tap.bands(count).map_err(|e| mlua::Error::runtime(format!("audio.bands: {e:#}"))))
+        .lua_context("creating audio.bands")?;
+    api.set("bands", bands).lua_context("installing audio.bands")?;
+    Ok(api)
 }
 
 fn system_api(lua: &Lua, system: &SharedSystem) -> Result<Table> {

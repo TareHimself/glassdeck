@@ -689,7 +689,7 @@ script.on_draw(function() error('boom') end)";
             fs::remove_file(&out).unwrap();
             seen += 1;
         }
-        assert_eq!(seen, 4);
+        assert_eq!(seen, 5);
     }
 
     fn rmpv_map_n(n: u8) -> Vec<u8> {

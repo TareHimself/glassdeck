@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
+use glassdeck_host::{HostSide, Services, SharedNowPlaying, Sources, Wake};
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::placement::{PlacedWidget, Placement};
 use glassdeck_luau::{LiveName, Print};
@@ -110,8 +110,7 @@ pub(crate) type Out = Rc<dyn Fn(PreviewChange)>;
 pub(crate) struct Session {
     out: Out,
     font: fontdue::Font,
-    system: SharedSystem,
-    now_playing: SharedNowPlaying,
+    services: Services,
     scratch: PathBuf,
     /// Wakes the preview thread for `net` answers; stills have none and never wait
     wake: Option<Wake>,
@@ -200,7 +199,7 @@ impl Session {
         static SESSIONS: AtomicU32 = AtomicU32::new(0);
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         let scratch = std::env::temp_dir().join(format!("glassdeck-preview-{}-{session}", std::process::id()));
-        Ok(Self { out, font, system: glassdeck_host::system(), now_playing, scratch, wake })
+        Ok(Self { out, font, services: Services::new(now_playing), scratch, wake })
     }
 
     fn log(&self, source: LogSource, level: LogLevel, text: String) {
@@ -337,7 +336,7 @@ pub(crate) fn show(
         network: package.manifest().network.clone(),
         wake: cx.wake.clone(),
     };
-    let host = match HostSide::start(sources, &cx.system, &cx.now_playing) {
+    let host = match HostSide::start(sources, &cx.services) {
         Ok(host) => host,
         Err(e) => {
             cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
