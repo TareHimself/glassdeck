@@ -1,9 +1,11 @@
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import { LUAU, registerLanguages, SLANG } from "./languages";
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 loader.config({ monaco });
+registerLanguages(monaco);
 
 export const THEME = "glassdeck";
 
@@ -17,6 +19,8 @@ monaco.editor.defineTheme(THEME, {
     { token: "string", foreground: "9fe0a8" },
     { token: "number", foreground: "f5b678" },
     { token: "type", foreground: "6fd3e0" },
+    { token: "annotation", foreground: "f0c674" },
+    { token: "string.escape", foreground: "d7f5a8" },
     { token: "delimiter", foreground: "98a2b3" },
     { token: "identifier", foreground: "d6dce6" },
   ],
@@ -31,7 +35,6 @@ monaco.editor.defineTheme(THEME, {
   },
 });
 
-/** Monaco has no Luau or Slang grammar: Luau reads well as Lua, and Slang as C++. */
 export function languageOf(file: string): string {
-  return file.endsWith(".slang") ? "cpp" : "lua";
+  return file.endsWith(".slang") ? SLANG : LUAU;
 }

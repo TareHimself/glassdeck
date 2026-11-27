@@ -25,13 +25,45 @@ export const STATUS: Status = {
 
 export const STREAMS: StreamEntry[] = [{ name: "monitor-1", mode: "live", from: "built in", shown: false }];
 
-export const CLOCK_OPTIONS = `return function(o)
+export const CLOCK_KEYBOARD = `--[[ Draws the time ]]
+type Options = { seconds: boolean }
+
+local seconds = false
+
+widget.on_data(function(options: Options)
+    seconds = options.seconds
+end)
+
+widget.on_draw(function(ui: Ui)
+    local label = \`{if seconds then "%H:%M:%S" else "%H:%M"}\`
+    ui:text(os.date(label), { size = ui.height * 0.5 })
+end)
+`;
+
+export const CLOCK_OPTIONS =`return function(o)
   o.toggle("seconds", { label = "Show seconds", default = true })
 end
 `;
 
+export const CANVAS_SLANG = `import glassdeck;
+
+/* Colours the options pick */
+[Inputs]
+struct Inputs {
+    half3 night; half3 rose;
+    float2 roseAt;
+}
+
+[Canvas]
+half4 gradient(Pixel p, Inputs i) {
+    // Fade from night at the top to rose
+    half3 c = lerp(i.night, i.rose, half(p.uv.y) * 0.75h);
+    return half4(c, 1);
+}
+`;
+
 export const CANVAS_FILES: SourceFile[] = [
-  { name: "canvas.slang", text: "import glassdeck;\n" },
+  { name: "canvas.slang", text: CANVAS_SLANG },
   { name: "keyboard.luau", text: "" },
   { name: "options.luau", text: "" },
   { name: "host.luau", text: "" },

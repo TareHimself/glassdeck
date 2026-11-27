@@ -14,7 +14,7 @@ import type {
   Theme,
   WidgetSummary,
 } from "../bindings";
-import { BACKGROUNDS, CANVAS_FILES, CLOCK_OPTIONS, PANEL_LAYOUT, STATUS, STREAMS, THEME, WIDGETS } from "./fixtures";
+import { BACKGROUNDS, CANVAS_FILES, CLOCK_KEYBOARD, CLOCK_OPTIONS, PANEL_LAYOUT, STATUS, STREAMS, THEME, WIDGETS } from "./fixtures";
 import { canvasFrame, widgetTile } from "./frames";
 
 /** The app's native side, faked in memory for running the frontend in a plain browser. */
@@ -75,10 +75,10 @@ function showWidget(id: string, size: Dims) {
 }
 
 function widgetFiles(id: string): SourceFile[] {
-  const options = id.endsWith(".clock") ? CLOCK_OPTIONS : "";
+  const clock = id.endsWith(".clock");
   return [
-    { name: "keyboard.luau", text: "" },
-    { name: "options.luau", text: options },
+    { name: "keyboard.luau", text: clock ? CLOCK_KEYBOARD : "" },
+    { name: "options.luau", text: clock ? CLOCK_OPTIONS : "" },
     { name: "host.luau", text: "" },
   ];
 }
