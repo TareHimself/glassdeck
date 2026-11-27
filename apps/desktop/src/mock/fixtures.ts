@@ -68,6 +68,7 @@ export const CANVAS_FILES: SourceFile[] = [
   { name: "keyboard.luau", text: "" },
   { name: "options.luau", text: "" },
   { name: "host.luau", text: "" },
+  { name: "messages.luau", text: "" },
 ];
 
 /** The ANSI keys, row by row, in the same units glassdeck-layout uses (mm, 17 mm keys, 2 mm gaps). */

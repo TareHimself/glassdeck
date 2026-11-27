@@ -142,6 +142,7 @@ function widgetFiles(id: string): SourceFile[] {
     { name: "keyboard.luau", text: clock ? CLOCK_KEYBOARD : "" },
     { name: "options.luau", text: clock ? CLOCK_OPTIONS : "" },
     { name: "host.luau", text: "" },
+    { name: "messages.luau", text: "" },
   ];
 }
 
@@ -241,6 +242,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   export_package: () => null,
   import_widget: () => null,
   pick_video: () => null,
+  refresh_message_types: ({ messages }) => messageProblems(messages as string),
   pick_image: () => "C:\\Pictures\\mountain-dawn.jpg",
   preview_image: async () => {
     await new Promise((done) => window.setTimeout(done, PICTURE_LOAD_MS));
@@ -350,6 +352,15 @@ function drawStill(id: string) {
         : null;
   const update = path ? { state: "ready", id, still: { path, stamp: Date.now() } } : { state: "failed", id, reason: "a video's still comes from converting it" };
   void emit("still-update", update);
+}
+
+/** What the real parser says about a message kind that isn't one: enough for the editor's tests. */
+function messageProblems(source: string) {
+  return source.split("\n").flatMap((line, i) => {
+    const kind = /=\s*(\w+)</.exec(line)?.[1];
+    if (!kind || ["KeyboardState", "KeyboardEvent", "HostEvent"].includes(kind)) return [];
+    return [{ line: i + 1, column: line.indexOf(kind) + 1, message: `${kind} isn't a kind of message: use KeyboardState, KeyboardEvent or HostEvent` }];
+  });
 }
 
 /** An image background as its page reads it; `from`: the picture's file name. */

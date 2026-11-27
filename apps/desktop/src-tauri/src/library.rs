@@ -380,7 +380,7 @@ pub fn import_widget(root: &Path, deck: &Path) -> Result<WidgetSummary, LibraryE
 }
 
 /// The scripts the widget editor shows, in tab order.
-pub const SCRIPTS: [&str; 3] = [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT];
+pub const SCRIPTS: [&str; 4] = [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::MESSAGES_SCRIPT];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct SourceFile {
@@ -534,7 +534,7 @@ mod tests {
         create_widget(&root, new(Sizing::Fixed { size: SIZE })).unwrap();
         let source = read_widget(&root, "widget.local.user.weather").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
+        assert_eq!(names, SCRIPTS);
         assert!(!source.widget.runs_on_host, "an empty host.luau is no host half");
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
         let saved = save_widget(&root, "widget.local.user.weather", SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();

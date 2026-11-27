@@ -25,6 +25,8 @@ pub enum LspServer {
     LuauKeyboard,
     LuauHost,
     LuauOptions,
+    /// `messages.luau`, typed by the kinds messages are written with
+    LuauMessages,
     Slang,
 }
 
@@ -115,6 +117,7 @@ pub fn definitions(server: LspServer, package: PackageType) -> &'static [&'stati
         (LspServer::LuauKeyboard, PackageType::Background) => &["keyboard-messages.d.luau", "options.d.luau", "canvas.d.luau", "inputs.d.luau"],
         (LspServer::LuauHost, _) => &["host-messages.d.luau", "options.d.luau", "common.d.luau", "host.d.luau"],
         (LspServer::LuauOptions, _) => &["options-api.d.luau", "options.d.luau", "current.d.luau"],
+        (LspServer::LuauMessages, _) => &["messages-api.d.luau"],
         (LspServer::Slang, _) => &[],
     }
 }

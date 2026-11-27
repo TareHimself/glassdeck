@@ -68,6 +68,12 @@ export const commands = {
 	saveWidget: (id: string, edit: SourceEdit, options?: InvokeOptions) => typedError<WidgetSummary, LibraryError>(__TAURI_INVOKE("save_widget", { id, edit }, options)),
 	/**  Type-checks the widget's `options.luau` and `host.luau` as saved, skipping blank ones. */
 	checkWidget: (id: string, options?: InvokeOptions) => typedError<WidgetCheck, LibraryError>(__TAURI_INVOKE("check_widget", { id }, options)),
+	/**
+	 *  Writes the package's message types from `messages` as the editor has it, so its language servers type
+	 *  the scripts' messages before a save; its problems. `host_blank`: the editor's `host.luau` is blank, so
+	 *  the keyboard half hears the built-in `options`.
+	 */
+	refreshMessageTypes: (id: string, messages: string, hostBlank: boolean, options?: InvokeOptions) => typedError<MessageProblem[], LibraryError>(__TAURI_INVOKE("refresh_message_types", { id, messages, hostBlank }, options)),
 	widgetOptions: (source: string, values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<OptionsPanel>("widget_options", { source, values }, options),
 	/**  Starts the preview of a widget with the editor's unsaved scripts; frames arrive as `PreviewUpdate`s. */
 	previewWidget: (id: string, files: SourceFile[], size: Dims, values: { [key in string]: Value }, run: PreviewRun, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("preview_widget", { id, files, size, values, run }, options)),
@@ -319,7 +325,9 @@ export type LspMessage = {
  *  Which server an editor tab talks to. Each Luau script kind has its own, because each runs with
  *  different globals and luau-lsp takes definition files per server, not per file.
  */
-export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | "slang";
+export type LspServer = "luau_keyboard" | "luau_host" | "luau_options" | 
+/**  `messages.luau`, typed by the kinds messages are written with */
+"luau_messages" | "slang";
 
 export type LspSession = number;
 
@@ -331,6 +339,13 @@ export type LspStarted = {
 	session: LspSession,
 	root: string,
 	settings: { [key in string]: Value },
+};
+
+/**  A problem in `messages.luau`, at its place (1-based). */
+export type MessageProblem = {
+	line: number,
+	column: number,
+	message: string,
 };
 
 export type NewBackground = {

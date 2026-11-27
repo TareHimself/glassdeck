@@ -191,7 +191,7 @@ pub fn typed_background(root: &Path, id: &str, kind: BackgroundKind) -> Result<P
 }
 
 /// The files the canvas editor shows, in tab order.
-pub const CANVAS_FILES: [&str; 4] = [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT];
+pub const CANVAS_FILES: [&str; 5] = [CANVAS_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT, glassdeck_package::MESSAGES_SCRIPT];
 
 /// A canvas as the editor opens it: its summary and every file, a missing one as empty.
 #[derive(Clone, Debug, Serialize, Type)]

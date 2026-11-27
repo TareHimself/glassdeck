@@ -13,6 +13,8 @@ export function serverFor(file: string): LspServer | null {
       return "luau_host";
     case "options.luau":
       return "luau_options";
+    case "messages.luau":
+      return "luau_messages";
     case "canvas.slang":
       return "slang";
     default:

@@ -1,7 +1,7 @@
 import Editor from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import { useEffect, useRef, useState } from "react";
-import type { LogLevel, LogSource, ScriptError } from "../bindings";
+import type { LogLevel, LogSource, MessageProblem, ScriptError } from "../bindings";
 import { useLanguageServers, type LanguageSupport } from "../lsp/useLanguageServers";
 import { languageOf, THEME } from "../monaco";
 import { classes } from "./classes";
@@ -43,7 +43,23 @@ type Props = {
   language?: LanguageSupport;
   /** An error the preview ran into, marked at its line */
   runError?: ScriptError | null;
+  /** Problems the app found in one file (messages.luau), marked at their places */
+  problems?: { file: string; items: MessageProblem[] };
 };
+
+/** Marks `problems` in their file's editor model, replacing the last ones. */
+function useProblemMarkers(problems: { file: string; items: MessageProblem[] } | undefined, tab: string) {
+  useEffect(() => {
+    if (!problems) return;
+    const model = monaco.editor.getModels().find((m) => m.uri.path.endsWith(`/${problems.file}`));
+    if (!model) return;
+    monaco.editor.setModelMarkers(
+      model,
+      "glassdeck",
+      problems.items.map((p) => ({ startLineNumber: p.line, endLineNumber: p.line, startColumn: p.column, endColumn: model.getLineMaxColumn(Math.min(p.line, model.getLineCount())), severity: monaco.MarkerSeverity.Error, message: p.message, source: "messages.luau" })),
+    );
+  }, [problems, tab]);
+}
 
 /** Marks `error` in its file's editor model, and clears the mark everywhere else. */
 function useRunErrorMarker(error: ScriptError | null, tab: string) {
@@ -61,11 +77,12 @@ function useRunErrorMarker(error: ScriptError | null, tab: string) {
 }
 
 /** An editor's source: one tab per file, the code, the check's status, and the debug log. */
-export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language, runError = null }: Props) {
+export function SourcePanel({ className, tabs, tab, onTab, files, onEdit, status, log, onClearLog, language, runError = null, problems }: Props) {
   const logEnd = useRef<HTMLDivElement>(null);
   const [editorMounted, setEditorMounted] = useState(false);
   const languageUnavailable = useLanguageServers(language, tab, editorMounted);
   useRunErrorMarker(runError, `${tab}:${editorMounted}`);
+  useProblemMarkers(problems, `${tab}:${editorMounted}`);
 
   useEffect(() => {
     void document.fonts.ready.then(() => monaco.editor.remeasureFonts());

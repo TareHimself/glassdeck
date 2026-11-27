@@ -128,11 +128,31 @@ struct Types {
     messages: MessageTypes,
 }
 
-/// What `messages.luau` gives each half's script, and its problems, as the checks report them.
+/// What `messages.luau` gives each half's script, and its problems.
 struct MessageTypes {
     keyboard: String,
     host: String,
-    problems: Vec<String>,
+    problems: Vec<glassdeck_messages::Problem>,
+}
+
+impl MessageTypes {
+    /// Its problems, as the checks report the scripts'.
+    fn problem_lines(&self) -> Vec<String> {
+        self.problems.iter().map(ToString::to_string).collect()
+    }
+}
+
+/// Writes each half's message types into `folder`'s `.glassdeck/` from `messages` as it is now (an
+/// editor's unsaved text), for the language servers; `messages.luau`'s problems, each at its place.
+pub fn write_message_types(folder: &Path, messages: Option<&str>, implicit_options: bool) -> Result<Vec<glassdeck_messages::Problem>> {
+    let types = message_types(messages, implicit_options);
+    let dir = folder.join(TYPES_FOLDER);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    for (name, text) in message_files(&types) {
+        let path = dir.join(name);
+        fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(types.problems)
 }
 
 /// Each half's message types from `messages.luau` (none without one). `implicit_options`: `host.luau` is
@@ -142,7 +162,7 @@ fn message_types(messages: Option<&str>, implicit_options: bool) -> MessageTypes
     let (parsed, problems) = match messages.map(glassdeck_messages::parse) {
         None => (glassdeck_messages::Messages::default(), Vec::new()),
         Some(Ok(parsed)) => (parsed, Vec::new()),
-        Some(Err(problems)) => (glassdeck_messages::Messages::default(), problems.iter().map(ToString::to_string).collect()),
+        Some(Err(problems)) => (glassdeck_messages::Messages::default(), problems),
     };
     MessageTypes {
         keyboard: glassdeck_messages::definitions(&parsed, glassdeck_messages::Half::Keyboard, implicit_options),
@@ -187,7 +207,7 @@ fn write_types(folder: &Path, types: &Types) -> Result<()> {
 fn check_scripts(luau: &LuauChecker, types: &Types, sources: &CanvasSources) -> Result<ScriptCheck> {
     let mut problems = Vec::new();
     let mut checked = Vec::new();
-    problems.extend(types.messages.problems.iter().cloned());
+    problems.extend(types.messages.problem_lines());
     if sources.messages.is_some() {
         checked.push(MESSAGES_SCRIPT);
     }
@@ -252,7 +272,7 @@ pub fn widget_problems(luau: &LuauChecker, folder: &Path) -> Result<ScriptCheck>
         let path = types.join(name);
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     }
-    let mut problems = messages.problems.clone();
+    let mut problems = messages.problem_lines();
     let mut checked = Vec::new();
     if messages_source.is_some() {
         checked.push(MESSAGES_SCRIPT);

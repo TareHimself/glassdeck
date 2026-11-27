@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
 import { useLiveCanvas } from "../previews";
 import { Button } from "../components/Button";
+import { MESSAGES_SCRIPT, useMessageTypes } from "../messageTypes";
 import { RunNote } from "../components/RunNote";
 import { errorLine, markedError, RUNNING, type RunStatus } from "../runStatus";
 import { PageHeader, useBack } from "../components/PageHeader";
@@ -12,7 +13,7 @@ import { OptionControls, type Chosen } from "./OptionControls";
 import styles from "./CanvasEditor.module.css";
 
 const LIBRARY = { to: "/backgrounds", label: "Backgrounds" };
-const FILES = ["canvas.slang", "keyboard.luau", "options.luau", "host.luau"];
+const FILES = ["canvas.slang", "keyboard.luau", "options.luau", "host.luau", "messages.luau"];
 const OPTIONS_SCRIPT = "options.luau";
 const PANEL = { w: 1920, h: 1080 };
 const EDIT_SETTLE_MS = 400;
@@ -93,6 +94,9 @@ export function CanvasEditor({ id }: { id: string }) {
   const [version, setVersion] = useState("");
   const [tab, setTab] = useState("canvas.slang");
   const [check, setCheck] = useState<Check>({ state: "checking" });
+  const messageTypes = useMessageTypes(id, files, Object.keys(files).length > 0);
+  const definitions = useMemo(() => (check.state === "checking" ? null : { check, messages: messageTypes.version }), [check, messageTypes.version]);
+  const messageProblems = useMemo(() => ({ file: MESSAGES_SCRIPT, items: messageTypes.problems }), [messageTypes.problems]);
   const [frame, setFrame] = useState<Frame>({ state: "none" });
   const [runStatus, setRunStatus] = useState<RunStatus>(RUNNING);
   const [inputs, setInputs] = useState<InputReading[]>([]);
@@ -262,7 +266,8 @@ export function CanvasEditor({ id }: { id: string }) {
           status={statusOf(check)}
           log={log.lines}
           onClearLog={log.clear}
-          language={{ packageId: id, definitions: check.state === "checking" ? null : check }}
+          language={{ packageId: id, definitions }}
+          problems={messageProblems}
           runError={markedError(runStatus)}
         />
 

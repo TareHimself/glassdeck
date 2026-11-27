@@ -436,6 +436,29 @@ struct WidgetCheck {
     checked: u32,
 }
 
+/// A problem in `messages.luau`, at its place (1-based).
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+pub struct MessageProblem {
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+}
+
+/// Writes the package's message types from `messages` as the editor has it, so its language servers type
+/// the scripts' messages before a save; its problems. `host_blank`: the editor's `host.luau` is blank, so
+/// the keyboard half hears the built-in `options`.
+#[tauri::command]
+#[specta::specta]
+async fn refresh_message_types(id: String, messages: String, host_blank: bool) -> Result<Vec<MessageProblem>, LibraryError> {
+    in_library(move |root| {
+        let (_, folder) = library::package_folder(root, &id)?;
+        let source = Some(messages.as_str()).filter(|s| !glassdeck_package::is_blank_script(s));
+        let problems = glassdeck_slang::pack::write_message_types(&folder, source, host_blank).map_err(|e| LibraryError::Io { reason: format!("{e:#}") })?;
+        Ok(problems.into_iter().map(|p| MessageProblem { line: p.line, column: p.column, message: p.message }).collect())
+    })
+    .await
+}
+
 /// Type-checks the widget's `options.luau` and `host.luau` as saved, skipping blank ones.
 #[tauri::command]
 #[specta::specta]
@@ -611,6 +634,7 @@ fn bindings() -> Builder<tauri::Wry> {
             read_widget,
             save_widget,
             check_widget,
+            refresh_message_types,
             widget_options,
             preview_widget,
             preview_resize,
