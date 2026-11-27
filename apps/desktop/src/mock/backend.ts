@@ -3,6 +3,11 @@ import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 import { BUILT_IN_BACKGROUND } from "../bindings";
 import type {
   BackgroundSummary,
+  BackupSummary,
+  Keyboard,
+  SetupStep,
+  SetupUpdate,
+  Software,
   Dims,
   GlassdeckdUpdate,
   KeyboardLink,
@@ -68,6 +73,68 @@ function background(id: string): BackgroundSummary {
 }
 
 const glassdeckd = (update: GlassdeckdUpdate) => void emit("glassdeckd-update", update);
+
+const MOCK_SERIAL = "E4645852431F3223";
+const BACKUPS_FOLDER = "C:\\Users\\you\\Documents\\Glassdeck\\Keyboard backups";
+
+/** The plugged-in keyboard; a test picks Flux software with `localStorage["glassdeck.mock.keyboard"] = "flux"` before loading. */
+const keyboard = {
+  software: ((localStorage.getItem("glassdeck.mock.keyboard") as Software | null) ?? "glassdeck") satisfies Software,
+  driverMissing: localStorage.getItem("glassdeck.mock.driver") !== "ready",
+  backups: [] as BackupSummary[],
+  running: false,
+};
+
+function mockKeyboard(): Keyboard {
+  if (keyboard.software === "absent") return { software: "absent", serial: null, firmware: null, computer: null };
+  return {
+    software: keyboard.software,
+    serial: MOCK_SERIAL,
+    firmware: keyboard.software === "flux" ? "1.4.9.D" : "glassdeck-scanner 0.0.1",
+    computer: { bridge: "1.4.8", display: "1.4.19", os: "0.0.9", free_bytes: 5_900_000_000 },
+  };
+}
+
+/** A backup run as glassdeck-setup reports it, a step every few hundred milliseconds. */
+function runBackup(folder: string) {
+  keyboard.running = true;
+  const send = (update: SetupUpdate) => void emit("setup-update", update);
+  const plan: (() => boolean)[] = [];
+  const step = (s: SetupStep, notes: string[] = []) => {
+    plan.push(() => (send({ state: "started", step: s }), true));
+    for (const text of notes) plan.push(() => (send({ state: "note", step: s, text, progress: true }), true));
+    plan.push(() => (send({ state: "finished", step: s }), true));
+  };
+  step("scanner_found");
+  plan.push(() => {
+    send({ state: "started", step: "scanner_driver" });
+    if (!keyboard.driverMissing) return true;
+    keyboard.driverMissing = false;
+    send({ state: "needs_you", step: "scanner_driver", todo: ["In Zadig, install WinUSB on RP2 Boot (Interface 1)", "Run setup again"] });
+    return false;
+  });
+  plan.push(() => (send({ state: "finished", step: "scanner_driver" }), true));
+  step("scanner_backup", ["reading flash: 4.00 / 16.00 MiB", "reading flash: 8.00 / 16.00 MiB", "reading flash: 12.00 / 16.00 MiB", "reading flash: 16.00 / 16.00 MiB"]);
+  step("bridge_found");
+  step("probe");
+  step("linux_backup");
+  plan.push(() => {
+    const done = `${folder}\\${MOCK_SERIAL}`;
+    keyboard.backups = [{ serial: MOCK_SERIAL, folder: done, finished: Math.floor(Date.now() / 1000), firmware: "1.4.9.D", display: "1.4.19" }];
+    send({ state: "backed_up", folder: done });
+    return true;
+  });
+  const next = (i: number) => {
+    const go = plan[i];
+    if (!go || !go()) {
+      keyboard.running = false;
+      send({ state: "ended" });
+      return;
+    }
+    window.setTimeout(() => next(i + 1), 120);
+  };
+  window.setTimeout(() => next(0), 50);
+}
 
 /**
  * Like the real preview, a frame from the run being replaced can still be on its way: the mock sends one,
@@ -309,6 +376,25 @@ const handlers: Record<string, (args: Args) => unknown> = {
     window.setTimeout(() => drawStill(id as string), 50);
     return background(id as string);
   },
+  keyboard: () => {
+    if (keyboard.running) throw { kind: "busy" };
+    return mockKeyboard();
+  },
+  default_backups_folder: () => BACKUPS_FOLDER,
+  pick_backups_folder: () => null,
+  keyboard_backups: () => keyboard.backups,
+  back_up_keyboard: ({ folder }) => {
+    if (keyboard.running) throw { kind: "busy" };
+    runBackup(folder as string);
+    return null;
+  },
+  install_glassdeck: () => {
+    throw { kind: "unavailable", reason: "Installing isn't ready yet: the keyboard's launcher doesn't know how Flux starts its bridge" };
+  },
+  restore_flux_software: ({ backup }) => {
+    throw { kind: "unavailable", reason: `Restoring from ${String(backup)} isn't ready yet` };
+  },
+  open_folder: () => null,
   lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package", settings: {} }),
   lsp_send: ({ session, message }) => {
     fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);

@@ -4,6 +4,10 @@
   gap: 20px;
 }
 
+.setUp {
+  font-size: 13px;
+}
+
 .upToDate:disabled {
   opacity: 1;
   color: var(--muted);

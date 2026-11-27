@@ -41,6 +41,23 @@
   font-weight: 600;
 }
 
+.itemName {
+  flex: 1;
+}
+
+.badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: #f5b84b;
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .spacer {
   flex: 1;
 }
@@ -71,6 +88,10 @@
 
 .dot[data-on] {
   background: var(--ok);
+}
+
+.dot[data-warn] {
+  background: #f5b84b;
 }
 
 .detail {

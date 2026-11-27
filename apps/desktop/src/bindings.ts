@@ -94,6 +94,17 @@ export const commands = {
 	builtInStill: (options?: InvokeOptions) => typedError<Still | null, LibraryError>(__TAURI_INVOKE("built_in_still", undefined, options)),
 	/**  Draws the canvas's still from `at` seconds in, now and whenever it's redrawn. */
 	setPreviewTime: (id: string, at: number | null, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("set_preview_time", { id, at }, options)),
+	/**  The keyboard as both its chips and glassdeckd see it. */
+	keyboard: (options?: InvokeOptions) => typedError<Keyboard, KeyboardError>(__TAURI_INVOKE("keyboard", undefined, options)),
+	defaultBackupsFolder: (options?: InvokeOptions) => typedError<string, KeyboardError>(__TAURI_INVOKE("default_backups_folder", undefined, options)),
+	/**  Asks for a folder to keep keyboard backups in. `None` when the dialog is cancelled. */
+	pickBackupsFolder: (options?: InvokeOptions) => __TAURI_INVOKE<string | null>("pick_backups_folder", undefined, options),
+	keyboardBackups: (folder: string, options?: InvokeOptions) => __TAURI_INVOKE<BackupSummary[]>("keyboard_backups", { folder }, options),
+	/**  Starts backing up the keyboard into `folder`; progress arrives as `SetupUpdate`s. */
+	backUpKeyboard: (folder: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("back_up_keyboard", { folder }, options)),
+	installGlassdeck: (options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("install_glassdeck", undefined, options)),
+	restoreFluxSoftware: (backup: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("restore_flux_software", { backup }, options)),
+	openFolder: (path: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("open_folder", { path }, options)),
 };
 
 /** Events */
@@ -104,6 +115,7 @@ export const events = {
 	lspExited: makeEvent<LspExited, LspExited>("lsp-exited"),
 	lspMessage: makeEvent<LspMessage, LspMessage>("lsp-message"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
+	setupUpdate: makeEvent<SetupUpdate, SetupUpdate>("setup-update"),
 	stillUpdate: makeEvent<StillUpdate, StillUpdate>("still-update"),
 	videoUpdate: makeEvent<VideoUpdate, VideoUpdate>("video-update"),
 };
@@ -142,6 +154,16 @@ export type BackgroundSummary = {
 	preview: Still | null,
 };
 
+/**  A finished backup of one keyboard, as saved in the backups folder. */
+export type BackupSummary = {
+	serial: string,
+	folder: string,
+	/**  Seconds since 1970 when it was finished. */
+	finished: number,
+	firmware: string | null,
+	display: string | null,
+};
+
 export type CanvasChange = 
 /**
  *  A run's shaders, compiled to GLSL ES 3.00 (what the keyboard runs, and WebGL2 too): the passes
@@ -177,6 +199,14 @@ export type CanvasSource = {
 export type CanvasUpdate = {
 	run: PreviewRun,
 	change: CanvasChange,
+};
+
+/**  What the stock bridge on the keyboard's computer reports. */
+export type Computer = {
+	bridge: string,
+	display: string,
+	os: string,
+	free_bytes: number,
 };
 
 export type ConversionState = { state: "converting"; fraction: number | null } | { state: "failed"; reason: string };
@@ -267,6 +297,20 @@ export type InputUpdate = {
 	name: string,
 	value: InputPayload,
 };
+
+export type Keyboard = {
+	software: Software,
+	/**  The key scanner's USB serial, which names the keyboard's backup folder. */
+	serial: string | null,
+	firmware: string | null,
+	computer: Computer | null,
+};
+
+export type KeyboardError = 
+/**  A backup or restore is already running. */
+{ kind: "busy" } | 
+/**  Not possible yet, and why. */
+{ kind: "unavailable"; reason: string } | { kind: "failed"; reason: string };
 
 /**  Whether glassdeckd can talk to the keyboard. */
 export type KeyboardLink = { state: "connected" } | 
@@ -465,6 +509,19 @@ export type ScriptError = {
 	syntax: boolean,
 };
 
+/**  Setup's steps as the frontend names them. */
+export type SetupStep = "scanner_found" | "scanner_driver" | "scanner_backup" | "bridge_found" | "probe" | "linux_backup";
+
+export type SetupUpdate = { state: "started"; step: SetupStep } | 
+/**  Something that happened, or with `progress`, how far a transfer has got. */
+{ state: "note"; step: SetupStep; text: string; progress: boolean } | 
+/**  What the user has to do before the backup can go on; the run has stopped. */
+{ state: "needs_you"; step: SetupStep; todo: string[] } | { state: "finished"; step: SetupStep } | { state: "failed"; step: SetupStep; reason: string } | 
+/**  Every step is done. */
+{ state: "backed_up"; folder: string } | 
+/**  The run is over, however it ended. */
+{ state: "ended" };
+
 /**  Where a theme's stream got to by the time `PUT /theme` answered. */
 export type ShowState = "shown" | 
 /**  A stream starts once the keyboard connects */
@@ -480,6 +537,13 @@ export type ShowState = "shown" |
 export type Sizing = { kind: "fixed"; size: Dims } | { kind: "range"; size: Dims; min: Dims; max: Dims } | 
 /**  Any size in the widget area; stored as the grid's smallest step up to the whole area */
 { kind: "any"; size: Dims };
+
+/**  What the keyboard runs, as far as the host can tell. */
+export type Software = 
+/**  No keyboard is plugged in, or neither chip answers. */
+"absent" | 
+/**  Flux's own firmware and display software: Glassdeck isn't on it yet. */
+"flux" | "glassdeck";
 
 /**  What an editor saves: its scripts, and the title and version for `deck.json`. */
 export type SourceEdit = {

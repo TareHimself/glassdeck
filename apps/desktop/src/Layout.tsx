@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router";
 import { describeError, keyboardLabel, useGlassdeckd, type Connection } from "./glassdeckd";
+import { useKeyboard } from "./keyboard";
 import styles from "./Layout.module.css";
 
 /** The line under the link state: the keyboard's address, hidden until asked for, or a reason. */
@@ -57,6 +58,7 @@ function Logo() {
 export function Layout() {
   const connection = useGlassdeckd((s) => s.connection);
   const link = linkSummary(connection);
+  const needsSetup = useKeyboard((s) => s.keyboard?.software === "flux");
   return (
     <div className={styles.shell}>
       <nav aria-label="Main" className={styles.sidebar}>
@@ -73,11 +75,19 @@ export function Layout() {
         <NavLink className={styles.item} to="/backgrounds">
           Backgrounds
         </NavLink>
+        <NavLink className={styles.item} to="/keyboard">
+          <span className={styles.itemName}>Keyboard</span>
+          {needsSetup && (
+            <span role="img" aria-label="Needs setup" className={styles.badge}>
+              !
+            </span>
+          )}
+        </NavLink>
         <div className={styles.spacer} />
         <div className={styles.link}>
           <div className={styles.linkState}>
-            <span className={styles.dot} data-on={link.on || undefined} />
-            {link.label}
+            <span className={styles.dot} data-on={(!needsSetup && link.on) || undefined} data-warn={needsSetup || undefined} />
+            {needsSetup ? "Keyboard needs setup" : link.label}
           </div>
           {link.detail.kind === "address" ? <Address address={link.detail.address} /> : <div className={styles.detail}>{link.detail.text}</div>}
         </div>

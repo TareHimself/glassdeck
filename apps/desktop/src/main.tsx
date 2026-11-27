@@ -3,8 +3,10 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { BareLayout, Layout } from "./Layout";
 import { followGlassdeckd } from "./glassdeckd";
+import { followKeyboard } from "./keyboard";
 import { BackgroundEditor } from "./screens/BackgroundEditor";
 import { Backgrounds, ChooseBackground } from "./screens/Backgrounds";
+import { Keyboard } from "./screens/Keyboard";
 import { Overview } from "./screens/Overview";
 import { WidgetEditor } from "./screens/WidgetEditor";
 import { AddWidget, Widgets } from "./screens/Widgets";
@@ -22,6 +24,7 @@ const router = createBrowserRouter([
       { path: "widgets/:id", element: <WidgetEditor /> },
       { path: "backgrounds", element: <Backgrounds /> },
       { path: "backgrounds/:id", element: <BackgroundEditor /> },
+      { path: "keyboard", element: <Keyboard /> },
     ],
   },
   {
@@ -40,6 +43,10 @@ if (import.meta.env.MODE === "mock") {
 
 followGlassdeckd().catch((error: unknown) => {
   console.error("following glassdeckd", error);
+});
+
+followKeyboard().catch((error: unknown) => {
+  console.error("following the keyboard", error);
 });
 
 const root = document.getElementById("root");

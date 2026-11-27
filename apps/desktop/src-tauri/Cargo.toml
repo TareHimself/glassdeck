@@ -21,6 +21,7 @@ glassdeck-luau-check.workspace = true
 glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 glassdeck-proto.workspace = true
+glassdeck-setup.workspace = true
 glassdeck-slang.workspace = true
 glassdeck-widget.workspace = true
 base64 = "0.23.1"

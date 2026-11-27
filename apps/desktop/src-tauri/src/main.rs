@@ -5,6 +5,7 @@ mod canvas_preview;
 mod videos;
 mod glassdeckd;
 mod images;
+mod keyboard;
 mod layout_preview;
 mod library;
 mod lsp;
@@ -39,6 +40,72 @@ const BINDINGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"
 #[specta::specta]
 async fn status(glassdeckd: State<'_, Glassdeckd>) -> Result<Status, GlassdeckdError> {
     glassdeckd.status().await
+}
+
+/// The keyboard as both its chips and glassdeckd see it.
+#[tauri::command]
+#[specta::specta]
+async fn keyboard(glassdeckd: State<'_, Glassdeckd>, running: State<'_, keyboard::Running>) -> Result<keyboard::Keyboard, keyboard::KeyboardError> {
+    if running.is_running() {
+        return Err(keyboard::KeyboardError::Busy);
+    }
+    let link = glassdeckd.status().await.map(|s| s.link.connection).unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || keyboard::look(link))
+        .await
+        .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("looking at the keyboard: {e}") })
+}
+
+#[tauri::command]
+#[specta::specta]
+fn default_backups_folder() -> Result<String, keyboard::KeyboardError> {
+    keyboard::default_backups().map(|p| p.display().to_string())
+}
+
+/// Asks for a folder to keep keyboard backups in. `None` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+async fn pick_backups_folder(app: AppHandle) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder().and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn keyboard_backups(folder: String) -> Vec<keyboard::BackupSummary> {
+    tauri::async_runtime::spawn_blocking(move || keyboard::backups(Path::new(&folder))).await.unwrap_or_default()
+}
+
+/// Starts backing up the keyboard into `folder`; progress arrives as `SetupUpdate`s.
+#[tauri::command]
+#[specta::specta]
+fn back_up_keyboard(app: AppHandle, running: State<'_, keyboard::Running>, folder: String) -> Result<(), keyboard::KeyboardError> {
+    keyboard::start_backup(app, running.inner().clone(), PathBuf::from(folder))
+}
+
+#[tauri::command]
+#[specta::specta]
+fn install_glassdeck() -> Result<(), keyboard::KeyboardError> {
+    Err(keyboard::KeyboardError::Unavailable {
+        reason: "Installing isn't ready yet: the keyboard's launcher doesn't know how Flux starts its bridge".into(),
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+fn restore_flux_software(backup: String) -> Result<(), keyboard::KeyboardError> {
+    Err(keyboard::KeyboardError::Unavailable { reason: format!("Restoring from {backup} isn't ready yet") })
+}
+
+#[tauri::command]
+#[specta::specta]
+fn open_folder(path: String) -> Result<(), keyboard::KeyboardError> {
+    std::process::Command::new("explorer")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("opening Explorer: {e}") })
 }
 
 #[tauri::command]
@@ -655,8 +722,16 @@ fn bindings() -> Builder<tauri::Wry> {
             request_still,
             built_in_still,
             set_preview_time,
+            keyboard,
+            default_backups_folder,
+            pick_backups_folder,
+            keyboard_backups,
+            back_up_keyboard,
+            install_glassdeck,
+            restore_flux_software,
+            open_folder,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited, stills::StillUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited, stills::StillUpdate, keyboard::SetupUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .constant("BUILT_IN_BACKGROUND", glassdeck_proto::BUILT_IN_BACKGROUND)
@@ -683,6 +758,7 @@ fn main() {
             }
         })
         .manage(Glassdeckd::new())
+        .manage(keyboard::Running::default())
         .invoke_handler(bindings.invoke_handler())
         .setup(move |app| {
             bindings.mount_events(app);

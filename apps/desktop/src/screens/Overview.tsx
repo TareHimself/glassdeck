@@ -9,6 +9,7 @@ import { Problem } from "../components/Problem";
 import { setDraft, sameTheme, useSeededDraft } from "../draft";
 import { nextPreviewRun } from "../previews";
 import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
+import { useKeyboard } from "../keyboard";
 import { BUILT_IN, describeLibraryError, useBuiltInBackground } from "../library";
 import { overlaps, type Box } from "../widgetArea";
 import { SelectedWidget } from "./SelectedWidget";
@@ -124,6 +125,7 @@ function useLibrary() {
 
 export function Overview() {
   const connection = useGlassdeckd((s) => s.connection);
+  const needsSetup = useKeyboard((s) => s.keyboard?.software === "flux");
   const active = useGlassdeckd((s) => s.theme);
   const draft = useSeededDraft();
   const library = useLibrary();
@@ -218,9 +220,20 @@ export function Overview() {
         actions={
           <>
             <Button onClick={() => setShowKeys(!showKeys)}>{showKeys ? "Hide keys" : "Show keys"}</Button>
-            <Button variant={pending ? "primary" : "quiet"} className={pending ? undefined : styles.upToDate} disabled={!pending || applying} onClick={() => void apply()}>
-              {pending ? (applying ? "Applying…" : "Apply to keyboard") : "Keyboard up to date"}
-            </Button>
+            {needsSetup ? (
+              <>
+                <Link className={styles.setUp} to="/keyboard">
+                  Set up the keyboard to apply
+                </Link>
+                <Button variant="primary" disabled>
+                  Apply to keyboard
+                </Button>
+              </>
+            ) : (
+              <Button variant={pending ? "primary" : "quiet"} className={pending ? undefined : styles.upToDate} disabled={!pending || applying} onClick={() => void apply()}>
+                {pending ? (applying ? "Applying…" : "Apply to keyboard") : "Keyboard up to date"}
+              </Button>
+            )}
           </>
         }
       />
