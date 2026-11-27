@@ -27,6 +27,17 @@ struct Cli {
     /// Draw one frame at 10 s and write it here as raw RGBA, to compare canvases
     #[arg(long)]
     snapshot: Option<std::path::PathBuf>,
+    /// How the panel is mounted; on Flux's keyboard it's turned, and the video plane can't turn
+    #[arg(long, value_enum, default_value_t = PanelRotation::Upright)]
+    panel_rotation: PanelRotation,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum PanelRotation {
+    #[value(name = "0")]
+    Upright,
+    #[value(name = "180")]
+    Turned180,
 }
 
 /// On the PC only --snapshot works, through the same shader and script the keyboard runs.
@@ -77,8 +88,9 @@ mod linux {
     use glassdeck_package::{CanvasFiles, Package};
     use glassdeck_proto::compositor::FromCompositor;
 
-    use super::Cli;
+    use super::{Cli, PanelRotation};
     use crate::compositor::{Compositor, Received};
+    use glassdeck_gpu::turn::Turn;
     use crate::gpu::{Gpu, Target};
     use glassdeck_gpu::program::CanvasProgram as Canvas;
 
@@ -92,7 +104,7 @@ mod linux {
             let fd = cli.compositor_fd.context("an image background needs --compositor-fd (from the receiver)")?;
             // SAFETY: the receiver hands us this socket at this number and nothing else owns it.
             let compositor = unsafe { Compositor::from_fd(fd) };
-            return show_image(&gpu, &compositor, path);
+            return show_image(&gpu, &compositor, path, cli.panel_rotation);
         }
         let files = match &cli.canvas {
             Some(path) => CanvasFiles::read(&Package::open(path)?).with_context(|| format!("opening the canvas {}", path.display()))?,
@@ -110,10 +122,18 @@ mod linux {
             (Some(fd), None) => {
                 // SAFETY: the receiver hands us this socket at this number and nothing else owns it.
                 let compositor = unsafe { Compositor::from_fd(fd) };
-                present(&gpu, &targets, &mut canvas, &compositor, fps)
+                let turn = turn(&gpu, size, cli.panel_rotation)?;
+                present(&gpu, &targets, &mut canvas, &compositor, fps, turn.as_ref())
             }
             (None, Some(frames)) => bench(&gpu, &targets, &mut canvas, frames),
             _ => bail!("give either --compositor-fd (from the receiver) or --bench"),
+        }
+    }
+
+    fn turn(gpu: &Gpu, size: (u32, u32), rotation: PanelRotation) -> Result<Option<Turn>> {
+        match rotation {
+            PanelRotation::Upright => Ok(None),
+            PanelRotation::Turned180 => Turn::new(&gpu.gl, size).map(Some),
         }
     }
 
@@ -121,7 +141,7 @@ mod linux {
         (target.layout.width, target.layout.height)
     }
 
-    fn present(gpu: &Gpu, targets: &[Target], canvas: &mut Canvas, compositor: &Compositor, fps: u32) -> Result<()> {
+    fn present(gpu: &Gpu, targets: &[Target], canvas: &mut Canvas, compositor: &Compositor, fps: u32, turn: Option<&Turn>) -> Result<()> {
         let ids = targets.iter().map(|t| compositor.register(t.dma_buf.as_fd(), t.layout)).collect::<Result<Vec<_>>>()?;
         let mut free: Vec<usize> = (0..targets.len()).collect();
         let period = Duration::from_secs_f64(1.0 / f64::from(fps));
@@ -154,7 +174,11 @@ mod linux {
             }
             due = (due + period).max(Instant::now());
             let index = free.pop().expect("a free buffer, waited for above");
-            let drawn = canvas.draw(&gpu.gl, targets[index].framebuffer, size_of(&targets[index]), started.elapsed().as_secs_f32())?;
+            let into = turn.map_or(targets[index].framebuffer, Turn::framebuffer);
+            let drawn = canvas.draw(&gpu.gl, into, size_of(&targets[index]), started.elapsed().as_secs_f32())?;
+            if let (Some(turn), Some(_)) = (turn, drawn) {
+                turn.onto(&gpu.gl, targets[index].framebuffer);
+            }
             for sent in canvas.take_messages() {
                 compositor.send_script_message(sent.message, sent.payload)?;
             }
@@ -170,11 +194,16 @@ mod linux {
 
     /// Draws the picture once into one buffer and presents it; the compositor keeps showing it, so all
     /// that's left is to answer until the receiver closes the socket.
-    fn show_image(gpu: &Gpu, compositor: &Compositor, path: &std::path::Path) -> Result<()> {
+    fn show_image(gpu: &Gpu, compositor: &Compositor, path: &std::path::Path, rotation: PanelRotation) -> Result<()> {
         use glassdeck_gpu::image::{ImageProgram, Picture};
         let picture = Picture::read(&Package::open(path)?).with_context(|| format!("opening the image {}", path.display()))?;
         let target = gpu.target(picture.width, picture.height)?;
-        ImageProgram::new(&gpu.gl, &picture)?.draw(&gpu.gl, target.framebuffer, size_of(&target));
+        let turn = turn(gpu, size_of(&target), rotation)?;
+        let into = turn.as_ref().map_or(target.framebuffer, Turn::framebuffer);
+        ImageProgram::new(&gpu.gl, &picture)?.draw(&gpu.gl, into, size_of(&target));
+        if let Some(turn) = &turn {
+            turn.onto(&gpu.gl, target.framebuffer);
+        }
         let id = compositor.register(target.dma_buf.as_fd(), target.layout)?;
         compositor.present(id)?;
         println!("glassdeck-gpu: image {}x{} shown", picture.width, picture.height);

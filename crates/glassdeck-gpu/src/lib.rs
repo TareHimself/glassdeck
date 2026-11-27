@@ -6,6 +6,7 @@ pub mod image;
 pub mod offscreen;
 pub mod program;
 pub mod script;
+pub mod turn;
 
 /// `canvases/gradient`, packed; `the_built_in_gradient_matches_its_sources` checks it's current.
 pub const BUILT_IN: &[u8] = include_bytes!("../builtin/gradient.deck");

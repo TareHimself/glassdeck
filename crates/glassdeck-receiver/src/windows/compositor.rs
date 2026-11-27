@@ -30,7 +30,10 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn open(labels: Option<Labels>) -> Result<Self> {
+    pub fn open(labels: Option<Labels>, rotation: crate::PanelRotation) -> Result<Self> {
+        if rotation != crate::PanelRotation::Upright {
+            anyhow::bail!("the desktop window only shows the panel upright");
+        }
         let options = WindowOptions { resize: true, scale_mode: ScaleMode::AspectRatioStretch, ..WindowOptions::default() };
         let mut window = Window::new("glassdeck-receiver", PANEL.0, PANEL.1, options)?;
         window.set_target_fps(UNTHROTTLED);

@@ -7,17 +7,28 @@ use anyhow::{Context, Result};
 
 use super::compositor::Registrar;
 use super::renderer::RendererProcess;
+use crate::PanelRotation;
 use crate::mailbox::Mailbox;
 use crate::upstream::Upstream;
 
 const RENDERER: &str = "glassdeck-gpu";
+
+/// glassdeck-gpu turns what it draws itself: the video plane can't turn on this display controller.
+fn rotation_arg(registrar: &Registrar) -> String {
+    let degrees = match registrar.rotation() {
+        PanelRotation::Upright => 0,
+        PanelRotation::Turned180 => 180,
+    };
+    format!("--panel-rotation={degrees}")
+}
 
 pub struct FallbackCanvas(RendererProcess);
 
 impl FallbackCanvas {
     pub fn start(registrar: Registrar, mailbox: Arc<Mailbox>, stopped: impl FnOnce(anyhow::Error) + Send + 'static) -> Result<Self> {
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
-        RendererProcess::start(RENDERER, &program.to_string_lossy(), &[], registrar, mailbox, None, stopped).map(Self)
+        let args = [rotation_arg(&registrar)];
+        RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, None, stopped).map(Self)
     }
 
     pub fn stop(self) {
@@ -38,7 +49,7 @@ impl CanvasBackground {
     ) -> Result<Self> {
         println!("Local background {}: canvas", background.display());
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
-        let args = [format!("--canvas={}", background.display())];
+        let args = [format!("--canvas={}", background.display()), rotation_arg(&registrar)];
         RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, Some(upstream), stopped).map(Self)
     }
 
@@ -69,7 +80,7 @@ impl ImageBackground {
     ) -> Result<Self> {
         println!("Local background {}: image", background.display());
         let program = std::env::current_exe().context("finding the receiver")?.with_file_name(RENDERER);
-        let args = [format!("--image={}", background.display())];
+        let args = [format!("--image={}", background.display()), rotation_arg(&registrar)];
         RendererProcess::start(RENDERER, &program.to_string_lossy(), &args, registrar, mailbox, None, stopped).map(Self)
     }
 

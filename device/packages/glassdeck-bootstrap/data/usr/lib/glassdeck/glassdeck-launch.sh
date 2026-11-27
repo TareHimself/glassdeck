@@ -56,6 +56,18 @@ stop_weston() {
     done
 }
 
+# The panel is mounted the way Flux's Weston config says; the receiver turns it the same way.
+WESTON_INI=/etc/xdg/weston/weston.ini
+panel_rotation() {
+    transform=$(sed -n 's/^[[:space:]]*transform=[[:space:]]*//p' "$WESTON_INI" 2>/dev/null | head -1)
+    case "$transform" in
+        "" | normal) echo 0 ;;
+        rotate-180) echo 180 ;;
+        *) return 1 ;;
+    esac
+}
+ROTATION=$(panel_rotation) || run_stock "the panel is mounted in a way the receiver can't turn ($WESTON_INI)"
+
 start_stock_bridge || run_stock "garfield couldn't be started the stock way"
 stop_weston || run_stock "weston kept the display"
 
@@ -87,7 +99,7 @@ confirm_when_up() {
 confirm_when_up &
 
 while true; do
-    "$BIN/glassdeck-receiver" --packages "$ROOT/packages/" --state "$ROOT/state/" >> "$GLASSDECK/receiver.log" 2>&1
+    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --packages "$ROOT/packages/" --state "$ROOT/state/" >> "$GLASSDECK/receiver.log" 2>&1
     log "receiver exited with $?; restarting in ${RESTART_DELAY_S}s"
     tail -n 2000 "$GLASSDECK/receiver.log" > "$GLASSDECK/receiver.log.tmp" && mv -f "$GLASSDECK/receiver.log.tmp" "$GLASSDECK/receiver.log"
     sleep "$RESTART_DELAY_S"

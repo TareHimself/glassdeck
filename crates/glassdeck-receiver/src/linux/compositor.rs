@@ -10,6 +10,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use drm::buffer::{Buffer, DrmFourcc, DrmModifier, Handle as BufferHandle, PlanarBuffer};
 use drm::control::atomic::AtomicModeReq;
+
+use crate::PanelRotation;
 use drm::control::dumbbuffer::DumbBuffer;
 use drm::control::property::{Value, ValueType};
 use drm::control::{
@@ -115,6 +117,8 @@ struct KeyLayer {
     mirror: Vec<u32>,
     width: u32,
     stale: [Vec<Region>; 2],
+    /// The primary plane can't turn, so labels are drawn already turned when the panel is.
+    turned: bool,
 }
 
 impl KeyLayer {
@@ -127,7 +131,14 @@ impl KeyLayer {
                 "a widget tile at {region:?} doesn't fit the {}x{height} key layer",
                 self.width
             );
-            for (row, pixels) in tile.pixels.chunks_exact(region.w as usize).enumerate() {
+            let (region, pixels) = if self.turned {
+                // A half turn of a tile is its pixels in reverse, at the mirrored position.
+                let turned = Region { x: self.width - region.x - region.w, y: height - region.y - region.h, ..region };
+                (turned, tile.pixels.iter().rev().copied().collect())
+            } else {
+                (region, tile.pixels)
+            };
+            for (row, pixels) in pixels.chunks_exact(region.w as usize).enumerate() {
                 let at = (region.y as usize + row) * self.width as usize + region.x as usize;
                 self.mirror[at..at + pixels.len()].copy_from_slice(pixels);
             }
@@ -184,10 +195,11 @@ pub struct Compositor {
     outcomes: Vec<Outcome>,
     keys: KeyLayer,
     doorbell: Arc<Doorbell>,
+    rotation: PanelRotation,
 }
 
 impl Compositor {
-    pub fn open(labels: Option<Labels>) -> Result<Self> {
+    pub fn open(labels: Option<Labels>, rotation: PanelRotation) -> Result<Self> {
         // Non-blocking, so polling for flip events never stalls the compose loop.
         let card = Card(
             OpenOptions::new()
@@ -231,10 +243,14 @@ impl Compositor {
         card.set_property(label_plane, property_handle(&card, label_plane, "zpos")?, LABELS_ZPOS)
             .context("moving the label plane up")?;
 
-        let image = match labels {
+        let turned = rotation == PanelRotation::Turned180;
+        let mut image = match labels {
             Some(labels) => Overlay::build(&labels, size.0 as usize, size.1 as usize).premultiplied_argb(),
             None => vec![0; size.0 as usize * size.1 as usize],
         };
+        if turned {
+            image.reverse();
+        }
         let buffers = [Surface::new(&card, size, &image)?, Surface::new(&card, size, &image)?];
         card.set_crtc(crtc, Some(buffers[0].fb), (0, 0), &[connector.handle()], Some(mode))
             .context("setting the display mode")?;
@@ -246,6 +262,7 @@ impl Compositor {
             mirror: image,
             width: size.0,
             stale: [Vec::new(), Vec::new()],
+            turned,
         };
         println!("Display: {}x{}@{} via CRTC {crtc:?}, video plane {video_plane:?}", size.0, size.1, mode.vrefresh());
 
@@ -261,6 +278,7 @@ impl Compositor {
             outcomes: Vec::new(),
             keys,
             doorbell: Arc::new(Doorbell::new()?),
+            rotation,
         })
     }
 
@@ -357,7 +375,7 @@ impl Compositor {
 
     /// Lets a renderer on the keyboard hand over scanout buffers from another thread.
     pub fn registrar(&self) -> Registrar {
-        Registrar { card: Arc::clone(&self.card), crtc: self.crtc, video: self.video.clone(), screen: self.size }
+        Registrar { card: Arc::clone(&self.card), crtc: self.crtc, video: self.video.clone(), screen: self.size, rotation: self.rotation }
     }
 
     /// What rings to wake `wait`: a new picture or new tiles.
@@ -415,9 +433,15 @@ pub struct Registrar {
     crtc: crtc::Handle,
     video: VideoPlane,
     screen: (u32, u32),
+    rotation: PanelRotation,
 }
 
 impl Registrar {
+    /// How renderers must draw: the video plane can't turn on this display controller.
+    pub fn rotation(&self) -> PanelRotation {
+        self.rotation
+    }
+
     /// Imports the buffer and checks with a test-only commit that the video plane can show it.
     pub fn register(&self, dma_buf: &OwnedFd, layout: BufferLayout) -> Result<SharedBuffer> {
         let format = match DrmFourcc::try_from(layout.fourcc) {

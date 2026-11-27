@@ -59,6 +59,9 @@ struct Cli {
     /// Show the stream without key labels
     #[arg(long)]
     no_labels: bool,
+    /// How the panel is mounted; Flux's keyboard turns it 180 degrees
+    #[arg(long, value_enum, default_value_t = PanelRotation::Upright)]
+    panel_rotation: PanelRotation,
     /// The keyboard's physical layout, which places the key labels
     #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
     layout: KeyboardLayout,
@@ -68,6 +71,16 @@ struct Cli {
     /// Where the keyboard keeps its own state: the chosen background and the widget layout
     #[arg(long, default_value = platform::DEFAULT_STATE)]
     state: PathBuf,
+}
+
+/// How the panel is mounted. Flux's keyboard has it upside down (its Weston config says
+/// `transform=rotate-180`), so the display controller turns every plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum PanelRotation {
+    #[value(name = "0")]
+    Upright,
+    #[value(name = "180")]
+    Turned180,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -90,7 +103,7 @@ fn main() -> Result<()> {
     let font = load_font(cli.font.as_deref())?;
     let variant = Variant::from(cli.layout);
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
-    let compositor = Compositor::open(labels)?;
+    let compositor = Compositor::open(labels, cli.panel_rotation)?;
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
     let folders = Folders { packages: cli.packages.clone() };
     let config = widgets::Config { packages: cli.packages.clone(), state: cli.state.clone(), font };
