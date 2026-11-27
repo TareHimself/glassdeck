@@ -146,7 +146,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
         let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, playing, Instant::now()));
         match rx.recv_timeout(wait) {
             Ok(Command::Show { files, values }) => {
-                let clock = running.as_ref().map(|r| r.clock);
+                let clock = running.take().map(|r| r.clock);
                 running = match show(&mut cx, &files, &values) {
                     Ok(mut started) => {
                         if let Some(clock) = clock {
@@ -181,7 +181,10 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
                     running = None;
                 }
             }
-            Ok(Command::Stop) => running = None,
+            Ok(Command::Stop) => {
+                running = None;
+                playing = true;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -362,6 +365,27 @@ mod tests {
         let resumed = paused.played(true, second(10));
         assert_eq!(resumed.at(second(13)), 5.0);
         assert_eq!(resumed.played(true, second(20)).at(second(20)), 12.0, "playing again changes nothing");
+    }
+
+    #[test]
+    fn the_new_canvas_template_compiles_and_draws_a_frame() {
+        let Some(native) = std::env::var_os("GLASSDECK_NATIVE").map(PathBuf::from) else {
+            eprintln!("skipped: set GLASSDECK_NATIVE to the native libraries' folder");
+            return;
+        };
+        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = Rc::clone(&seen);
+        let mut cx = Session {
+            out: Rc::new(move |update| sink.borrow_mut().push(update)),
+            native: Some(native),
+            slang: None,
+            system: glassdeck_host::system(),
+            now_playing: Arc::new(Mutex::new(None)),
+        };
+        let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new()).unwrap();
+        step(&cx, &mut running, true).unwrap();
+        let seen = seen.borrow();
+        assert!(seen.iter().any(|u| matches!(u, CanvasUpdate::Frame { .. })), "a frame: {seen:?}");
     }
 
     #[test]

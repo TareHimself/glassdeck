@@ -17,6 +17,17 @@ export const commands = {
 	revealPackage: (id: string, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("reveal_package", { id }, options)),
 	listBackgrounds: (options?: InvokeOptions) => typedError<BackgroundSummary[], LibraryError>(__TAURI_INVOKE("list_backgrounds", undefined, options)),
 	createBackground: (background: NewBackground, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("create_background", { background }, options)),
+	canvasTemplate: (options?: InvokeOptions) => __TAURI_INVOKE<SourceFile[]>("canvas_template", undefined, options),
+	/**  Asks Media Foundation what a video file the user chose is, and allows it for playback in the app. */
+	videoFacts: (path: string, options?: InvokeOptions) => typedError<VideoFacts, LibraryError>(__TAURI_INVOKE("video_facts", { path }, options)),
+	/**  The frame at `seconds` of a video file, as a base64 JPEG. */
+	videoFrame: (path: string, seconds: number | null, options?: InvokeOptions) => typedError<string, LibraryError>(__TAURI_INVOKE("video_frame", { path, seconds }, options)),
+	/**  A video background, with its converted file allowed for playback in the app. */
+	readVideo: (id: string, options?: InvokeOptions) => typedError<VideoBackground, LibraryError>(__TAURI_INVOKE("read_video", { id }, options)),
+	/**  Sets the preview image to the converted video's frame at `seconds`; the new image, as a base64 JPEG. */
+	setVideoPreview: (id: string, seconds: number | null, options?: InvokeOptions) => typedError<string, LibraryError>(__TAURI_INVOKE("set_video_preview", { id, seconds }, options)),
+	/**  Converts a new file into the background, cut as given. */
+	replaceVideo: (id: string, source: string, cut: VideoCut, options?: InvokeOptions) => typedError<null, LibraryError>(__TAURI_INVOKE("replace_video", { id, source, cut }, options)),
 	readCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasSource, LibraryError>(__TAURI_INVOKE("read_canvas", { id }, options)),
 	saveCanvas: (id: string, edit: SourceEdit, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("save_canvas", { id, edit }, options)),
 	/**  Compiles the canvas as saved and type-checks its scripts. */
@@ -52,6 +63,7 @@ export const events = {
 	canvasUpdate: makeEvent<CanvasUpdate, CanvasUpdate>("canvas-update"),
 	glassdeckdUpdate: makeEvent<GlassdeckdUpdate, GlassdeckdUpdate>("glassdeckd-update"),
 	previewUpdate: makeEvent<PreviewUpdate, PreviewUpdate>("preview-update"),
+	videoUpdate: makeEvent<VideoUpdate, VideoUpdate>("video-update"),
 };
 
 /* Constants */
@@ -91,6 +103,15 @@ export type CanvasSource = {
 export type CanvasUpdate = { state: "frame"; jpeg: string; time: number | null } | 
 /**  Nothing to show: the canvas didn't compile, or stopped on an error */
 { state: "cleared" } | { state: "inputs"; inputs: InputReading[] } | { state: "log"; source: LogSource; level: LogLevel; text: string };
+
+export type ConversionState = { state: "converting"; fraction: number | null } | { state: "failed"; reason: string };
+
+export type ConvertedVideo = {
+	path: string,
+	facts: VideoFacts,
+	/**  Base64 JPEG */
+	preview: string | null,
+};
 
 export type Dims = {
 	w: number,
@@ -174,14 +195,12 @@ export type NewBackground = {
 };
 
 export type NewContent = { kind: "canvas" } | 
-/**  `source`: the video file to convert */
-{ kind: "video"; source: string };
+/**  `source`: the video file to crop, trim and convert */
+{ kind: "video"; source: string; cut: VideoCut };
 
 export type NewWidget = {
 	title: string,
 	id: string,
-	options: boolean,
-	runs_on_host: boolean,
 	sizing: Sizing,
 };
 
@@ -292,6 +311,49 @@ export type ThemeWidget = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+/**  A video background as its page shows it. */
+export type VideoBackground = {
+	background: BackgroundSummary,
+	record: VideoRecord,
+	/**  The converted video, once there is one */
+	video: ConvertedVideo | null,
+	conversion: ConversionState | null,
+};
+
+/**
+ *  Which part of the video to keep: the crop's place along the side that overflows the panel, from 0
+ *  to 1, and the seconds the loop starts and ends at.
+ */
+export type VideoCut = {
+	crop: number | null,
+	start: number | null,
+	end: number | null,
+};
+
+/**  A video file's facts, as the New background dialog and the video page show them. */
+export type VideoFacts = {
+	/**  "H.264", "HEVC", or "Other" */
+	codec: string,
+	width: number,
+	height: number,
+	fps: number | null,
+	length: number | null,
+	/**  Already H.264 or HEVC at 1920x1080, so a whole-length cut is copied as it is */
+	fits_panel: boolean,
+};
+
+/**  `video.json`: the file the video came from, by name, and how it was cut. */
+export type VideoRecord = {
+	from: string,
+	cut: VideoCut,
+};
+
+export type VideoUpdate = {
+	id: string,
+	/**  `None` once the conversion is done */
+	state: ConversionState | null,
+};
 
 /**  What checking a widget found, each problem as "name:line:column: message", and how many scripts it checked. */
 export type WidgetCheck = {

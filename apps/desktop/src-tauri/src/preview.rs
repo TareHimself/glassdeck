@@ -320,9 +320,9 @@ mod tests {
         (cx, seen)
     }
 
-    fn new_widget(root: &Path, options: bool, host: bool) -> PathBuf {
+    fn new_widget(root: &Path) -> PathBuf {
         let size = Dims { w: 320, h: 160 };
-        let new = NewWidget { title: "Sky".into(), id: "local.me.sky".into(), options, runs_on_host: host, sizing: Sizing::Fixed { size } };
+        let new = NewWidget { title: "Sky".into(), id: "local.me.sky".into(), sizing: Sizing::Fixed { size } };
         create_widget(root, new).unwrap();
         root.join("widget.local.me.sky")
     }
@@ -331,12 +331,13 @@ mod tests {
     fn both_halves_run_and_print_reaches_the_log() {
         let root = std::env::temp_dir().join(format!("glassdeck-preview-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let folder = new_widget(&root, true, true);
+        let folder = new_widget(&root);
         let keyboard = SourceFile { name: "keyboard.luau".into(), text: "print('drawn by', 'keyboard')\nlocal text = ''\nwidget.on_data(function(data) text = data.label end)\nwidget.on_draw(function(ui) ui:text(text) end)\n".into() };
         let host = SourceFile { name: "host.luau".into(), text: "print('host up')\nhost.on_options(function(options) send({ label = options.label }) end)\n".into() };
+        let options = SourceFile { name: "options.luau".into(), text: "option(\"label\", \"Label\", text(\"Sky\"))\n".into() };
         let (cx, seen) = session();
         let values = serde_json::json!({ "label": "Hi" });
-        let mut running = show(&cx, &folder, &[keyboard, host], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
+        let mut running = show(&cx, &folder, &[keyboard, host, options], Dims { w: 320, h: 160 }, values.as_object().unwrap()).unwrap();
         step(&cx, &mut running);
         let seen = seen.borrow();
         let prints: Vec<&str> = seen.iter().filter_map(|u| match u { PreviewUpdate::Log { level: LogLevel::Print, text, .. } => Some(text.as_str()), _ => None }).collect();
@@ -350,7 +351,7 @@ mod tests {
     fn a_failed_draw_is_logged_once_and_clears_the_preview() {
         let root = std::env::temp_dir().join(format!("glassdeck-preview-fail-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let folder = new_widget(&root, false, false);
+        let folder = new_widget(&root);
         let keyboard = SourceFile { name: "keyboard.luau".into(), text: "widget.on_draw(function() error('boom') end)\n".into() };
         let (cx, seen) = session();
         let mut running = show(&cx, &folder, &[keyboard], Dims { w: 320, h: 160 }, &serde_json::Map::new()).unwrap();

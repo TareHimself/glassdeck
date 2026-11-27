@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
 import { commands, type BackgroundKind, type BackgroundSummary, type LibraryError } from "../bindings";
-import { ButtonLink } from "../components/Button";
+import { Button } from "../components/Button";
 import { LibraryCard, type CardActions } from "../components/LibraryCard";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
@@ -9,6 +8,7 @@ import { Segments } from "../components/Segments";
 import { useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError } from "../library";
 import { KIND_NAMES } from "./backgroundKinds";
+import { NewBackgroundDialog } from "./NewBackgroundDialog";
 import styles from "./Backgrounds.module.css";
 
 type Library = { state: "loading" } | { state: "ready"; backgrounds: BackgroundSummary[] } | { state: "failed"; error: LibraryError };
@@ -47,6 +47,7 @@ export function Backgrounds() {
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const reload = async () => {
     const result = await commands.listBackgrounds();
@@ -80,9 +81,9 @@ export function Backgrounds() {
         actions={
           <>
             <Segments compact label="Filter by type" options={FILTERS} value={filter} onChange={setFilter} />
-            <ButtonLink variant="primary" to="/backgrounds/new">
+            <Button variant="primary" onClick={() => setCreating(true)}>
               New background
-            </ButtonLink>
+            </Button>
           </>
         }
       />
@@ -101,13 +102,14 @@ export function Backgrounds() {
             actions={actions}
           />
         ))}
-        <Link className={styles.newTile} to="/backgrounds/new">
+        <button type="button" className={styles.newTile} onClick={() => setCreating(true)}>
           <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M14 6v16M6 14h16" />
           </svg>
           New background
-        </Link>
+        </button>
       </div>
+      {creating && <NewBackgroundDialog onClose={() => setCreating(false)} />}
     </div>
   );
 }

@@ -18,15 +18,19 @@ use windows::Win32::Media::MediaFoundation::{
     MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
     MFCreateSourceReaderFromURL, MFMediaType_Video, MFSTARTUP_FULL, MFStartup, MFT_MESSAGE_COMMAND_DRAIN,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_RGB32,
+    MF_MT_DEFAULT_STRIDE, MF_PD_DURATION, MF_SOURCE_READER_MEDIASOURCE,
     MFVideoArea, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
 use windows::core::{GUID, HSTRING, Interface};
 
 const VIDEO: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 const KEYFRAME_SECONDS: u32 = 2;
+/// Media Foundation counts time in 100 ns ticks.
+const TICKS_PER_SECOND: f64 = 10_000_000.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EncodeSettings {
@@ -63,29 +67,120 @@ pub fn probe(path: &Path) -> Result<ProbedVideo> {
 }
 
 /// The part of a `src`-sized picture that fills `dst` without stretching: centred, the overflow cut off.
-pub fn cover(src: (u32, u32), dst: (u32, u32)) -> RECT {
+pub fn cover(src: (u32, u32), dst: (u32, u32), position: f32) -> RECT {
     let (sw, sh) = (src.0 as u64, src.1 as u64);
     let (dw, dh) = (dst.0 as u64, dst.1 as u64);
     let even = |v: u64| (v & !1) as i32;
+    let along = |overflow: u64| (overflow as f64 * position.clamp(0.0, 1.0) as f64) as u64;
     if sw * dh > dw * sh {
         let w = sh * dw / dh;
-        let left = (sw - w) / 2;
+        let left = along(sw - w);
         RECT { left: even(left), top: 0, right: even(left) + even(w), bottom: sh as i32 }
     } else {
         let h = sw * dh / dw;
-        let top = (sh - h) / 2;
+        let top = along(sh - h);
         RECT { left: 0, top: even(top), right: sw as i32, bottom: even(top) + even(h) }
     }
 }
 
-/// Decodes `src`, crops and scales it to fill the panel, and encodes HEVC into the MP4 `dst`.
-pub fn transcode(src: &Path, dst: &Path, settings: EncodeSettings) -> Result<FrameRate> {
+/// Which part of a video to keep: where the panel-shaped crop sits along the side that overflows, from
+/// 0 (left or top) to 1, and the seconds the loop starts and ends at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cut {
+    pub crop: f32,
+    pub start: f64,
+    pub end: Option<f64>,
+}
+
+impl Cut {
+    /// The whole video, cropped from the middle.
+    pub const WHOLE: Self = Self { crop: 0.5, start: 0.0, end: None };
+
+    /// Keeps every frame of a video `length` seconds long.
+    pub fn keeps_all_of(self, length: Option<f64>) -> bool {
+        self.start <= 0.0 && self.end.is_none_or(|end| length.is_some_and(|length| end >= length))
+    }
+}
+
+/// How long the video runs, in seconds, when the file says.
+pub fn duration(path: &Path) -> Result<Option<f64>> {
+    unsafe { Ok(reader_duration(&open_reader(path, None)?)) }
+}
+
+unsafe fn reader_duration(reader: &IMFSourceReader) -> Option<f64> {
+    unsafe {
+        let value = reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION).ok()?;
+        u64::try_from(&value).ok().map(|ticks| ticks as f64 / TICKS_PER_SECOND)
+    }
+}
+
+/// The frame showing at `seconds`, as top-down RGB with its size.
+pub fn frame_at(path: &Path, seconds: f64) -> Result<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let mut attributes = None;
+        MFCreateAttributes(&mut attributes, 1)?;
+        let attributes = attributes.context("MFCreateAttributes returned nothing")?;
+        attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
+        let reader = open_reader(path, Some(&attributes))?;
+        let native = reader.GetNativeMediaType(VIDEO, 0).context("the file has no video stream")?;
+        let (width, height) = visible_size(&native)?;
+        let rate = native.GetUINT64(&MF_MT_FRAME_RATE).context("the video has no frame rate")?;
+        reader.SetCurrentMediaType(VIDEO, None, &video_type(&MFVideoFormat_RGB32, (width, height), rate)?).context("no decoder turns this video into RGB")?;
+        let target = (seconds.max(0.0) * TICKS_PER_SECOND) as i64;
+        reader.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(target)).context("seeking")?;
+        let mut last = None;
+        loop {
+            let mut flags = 0;
+            let mut timestamp = 0;
+            let mut sample = None;
+            reader.ReadSample(VIDEO, 0, None, Some(&mut flags), Some(&mut timestamp), Some(&mut sample))?;
+            if let Some(sample) = sample {
+                let reached = timestamp >= target;
+                last = Some(sample);
+                if reached {
+                    break;
+                }
+            }
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                break;
+            }
+        }
+        let sample = last.context("the video has no frame there")?;
+        let stride = reader.GetCurrentMediaType(VIDEO)?.GetUINT32(&MF_MT_DEFAULT_STRIDE).map_or((width * 4) as i32, |s| s as i32);
+        let buffer = sample.ConvertToContiguousBuffer()?;
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        buffer.Lock(&mut data, None, Some(&mut len))?;
+        let bytes = std::slice::from_raw_parts(data, len as usize);
+        let row = (width * 4) as usize;
+        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height as usize {
+            let source_row = if stride < 0 { height as usize - 1 - y } else { y };
+            let start = source_row * stride.unsigned_abs() as usize;
+            for pixel in bytes[start..start + row].as_chunks::<4>().0 {
+                rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+            }
+        }
+        buffer.Unlock()?;
+        Ok((width, height, rgb))
+    }
+}
+
+/// Decodes `src`, keeps `cut` of it, crops and scales that to fill the panel, and encodes HEVC into the
+/// MP4 `dst`. `progress` hears how far it is, 0 to 1, as frames are written.
+pub fn transcode(src: &Path, dst: &Path, settings: EncodeSettings, cut: Cut, progress: &dyn Fn(f32)) -> Result<FrameRate> {
     unsafe {
         let mut attributes = None;
         MFCreateAttributes(&mut attributes, 1)?;
         let attributes = attributes.context("MFCreateAttributes returned nothing")?;
         attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
         let reader = open_reader(src, Some(&attributes))?;
+        let start = (cut.start.max(0.0) * TICKS_PER_SECOND) as i64;
+        let end = cut.end.map(|end| (end * TICKS_PER_SECOND) as i64);
+        let length = end.map(|end| (end - start) as f64 / TICKS_PER_SECOND).or_else(|| reader_duration(&reader).map(|l| l - cut.start));
+        if start > 0 {
+            reader.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(start)).context("seeking to the loop's start")?;
+        }
 
         let native = reader.GetNativeMediaType(VIDEO, 0).context("the file has no video stream")?;
         let display = visible_size(&native)?;
@@ -95,7 +190,7 @@ pub fn transcode(src: &Path, dst: &Path, settings: EncodeSettings) -> Result<Fra
         let decoded = unpack(reader.GetCurrentMediaType(VIDEO)?.GetUINT64(&MF_MT_FRAME_SIZE)?);
 
         let panel = (PANEL.0 as u32, PANEL.1 as u32);
-        let scaler = Scaler::new(decoded, cover(display, panel), panel, rate)?;
+        let scaler = Scaler::new(decoded, cover(display, panel, cut.crop), panel, rate)?;
         let (writer, stream) = hevc_writer(dst, panel, rate, settings)?;
         writer.BeginWriting()?;
 
@@ -107,9 +202,17 @@ pub fn transcode(src: &Path, dst: &Path, settings: EncodeSettings) -> Result<Fra
             let mut timestamp = 0;
             let mut sample = None;
             reader.ReadSample(VIDEO, 0, None, Some(&mut flags), Some(&mut timestamp), Some(&mut sample))?;
-            if let Some(sample) = sample {
+            if end.is_some_and(|end| timestamp >= end) {
+                break;
+            }
+            if let Some(sample) = sample
+                && timestamp >= start
+            {
                 let first = *first_time.get_or_insert(timestamp);
                 sample.SetSampleTime(timestamp - first)?;
+                if let Some(length) = length {
+                    progress(((timestamp - first) as f64 / TICKS_PER_SECOND / length).clamp(0.0, 1.0) as f32);
+                }
                 for scaled in scaler.push(&sample)? {
                     writer.WriteSample(stream, &scaled)?;
                     frames += 1;
@@ -305,17 +408,19 @@ mod tests {
 
     #[test]
     fn same_aspect_keeps_everything() {
-        assert_eq!(cover((3840, 2160), (1920, 1080)), RECT { left: 0, top: 0, right: 3840, bottom: 2160 });
+        assert_eq!(cover((3840, 2160), (1920, 1080), 0.5), RECT { left: 0, top: 0, right: 3840, bottom: 2160 });
     }
 
     #[test]
     fn ultrawide_loses_its_sides() {
-        assert_eq!(cover((2560, 1080), (1920, 1080)), RECT { left: 320, top: 0, right: 2240, bottom: 1080 });
+        assert_eq!(cover((2560, 1080), (1920, 1080), 0.5), RECT { left: 320, top: 0, right: 2240, bottom: 1080 });
+        assert_eq!(cover((2560, 1080), (1920, 1080), 0.0), RECT { left: 0, top: 0, right: 1920, bottom: 1080 });
+        assert_eq!(cover((2560, 1080), (1920, 1080), 1.0), RECT { left: 640, top: 0, right: 2560, bottom: 1080 });
     }
 
     #[test]
     fn tall_video_loses_top_and_bottom_on_even_rows() {
-        let r = cover((1080, 1920), (1920, 1080));
+        let r = cover((1080, 1920), (1920, 1080), 0.5);
         assert_eq!((r.left, r.right), (0, 1080));
         assert_eq!(r.bottom - r.top, 606);
         assert_eq!(r.top % 2, 0);

@@ -31,6 +31,23 @@ pub fn cache_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(local).join("Glassdeck").join("cache"))
 }
 
+/// Writes `cut` of `source` to `out` as an MP4 in the background spec: copied as it is when it already
+/// meets it and nothing is trimmed, re-encoded otherwise, with `progress` hearing how far, 0 to 1.
+pub fn spec_video(source: &Path, out: &Path, settings: EncodeSettings, cut: video::Cut, progress: &dyn Fn(f32)) -> Result<VideoFormat> {
+    video::start_media_foundation()?;
+    let whole = cut.keeps_all_of(video::duration(source)?);
+    match glassdeck_package::check(video::probe(source)?) {
+        Ok(format) if whole => {
+            std::fs::copy(source, out).with_context(|| format!("copying {} to {}", source.display(), out.display()))?;
+            Ok(format)
+        }
+        _ => {
+            let frame_rate = video::transcode(source, out, settings, cut, progress)?;
+            Ok(VideoFormat { codec: Codec::Hevc, width: PANEL.0, height: PANEL.1, frame_rate })
+        }
+    }
+}
+
 /// A video goes in as it is when it meets the background spec, and is re-encoded otherwise.
 pub fn video(source: &Path, out: &Path, details: Details, settings: EncodeSettings) -> Result<Package> {
     video::start_media_foundation()?;
@@ -47,7 +64,7 @@ pub fn video(source: &Path, out: &Path, details: Details, settings: EncodeSettin
             if let Some(parent) = encoded.parent() {
                 std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
             }
-            let frame_rate = video::transcode(source, &encoded, settings)?;
+            let frame_rate = video::transcode(source, &encoded, settings, video::Cut::WHOLE, &|_| {})?;
             let format = VideoFormat { codec: Codec::Hevc, width: PANEL.0, height: PANEL.1, frame_rate };
             let background = write_background(details, content(format), out, |w| w.add_file(VIDEO_ENTRY, &encoded));
             std::fs::remove_file(&encoded).with_context(|| format!("removing {}", encoded.display()))?;

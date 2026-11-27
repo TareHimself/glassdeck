@@ -28,6 +28,9 @@
 
 .newTile {
   min-height: 230px;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
   text-decoration: none;
   border-radius: 12px;
   border: 1px dashed #343b48;

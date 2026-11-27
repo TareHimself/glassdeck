@@ -12,12 +12,14 @@ anyhow.workspace = true
 fontdue.workspace = true
 futures-util = "0.3.31"
 glassdeck-api.workspace = true
+glassdeck-convert.workspace = true
 glassdeck-gpu.workspace = true
 glassdeck-host.workspace = true
 glassdeck-layout.workspace = true
 glassdeck-luau.workspace = true
 glassdeck-luau-check.workspace = true
 glassdeck-package.workspace = true
+glassdeck-proto.workspace = true
 glassdeck-slang.workspace = true
 glassdeck-widget.workspace = true
 base64 = "0.23.1"
@@ -29,7 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 specta-typescript = "0.0.15"
-tauri = { version = "2.12.7", features = [] }
+tauri = { version = "2.12.7", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.8.4"
 tauri-plugin-single-instance = "2.5.5"
 tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }

@@ -1,8 +1,9 @@
+import type { ReactNode } from "react";
 import styles from "./Segments.module.css";
 
 export function Segments<T extends string>(props: {
   label: string;
-  options: { value: T; name: string }[];
+  options: { value: T; name: ReactNode }[];
   value: T;
   onChange: (value: T) => void;
   compact?: boolean;

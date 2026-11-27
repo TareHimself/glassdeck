@@ -40,8 +40,6 @@ pub struct WidgetSummary {
 pub struct NewWidget {
     pub title: String,
     pub id: String,
-    pub options: bool,
-    pub runs_on_host: bool,
     pub sizing: Sizing,
 }
 
@@ -134,8 +132,6 @@ struct ValidNewWidget {
     title: String,
     id: PackageId,
     qualified: QualifiedId,
-    options: bool,
-    runs_on_host: bool,
     sizing: Sizing,
 }
 
@@ -147,18 +143,15 @@ fn parse_new(new: NewWidget) -> Result<ValidNewWidget, LibraryError> {
     let id = PackageId::parse(new.id.trim()).map_err(|e| LibraryError::InvalidId { reason: e.to_string() })?;
     check_sizing(new.sizing).map_err(|reason| LibraryError::InvalidSize { reason })?;
     let qualified = QualifiedId::new(PackageType::Widget, &id);
-    Ok(ValidNewWidget { title, id, qualified, options: new.options, runs_on_host: new.runs_on_host, sizing: new.sizing })
+    Ok(ValidNewWidget { title, id, qualified, sizing: new.sizing })
 }
 
 pub(crate) fn luau_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn options_script(title: &str) -> String {
-    format!("option(\"label\", \"Label\", text({}))\n", luau_string(title))
-}
-
-/// The files a new widget starts with, by name.
+/// The files a new widget starts with, by name: a `keyboard.luau` that draws its title, and an empty
+/// `options.luau` and `host.luau`, which mean no options and no host half until something is written there.
 fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
     let deck = json!({
         "id": new.id.as_str(),
@@ -171,30 +164,16 @@ fn starting_files(new: &ValidNewWidget) -> Vec<(&'static str, String)> {
         (DECK_SOURCE, format!("{}\n", serde_json::to_string_pretty(&deck).expect("a JSON value serializes"))),
         (KEYBOARD_SCRIPT, keyboard_script(new)),
     ];
-    files.push((OPTIONS_SCRIPT, if new.options { options_script(&new.title) } else { String::new() }));
-    files.push((HOST_SCRIPT, if new.runs_on_host { host_script(new.options) } else { String::new() }));
+    files.push((OPTIONS_SCRIPT, String::new()));
+    files.push((HOST_SCRIPT, String::new()));
     files
 }
 
 fn keyboard_script(new: &ValidNewWidget) -> String {
     let title = luau_string(&new.title);
-    let on_data = match (new.runs_on_host, new.options) {
-        (true, _) => "type Data = { label: string, seconds: number }\n\nwidget.on_data(function(data: Data)\n    text = `{data.label} {data.seconds}`\nend)\n\n",
-        (false, true) => "type Options = { label: string }\n\nwidget.on_data(function(options: Options)\n    text = options.label\nend)\n\n",
-        (false, false) => "",
-    };
     format!(
-        "local text = {title}\n\n{on_data}widget.on_draw(function(ui: Ui)\n    ui:text(text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend)\n"
+        "local text = {title}\n\nwidget.on_draw(function(ui: Ui)\n    ui:text(text, {{ x = 0, y = ui.height * 0.35, w = ui.width, size = ui.height * 0.3, align = \"center\" }})\nend)\n"
     )
-}
-
-fn host_script(options: bool) -> String {
-    let label = if options {
-        "local label = \"\"\n\nhost.on_options(function(options)\n    label = options.label\nend)\n\n"
-    } else {
-        "local label = \"Up for\"\n\n"
-    };
-    format!("{label}local started = os.time()\n\nevery(1, function()\n    send({{ label = label, seconds = os.time() - started }})\nend)\n")
 }
 
 fn summarize(folder: &Path) -> Result<Option<WidgetSummary>, LibraryError> {
@@ -464,8 +443,8 @@ pub fn save_widget(root: &Path, id: &str, edit: SourceEdit) -> Result<WidgetSumm
 mod tests {
     use super::*;
 
-    fn new(sizing: Sizing, options: bool, runs_on_host: bool) -> NewWidget {
-        NewWidget { title: "Weather \"now\"".into(), id: "local.me.weather".into(), options, runs_on_host, sizing }
+    fn new(sizing: Sizing) -> NewWidget {
+        NewWidget { title: "Weather \"now\"".into(), id: "local.me.weather".into(), sizing }
     }
 
     const SIZE: Dims = Dims { w: 320, h: 160 };
@@ -491,22 +470,19 @@ mod tests {
 
     #[test]
     fn bad_ids_and_titles_are_refused_at_the_edge() {
-        let mut bad = new(Sizing::Fixed { size: SIZE }, false, false);
+        let mut bad = new(Sizing::Fixed { size: SIZE });
         bad.id = "Weather".into();
         assert!(matches!(parse_new(bad), Err(LibraryError::InvalidId { .. })));
-        let mut untitled = new(Sizing::Fixed { size: SIZE }, false, false);
+        let mut untitled = new(Sizing::Fixed { size: SIZE });
         untitled.title = "  ".into();
         assert!(matches!(parse_new(untitled), Err(LibraryError::InvalidTitle { .. })));
     }
 
     #[test]
-    fn parts_decide_the_starting_files_and_deck_json_reads_back() {
-        let names = |options, host| -> Vec<&str> {
-            starting_files(&parse_new(new(Sizing::Fixed { size: SIZE }, options, host)).unwrap()).into_iter().map(|(n, _)| n).collect()
-        };
-        assert_eq!(names(false, false), [DECK_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
-        assert_eq!(names(true, true), [DECK_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
-        let files = starting_files(&parse_new(new(Sizing::Any { size: SIZE }, true, false)).unwrap());
+    fn a_new_widget_has_every_script_and_its_deck_json_reads_back() {
+        let files = starting_files(&parse_new(new(Sizing::Any { size: SIZE })).unwrap());
+        let names: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, [DECK_SOURCE, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
         let deck: serde_json::Value = serde_json::from_str(&files[0].1).unwrap();
         assert_eq!(sizing_of(&deck["details"]), Ok(Sizing::Any { size: SIZE }));
         assert!(files[1].1.contains("\"Weather \\\"now\\\"\""));
@@ -516,12 +492,12 @@ mod tests {
     fn create_then_list_finds_it_and_a_second_create_is_refused() {
         let root = std::env::temp_dir().join(format!("glassdeck-library-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let made = create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, true)).unwrap();
+        let made = create_widget(&root, new(Sizing::Fixed { size: SIZE })).unwrap();
         assert_eq!(made.id, "widget.local.me.weather");
-        assert!(made.has_options && made.runs_on_host);
+        assert!(!made.has_options && !made.runs_on_host, "empty scripts are no options and no host half");
         assert_eq!(list_widgets(&root).unwrap().len(), 1);
         glassdeck_package::pack_folder(&root.join("widget.local.me.weather"), &root.join("packed.deck")).expect("a new widget packs as it is");
-        assert!(matches!(create_widget(&root, new(Sizing::Fixed { size: SIZE }, false, false)), Err(LibraryError::AlreadyExists { .. })));
+        assert!(matches!(create_widget(&root, new(Sizing::Fixed { size: SIZE })), Err(LibraryError::AlreadyExists { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -529,7 +505,7 @@ mod tests {
     fn duplicate_rename_export_and_import_round_trip() {
         let root = std::env::temp_dir().join(format!("glassdeck-library-actions-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        create_widget(&root, new(Sizing::Any { size: SIZE }, true, false)).unwrap();
+        create_widget(&root, new(Sizing::Any { size: SIZE })).unwrap();
         assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy");
         assert_eq!(duplicate_package(&root, "widget.local.me.weather").unwrap().as_str(), "widget.local.me.weather-copy-2");
         rename_package(&root, "widget.local.me.weather-copy", "Sky").unwrap();
@@ -540,7 +516,6 @@ mod tests {
         assert!(matches!(import_widget(&root, &deck), Err(LibraryError::AlreadyExists { .. })));
         let imported = import_widget(&root.join("elsewhere"), &deck).unwrap();
         assert_eq!(imported.sizing, Sizing::Any { size: SIZE });
-        assert!(imported.has_options);
         assert!(matches!(widget_folder(&root, "widget.local.me.nope"), Err(LibraryError::NotFound { .. })));
         fs::remove_dir_all(&root).unwrap();
     }
@@ -549,11 +524,11 @@ mod tests {
     fn the_editor_reads_and_saves_scripts_title_and_version() {
         let root = std::env::temp_dir().join(format!("glassdeck-library-editor-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        create_widget(&root, new(Sizing::Fixed { size: SIZE }, true, false)).unwrap();
+        create_widget(&root, new(Sizing::Fixed { size: SIZE })).unwrap();
         let source = read_widget(&root, "widget.local.me.weather").unwrap();
         let names: Vec<&str> = source.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, [KEYBOARD_SCRIPT, OPTIONS_SCRIPT, HOST_SCRIPT]);
-        assert!((source.widget.has_options, source.widget.runs_on_host) == (true, false), "an empty host.luau is no host half");
+        assert!(!source.widget.runs_on_host, "an empty host.luau is no host half");
         let host = SourceFile { name: HOST_SCRIPT.into(), text: "every(1, function() end)\n".into() };
         let saved = save_widget(&root, "widget.local.me.weather", SourceEdit { title: "Sky".into(), version: "1.1.0".into(), files: vec![host] }).unwrap();
         assert_eq!((saved.title.as_str(), saved.version.as_str(), saved.runs_on_host), ("Sky", "1.1.0", true));

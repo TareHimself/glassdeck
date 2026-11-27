@@ -9,6 +9,9 @@
 }
 
 .segment {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   min-height: 40px;
   padding: 0 16px;
   border-radius: 7px;

@@ -2,6 +2,7 @@
 
 mod backgrounds;
 mod canvas_preview;
+mod videos;
 mod glassdeckd;
 mod library;
 mod options;
@@ -9,6 +10,7 @@ mod preview;
 
 use backgrounds::{BackgroundSummary, CanvasCheck, CanvasSource, NewBackground};
 use canvas_preview::{CanvasPreview, CanvasUpdate};
+use videos::{Conversions, VideoBackground, VideoCut, VideoFacts, VideoUpdate};
 use glassdeck_api::{Status, Theme};
 use glassdeck_package::PackageType;
 use glassdeckd::{Glassdeckd, GlassdeckdError, GlassdeckdUpdate};
@@ -59,8 +61,65 @@ async fn list_backgrounds() -> Result<Vec<BackgroundSummary>, LibraryError> {
 
 #[tauri::command]
 #[specta::specta]
-async fn create_background(background: NewBackground) -> Result<BackgroundSummary, LibraryError> {
-    in_library(move |root| backgrounds::create_background(root, background)).await
+async fn create_background(app: AppHandle, conversions: State<'_, Conversions>, background: NewBackground) -> Result<BackgroundSummary, LibraryError> {
+    let (made, conversion) = in_library(move |root| backgrounds::create_background(root, background)).await?;
+    if let Some(conversion) = conversion {
+        conversions.start(app, conversion);
+    }
+    Ok(made)
+}
+
+#[tauri::command]
+#[specta::specta]
+fn canvas_template() -> Vec<SourceFile> {
+    backgrounds::canvas_template()
+}
+
+/// Asks Media Foundation what a video file the user chose is, and allows it for playback in the app.
+#[tauri::command]
+#[specta::specta]
+async fn video_facts(app: AppHandle, path: String) -> Result<VideoFacts, LibraryError> {
+    let file = PathBuf::from(&path);
+    let facts = in_library(move |_| videos::facts(&file)).await?;
+    app.asset_protocol_scope().allow_file(&path).map_err(|e| LibraryError::Io { reason: format!("allowing {path} for playback: {e}") })?;
+    Ok(facts)
+}
+
+/// The frame at `seconds` of a video file, as a base64 JPEG.
+#[tauri::command]
+#[specta::specta]
+async fn video_frame(path: String, seconds: f64) -> Result<String, LibraryError> {
+    in_library(move |_| videos::source_frame(Path::new(&path), seconds)).await
+}
+
+/// A video background, with its converted file allowed for playback in the app.
+#[tauri::command]
+#[specta::specta]
+async fn read_video(app: AppHandle, conversions: State<'_, Conversions>, id: String) -> Result<VideoBackground, LibraryError> {
+    let conversions = conversions.inner().clone();
+    let video = in_library(move |root| videos::read_video(root, &id, &conversions)).await?;
+    if let Some(converted) = &video.video {
+        app.asset_protocol_scope()
+            .allow_file(&converted.path)
+            .map_err(|e| LibraryError::Io { reason: format!("allowing {} for playback: {e}", converted.path) })?;
+    }
+    Ok(video)
+}
+
+/// Sets the preview image to the converted video's frame at `seconds`; the new image, as a base64 JPEG.
+#[tauri::command]
+#[specta::specta]
+async fn set_video_preview(id: String, seconds: f64) -> Result<String, LibraryError> {
+    in_library(move |root| videos::set_preview(root, &id, seconds)).await
+}
+
+/// Converts a new file into the background, cut as given.
+#[tauri::command]
+#[specta::specta]
+async fn replace_video(app: AppHandle, conversions: State<'_, Conversions>, id: String, source: String, cut: VideoCut) -> Result<(), LibraryError> {
+    let conversion = in_library(move |root| videos::replace(root, &id, Path::new(&source), cut)).await?;
+    conversions.start(app, conversion);
+    Ok(())
 }
 
 #[tauri::command]
@@ -328,6 +387,12 @@ fn bindings() -> Builder<tauri::Wry> {
             reveal_package,
             list_backgrounds,
             create_background,
+            canvas_template,
+            video_facts,
+            video_frame,
+            read_video,
+            set_video_preview,
+            replace_video,
             read_canvas,
             save_canvas,
             check_canvas,
@@ -349,7 +414,7 @@ fn bindings() -> Builder<tauri::Wry> {
             preview_options,
             stop_preview,
         ])
-        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate])
+        .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate])
         .constant("WIDGET_AREA", library::widget_area())
         .constant("GRID", library::GRID)
         .error_handling(ErrorHandlingMode::Result)
@@ -379,6 +444,7 @@ fn main() {
         .setup(move |app| {
             bindings.mount_events(app);
             app.manage(Preview::start(app.handle().clone()));
+            app.manage(Conversions::default());
             app.manage(CanvasPreview::start(app.handle().clone(), native_libraries().ok()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

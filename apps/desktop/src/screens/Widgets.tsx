@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { commands, type LibraryError, type WidgetSummary } from "../bindings";
-import { Button, ButtonLink } from "../components/Button";
+import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { LibraryCard, type CardActions } from "../components/LibraryCard";
 import { PageHeader } from "../components/PageHeader";
@@ -9,6 +9,7 @@ import { Problem } from "../components/Problem";
 import { Tag } from "../components/Tag";
 import { useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError, sizeLabel } from "../library";
+import { NewWidgetDialog } from "./NewWidgetDialog";
 import styles from "./Widgets.module.css";
 
 type Library = { state: "loading" } | { state: "ready"; widgets: WidgetSummary[] } | { state: "failed"; error: LibraryError };
@@ -66,6 +67,7 @@ export function Widgets() {
   const [problem, setProblem] = useState<LibraryError | null>(null);
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const active = useMemo(() => new Set((theme?.widgets ?? []).map((w) => w.package)), [theme]);
 
   const reload = async () => {
@@ -114,9 +116,9 @@ export function Widgets() {
           <>
             <Input type="search" variant="search" placeholder="Search widgets" aria-label="Search widgets" value={query} onChange={(e) => setQuery(e.target.value)} />
             <Button onClick={() => void importDeck()}>Import .deck</Button>
-            <ButtonLink variant="primary" to="/widgets/new">
+            <Button variant="primary" onClick={() => setCreating(true)}>
               New widget
-            </ButtonLink>
+            </Button>
           </>
         }
       />
@@ -135,14 +137,15 @@ export function Widgets() {
             actions={actions}
           />
         ))}
-        <Link className={styles.newTile} to="/widgets/new">
+        <button type="button" className={styles.newTile} onClick={() => setCreating(true)}>
           <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M14 6v16M6 14h16" />
           </svg>
           New widget
-        </Link>
+        </button>
       </div>
       {library.state === "ready" && library.widgets.length > 0 && shown.length === 0 && <div className={styles.noMatch}>No widgets match “{query}”.</div>}
+      {creating && <NewWidgetDialog onClose={() => setCreating(false)} />}
     </div>
   );
 }

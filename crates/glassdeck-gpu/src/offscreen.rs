@@ -25,7 +25,8 @@ const GL_VERSION: (i32, i32) = (4, 3);
 
 type CreateContextAttribs = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
 
-/// Current on the thread that made it, which must be the only one to use it.
+/// Current on the thread that made it, which must be the only one to use it. Dropping one leaves the
+/// thread with no current context, so drop the old one before making its replacement.
 pub struct Offscreen {
     pub gl: glow::Context,
     framebuffer: glow::Framebuffer,
