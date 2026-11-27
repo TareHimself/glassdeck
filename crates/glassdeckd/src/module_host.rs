@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -21,7 +21,7 @@ use glassdeck_package::{Package, QualifiedId, is_package};
 use glassdeck_proto::ScriptTarget;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
+use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
 use crate::link::Uplink;
 use crate::theme::{self, ActiveTheme, Chosen};
 
@@ -34,12 +34,23 @@ pub enum HostCommand {
     Theme(ActiveTheme),
     /// What a keyboard script sent its host half
     Message(ScriptTarget, Sent),
+    /// A `net` answer arrived for some host side
+    Answered,
 }
 
-pub fn start(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying, inbox: Receiver<HostCommand>) -> Result<()> {
+/// `commands` is the sender of `inbox`, for `net` answers to wake the loop.
+pub fn start(
+    packages: PathBuf,
+    theme: ActiveTheme,
+    uplink: Arc<Uplink>,
+    now_playing: SharedNowPlaying,
+    commands: Sender<HostCommand>,
+    inbox: Receiver<HostCommand>,
+) -> Result<()> {
+    let wake: Wake = Arc::new(move || drop(commands.send(HostCommand::Answered)));
     thread::Builder::new()
         .name("module host".into())
-        .spawn(move || Host::new(packages, theme, uplink, now_playing).run(&inbox))?;
+        .spawn(move || Host::new(packages, theme, uplink, now_playing, wake).run(&inbox))?;
     Ok(())
 }
 
@@ -49,6 +60,7 @@ struct Host {
     uplink: Arc<Uplink>,
     system: SharedSystem,
     now_playing: SharedNowPlaying,
+    wake: Wake,
     background: Option<Running>,
     widgets: BTreeMap<u16, Running>,
     /// The packages folder as the last scan saw it, to notice installs.
@@ -107,9 +119,9 @@ fn widget_changes(running: &BTreeMap<u16, SideEntry>, wanted: &BTreeMap<u16, Sid
 
 
 impl Host {
-    fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying) -> Self {
+    fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying, wake: Wake) -> Self {
         let system = glassdeck_host::system();
-        Self { packages, theme, uplink, system, now_playing, background: None, widgets: BTreeMap::new(), seen: None }
+        Self { packages, theme, uplink, system, now_playing, wake, background: None, widgets: BTreeMap::new(), seen: None }
     }
 
     fn run(mut self, commands: &Receiver<HostCommand>) {
@@ -133,6 +145,12 @@ impl Host {
                     self.sync();
                 }
                 Ok(HostCommand::Message(from, sent)) => self.deliver(from, &sent),
+                Ok(HostCommand::Answered) => {
+                    self.widgets.retain(|_, widget| keeps_running_after(&widget.side, HostSide::run_answers));
+                    if self.background.as_ref().is_some_and(|b| !keeps_running_after(&b.side, HostSide::run_answers)) {
+                        self.background = None;
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -268,6 +286,8 @@ impl Host {
                 message_limit,
                 print: None,
                 messages: package.bridge_script()?,
+                network: package.manifest().network.clone(),
+                wake: Some(Arc::clone(&self.wake)),
             };
             let Some(side) = HostSide::start(sources, &self.system, &self.now_playing)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
@@ -288,7 +308,12 @@ impl Host {
 
 /// Runs a side's due timers; a failed one is reported and stops, and the others keep running.
 fn keeps_running(side: &HostSide, now: Instant) -> bool {
-    match side.run_timers(now) {
+    keeps_running_after(side, |side| side.run_timers(now))
+}
+
+/// Whether `side` survives `step`; a failure is reported, and that side stops.
+fn keeps_running_after(side: &HostSide, step: impl FnOnce(&HostSide) -> Result<()>) -> bool {
+    match step(side) {
         Ok(()) => true,
         Err(e) => {
             eprintln!("error: {}: {e:#}; it stops, the others keep running", side.label);

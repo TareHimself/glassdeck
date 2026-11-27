@@ -50,8 +50,11 @@ export const commands = {
 	saveCanvas: (id: string, edit: SourceEdit, options?: InvokeOptions) => typedError<BackgroundSummary, LibraryError>(__TAURI_INVOKE("save_canvas", { id, edit }, options)),
 	/**  Compiles the canvas as saved and type-checks its scripts. */
 	checkCanvas: (id: string, options?: InvokeOptions) => typedError<CanvasCheck, LibraryError>(__TAURI_INVOKE("check_canvas", { id }, options)),
-	/**  Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s. */
-	previewCanvas: (files: SourceFile[], values: { [key in string]: Value }, run: PreviewRun, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_canvas", { files, values, run }, options),
+	/**
+	 *  Compiles canvas `id`'s unsaved files (`None` for one not in the library yet) and starts drawing them;
+	 *  frames arrive as `CanvasUpdate`s.
+	 */
+	previewCanvas: (id: string | null, files: SourceFile[], values: { [key in string]: Value }, run: PreviewRun, options?: InvokeOptions) => __TAURI_INVOKE<void>("preview_canvas", { id, files, values, run }, options),
 	canvasOptions: (values: { [key in string]: Value }, options?: InvokeOptions) => __TAURI_INVOKE<void>("canvas_options", { values }, options),
 	playCanvas: (playing: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("play_canvas", { playing }, options),
 	restartCanvas: (options?: InvokeOptions) => __TAURI_INVOKE<void>("restart_canvas", undefined, options),

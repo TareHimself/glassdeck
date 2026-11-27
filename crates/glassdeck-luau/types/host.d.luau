@@ -72,3 +72,41 @@ declare media: {
     -- nil when nothing is playing or paused
     current: () -> NowPlaying?,
 }
+
+-- A request: method defaults to GET; timeout is in seconds (10 when left out, at most 30)
+export type Request = {
+    method: ("GET" | "POST" | "PUT" | "PATCH" | "DELETE")?,
+    url: string,
+    headers: { [string]: string }?,
+    body: string?,
+    timeout: number?,
+}
+
+export type Response = {
+    -- a 2xx status
+    ok: boolean,
+    -- 0 when nothing answered
+    status: number,
+    -- names in lower case
+    headers: { [string]: string },
+    -- the bytes as they came, so image.fill(response.body, ...) works for pictures
+    body: string,
+    -- why nothing answered: a timeout, DNS, TLS
+    error: string?,
+}
+
+-- HTTP to the hosts deck.json lists under "network". Each call waits, so use it inside every,
+-- bridge.on and script.on_options; other callbacks keep running meanwhile.
+declare net: {
+    get: (url: string) -> Response,
+    request: (request: Request) -> Response,
+    -- all at once; the responses in the same order
+    all: (requests: { string | Request }) -> { Response },
+}
+
+declare json: {
+    -- null reads as nil
+    decode: (text: string) -> any,
+    -- a table with keys 1 to n is an array, else an object; an empty table is {}
+    encode: (value: any) -> string,
+}

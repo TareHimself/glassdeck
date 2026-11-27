@@ -1940,6 +1940,7 @@ dependencies = [
  "image",
  "mlua",
  "sysinfo",
+ "ureq",
  "windows",
 ]
 

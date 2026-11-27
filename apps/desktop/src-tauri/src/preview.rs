@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
+use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::placement::{PlacedWidget, Placement};
 use glassdeck_luau::{LiveName, Print};
@@ -77,6 +77,8 @@ pub enum Command {
     Resize(Dims),
     Options(serde_json::Map<String, serde_json::Value>),
     Stop,
+    /// A `net` answer arrived for host.luau
+    Answered,
 }
 
 pub struct Preview(Mutex<Sender<Command>>);
@@ -84,9 +86,11 @@ pub struct Preview(Mutex<Sender<Command>>);
 impl Preview {
     pub fn start(app: AppHandle) -> Self {
         let (tx, rx) = mpsc::channel();
+        let answered = tx.clone();
+        let wake: Wake = Arc::new(move || drop(answered.send(Command::Answered)));
         std::thread::Builder::new()
             .name("widget preview".into())
-            .spawn(move || run(app, rx))
+            .spawn(move || run(app, rx, wake))
             .expect("starting the preview thread");
         Self(Mutex::new(tx))
     }
@@ -109,6 +113,8 @@ pub(crate) struct Session {
     system: SharedSystem,
     now_playing: SharedNowPlaying,
     scratch: PathBuf,
+    /// Wakes the preview thread for `net` answers; stills have none and never wait
+    wake: Option<Wake>,
 }
 
 pub(crate) struct Running {
@@ -120,7 +126,7 @@ pub(crate) struct Running {
     pub(crate) last_frame: Option<Instant>,
 }
 
-fn run(app: AppHandle, rx: Receiver<Command>) {
+fn run(app: AppHandle, rx: Receiver<Command>, wake: Wake) {
     let current = Rc::new(Cell::new(PreviewRun(0)));
     let stamp = Rc::clone(&current);
     let out: Out = Rc::new(move |change| {
@@ -128,7 +134,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
             eprintln!("emitting a preview update: {e}");
         }
     });
-    let cx = match Session::new(out) {
+    let cx = match Session::new(out, wake) {
         Ok(cx) => cx,
         Err(e) => return eprintln!("preview: {e:#}"),
     };
@@ -162,7 +168,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
                 }
             }
             Ok(Command::Stop) => running = None,
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(r) = &mut running {
@@ -176,25 +182,25 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
 }
 
 impl Session {
-    pub(crate) fn new(out: Out) -> Result<Self> {
+    pub(crate) fn new(out: Out, wake: Wake) -> Result<Self> {
         let now_playing = glassdeck_host::start_media().unwrap_or_else(|e| {
             out(PreviewChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
             Arc::new(Mutex::new(None))
         });
-        Self::with_media(out, now_playing)
+        Self::with_media(out, now_playing, Some(wake))
     }
 
     /// A session that reports nothing playing, for stills: widgets draw their placeholders.
     pub(crate) fn without_media(out: Out) -> Result<Self> {
-        Self::with_media(out, Arc::new(Mutex::new(None)))
+        Self::with_media(out, Arc::new(Mutex::new(None)), None)
     }
 
-    fn with_media(out: Out, now_playing: SharedNowPlaying) -> Result<Self> {
+    fn with_media(out: Out, now_playing: SharedNowPlaying, wake: Option<Wake>) -> Result<Self> {
         let font = glassdeck_widget::load_font(None)?;
         static SESSIONS: AtomicU32 = AtomicU32::new(0);
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         let scratch = std::env::temp_dir().join(format!("glassdeck-preview-{}-{session}", std::process::id()));
-        Ok(Self { out, font, system: glassdeck_host::system(), now_playing, scratch })
+        Ok(Self { out, font, system: glassdeck_host::system(), now_playing, scratch, wake })
     }
 
     fn log(&self, source: LogSource, level: LogLevel, text: String) {
@@ -228,7 +234,7 @@ pub(crate) enum Drawn {
 pub(crate) fn step(cx: &Session, r: &mut Running) -> Drawn {
     let now = Instant::now();
     if let Some(host) = &r.host
-        && let Err(e) = host.run_timers(now)
+        && let Err(e) = host.run_timers(now).and_then(|()| host.run_answers())
     {
         cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; host.luau stopped"));
         r.host = None;
@@ -328,6 +334,8 @@ pub(crate) fn show(
         message_limit: None,
         print: Some(cx.printer(LogSource::Host)),
         messages: package.bridge_script()?,
+        network: package.manifest().network.clone(),
+        wake: cx.wake.clone(),
     };
     let host = match HostSide::start(sources, &cx.system, &cx.now_playing) {
         Ok(host) => host,
@@ -386,7 +394,7 @@ mod tests {
     fn session() -> (Session, Rc<RefCell<Vec<PreviewChange>>>) {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&seen);
-        let cx = Session::new(Rc::new(move |update| sink.borrow_mut().push(update))).unwrap();
+        let cx = Session::new(Rc::new(move |update| sink.borrow_mut().push(update)), Arc::new(|| {})).unwrap();
         (cx, seen)
     }
 

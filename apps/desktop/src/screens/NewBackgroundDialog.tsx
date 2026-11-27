@@ -56,7 +56,7 @@ function useStartingCanvas() {
   useEffect(() => {
     commands
       .canvasTemplate()
-      .then((files) => show(files, {}))
+      .then((files) => show(null, files, {}))
       .catch((e: unknown) => setError(String(e)));
   }, [show]);
   return { ...live, error };

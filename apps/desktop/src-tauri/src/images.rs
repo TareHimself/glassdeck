@@ -130,6 +130,7 @@ pub fn export(folder: &Path, out: &Path) -> Result<(), LibraryError> {
         version,
         origin: Origin::Converted { from: record.from },
         preview: None,
+        network: Vec::new(),
         kind: Kind::Background(Content::Image { file: IMAGE_FILE.into() }),
     };
     let failed = |e: anyhow::Error| LibraryError::Io { reason: format!("{e:#}") };

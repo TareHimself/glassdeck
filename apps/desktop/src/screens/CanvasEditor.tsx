@@ -169,7 +169,7 @@ export function CanvasEditor({ id }: { id: string }) {
       () => {
         started.current = true;
         setRunStatus(RUNNING);
-        live.show(listOf(files), chosen);
+        live.show(id, listOf(files), chosen);
       },
       started.current ? EDIT_SETTLE_MS : 0,
     );

@@ -132,6 +132,7 @@ fn write_background(details: Details, content: Content, out: &Path, add_content:
         version: Version::parse(CONVERTED_VERSION)?,
         origin: details.origin,
         preview: preview_name.clone(),
+        network: Vec::new(),
         kind: Kind::Background(content),
     };
     let mut writer = PackageWriter::create(out, manifest)?;

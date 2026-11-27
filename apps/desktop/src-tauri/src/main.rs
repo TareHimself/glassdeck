@@ -283,11 +283,19 @@ async fn check_canvas(id: String) -> Result<CanvasCheck, LibraryError> {
     in_library(move |root| backgrounds::check_canvas(root, &id, &native_libraries()?)).await
 }
 
-/// Compiles the editor's unsaved files and starts drawing them; frames arrive as `CanvasUpdate`s.
+/// Compiles canvas `id`'s unsaved files (`None` for one not in the library yet) and starts drawing them;
+/// frames arrive as `CanvasUpdate`s.
 #[tauri::command]
 #[specta::specta]
-fn preview_canvas(preview: State<'_, CanvasPreview>, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value>, run: preview::PreviewRun) {
-    preview.send(canvas_preview::Command::Show { run, files, values });
+fn preview_canvas(
+    preview: State<'_, CanvasPreview>,
+    id: Option<String>,
+    files: Vec<SourceFile>,
+    values: serde_json::Map<String, serde_json::Value>,
+    run: preview::PreviewRun,
+) {
+    let folder = id.and_then(|id| library::root().ok().map(|root| root.join(id)));
+    preview.send(canvas_preview::Command::Show { run, folder, files, values });
 }
 
 #[tauri::command]

@@ -61,12 +61,16 @@ export function nextPreviewRun(): PreviewRun {
  * the Overview's background, and an editor take it over entirely.
  */
 export type CanvasClaim = {
-  /** Draws these files: a new run, started now if this claim owns the preview, or when it next does. */
-  show: (files: SourceFile[], values: Values) => void;
+  /**
+   * Draws these files of canvas `id` (null for one not in the library yet): a new run, started now if
+   * this claim owns the preview, or when it next does.
+   */
+  show: (id: string | null, files: SourceFile[], values: Values) => void;
   release: () => void;
 };
 
-type Claim = { onChange: (change: CanvasChange) => void; run: PreviewRun | null; wanted: { files: SourceFile[]; values: Values } | null };
+type Wanted = { id: string | null; files: SourceFile[]; values: Values };
+type Claim = { onChange: (change: CanvasChange) => void; run: PreviewRun | null; wanted: Wanted | null };
 const claims: Claim[] = [];
 let listening: Promise<() => void> | null = null;
 
@@ -81,7 +85,7 @@ function startOwner() {
     if (current && payload.run === current.run) current.onChange(payload.change);
   });
   owner.run = nextPreviewRun();
-  void commands.previewCanvas(owner.wanted.files, owner.wanted.values, owner.run);
+  void commands.previewCanvas(owner.wanted.id, owner.wanted.files, owner.wanted.values, owner.run);
 }
 
 export function claimCanvas(onChange: (change: CanvasChange) => void): CanvasClaim {
@@ -89,8 +93,8 @@ export function claimCanvas(onChange: (change: CanvasChange) => void): CanvasCla
   claims.push(claim);
   startOwner();
   return {
-    show: (files, values) => {
-      claim.wanted = { files, values };
+    show: (id, files, values) => {
+      claim.wanted = { id, files, values };
       if (claims.at(-1) === claim) startOwner();
     },
     release: () => {
@@ -113,7 +117,7 @@ export function useLiveCanvas(onChange?: (change: CanvasChange) => void) {
   const listener = useRef(onChange);
   listener.current = onChange;
   const claim = useRef<CanvasClaim | null>(null);
-  const wanted = useRef<{ files: SourceFile[]; values: Values } | null>(null);
+  const wanted = useRef<Wanted | null>(null);
 
   useEffect(() => {
     if (!element) return;
@@ -143,7 +147,7 @@ export function useLiveCanvas(onChange?: (change: CanvasChange) => void) {
       listener.current?.(change);
     });
     claim.current = own;
-    if (wanted.current) own.show(wanted.current.files, wanted.current.values);
+    if (wanted.current) own.show(wanted.current.id, wanted.current.files, wanted.current.values);
     return () => {
       own.release();
       if (claim.current === own) claim.current = null;
@@ -152,9 +156,9 @@ export function useLiveCanvas(onChange?: (change: CanvasChange) => void) {
     };
   }, [element]);
 
-  const show = useCallback((files: SourceFile[], values: Values) => {
-    wanted.current = { files, values };
-    claim.current?.show(files, values);
+  const show = useCallback((id: string | null, files: SourceFile[], values: Values) => {
+    wanted.current = { id, files, values };
+    claim.current?.show(id, files, values);
   }, []);
 
   return { ref: setElement, drawing, show };
@@ -168,7 +172,7 @@ export function useLivePackageCanvas(id: string, values: Values = {}) {
   useEffect(() => {
     let alive = true;
     void canvasFiles(id).then((files) => {
-      if (alive && files.length > 0) show(files, values);
+      if (alive && files.length > 0) show(id, files, values);
     });
     return () => {
       alive = false;

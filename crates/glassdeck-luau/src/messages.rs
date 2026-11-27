@@ -157,7 +157,7 @@ impl ScriptMessages {
     pub fn deliver_options(&self, vm: &Vm, payload: &[u8]) -> Result<bool> {
         let Some(callback) = self.options.borrow().clone() else { return Ok(false) };
         let options = crate::decode(vm.lua(), payload)?;
-        vm.call::<()>(&callback, options).context("in bridge.on.options")?;
+        vm.run(&callback, options).context("in bridge.on.options")?;
         Ok(true)
     }
 
@@ -167,7 +167,7 @@ impl ScriptMessages {
         let value = decode(&known.shape, payload).map_err(|e| anyhow::anyhow!("{} doesn't read: {}", known.name, e.0))?;
         let Some(callback) = self.heard.borrow().get(&message).cloned() else { return Ok(()) };
         let value = to_lua(vm.lua(), &known.shape, value).lua_context("unpacking a message")?;
-        vm.call::<()>(&callback, value).with_context(|| format!("in bridge.on.{}", known.name))
+        vm.run(&callback, value).with_context(|| format!("in bridge.on.{}", known.name))
     }
 }
 

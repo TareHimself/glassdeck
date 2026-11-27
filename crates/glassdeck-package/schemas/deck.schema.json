@@ -16,7 +16,13 @@
     "version": { "description": "The package's own version, major.minor.patch", "type": "string", "pattern": "^\d+\.\d+\.\d+$" },
     "type": { "description": "background (with canvas.slang) or widget", "enum": ["background", "widget"] },
     "details": { "$ref": "#/$defs/widget", "description": "A widget's sizes; a canvas has none, packing works them out" },
-    "preview_at": { "description": "Seconds into a canvas at which its still is drawn; 0 when left out", "type": "number", "minimum": 0 }
+    "preview_at": { "description": "Seconds into a canvas at which its still is drawn; 0 when left out", "type": "number", "minimum": 0 },
+    "network": {
+      "description": "Hosts host.luau may reach with net: a host name, or *.domain for its subdomains",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^(\\*\\.)?[a-z0-9-]+(\\.[a-z0-9-]+)*$" },
+      "uniqueItems": true
+    }
   },
   "if": { "properties": { "type": { "const": "widget" } } },
   "then": { "required": ["details"] },

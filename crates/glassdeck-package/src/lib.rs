@@ -5,6 +5,7 @@
 mod canvas;
 mod folder;
 mod manifest;
+mod network;
 mod resource;
 mod zip;
 
@@ -17,6 +18,7 @@ use anyhow::{Context, Result, ensure};
 
 pub use canvas::{CANVAS_API, Canvas, CanvasFiles, CanvasScripts, InputField, InputKind, canvas_sources, source_digest};
 pub use folder::{DECK_SOURCE, DeckSource, is_blank_script, pack_folder, read_script};
+pub use network::NetworkHost;
 pub use manifest::{
     Content, FrameRate, Kind, Manifest, Origin, PackageId, PackageType, ProbedCodec, QualifiedId, ProbedVideo, Resize, Size, SpecMismatch, Version, VideoFormat,
     WidgetSize, check,
@@ -359,6 +361,7 @@ pub(crate) mod tests {
             version: Version::parse("1.0.0").unwrap(),
             origin: Origin::WallpaperEngine { workshop_id: "1".into() },
             preview: None,
+            network: Vec::new(),
             kind,
         }
     }

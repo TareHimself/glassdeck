@@ -15,11 +15,11 @@ use anyhow::{Context, Result, ensure};
 use glassdeck_gpu::offscreen::Offscreen;
 use glassdeck_gpu::program::{CanvasProgram, render_size};
 use glassdeck_gpu::script::{CanvasScript, InputValue};
-use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources};
+use glassdeck_host::{HostSide, SharedNowPlaying, SharedSystem, Sources, Wake};
 use glassdeck_luau::Print;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 use glassdeck_luau::options::read_values;
-use glassdeck_package::{CanvasFiles, HOST_SCRIPT, InputField, KEYBOARD_SCRIPT, OPTIONS_SCRIPT, Origin, is_blank_script};
+use glassdeck_package::{CanvasFiles, DeckSource, HOST_SCRIPT, InputField, KEYBOARD_SCRIPT, NetworkHost, OPTIONS_SCRIPT, Origin, is_blank_script};
 use glassdeck_slang::Slang;
 use glassdeck_slang::pack::{CANVAS_SOURCE, CanvasSources, compile_canvas};
 use image::RgbImage;
@@ -100,11 +100,14 @@ pub enum CanvasChange {
 }
 
 pub enum Command {
-    Show { run: PreviewRun, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value> },
+    /// `folder`: the canvas's library folder, whose `deck.json` says which hosts `net` may reach
+    Show { run: PreviewRun, folder: Option<PathBuf>, files: Vec<SourceFile>, values: serde_json::Map<String, serde_json::Value> },
     Options(serde_json::Map<String, serde_json::Value>),
     Play(bool),
     Restart,
     Stop,
+    /// A `net` answer arrived for host.luau
+    Answered,
 }
 
 pub struct CanvasPreview(Mutex<Sender<Command>>);
@@ -112,9 +115,11 @@ pub struct CanvasPreview(Mutex<Sender<Command>>);
 impl CanvasPreview {
     pub fn start(app: AppHandle, native: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
+        let answered = tx.clone();
+        let wake: Wake = Arc::new(move || drop(answered.send(Command::Answered)));
         std::thread::Builder::new()
             .name("canvas preview".into())
-            .spawn(move || run(app, native, rx))
+            .spawn(move || run(app, native, rx, wake))
             .expect("starting the canvas preview thread");
         Self(Mutex::new(tx))
     }
@@ -135,6 +140,7 @@ struct Session {
     slang: Option<Slang>,
     system: SharedSystem,
     now_playing: SharedNowPlaying,
+    wake: Wake,
 }
 
 /// The canvas's clock: it runs while playing and holds still while paused.
@@ -181,7 +187,7 @@ struct Running {
     resend: bool,
 }
 
-fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
+fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>, wake: Wake) {
     let current = Rc::new(Cell::new(PreviewRun(0)));
     let stamp = Rc::clone(&current);
     let out: Out = Rc::new(move |change| {
@@ -193,15 +199,19 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
         out(CanvasChange::Log { source: LogSource::Host, level: LogLevel::Error, text: format!("media isn't available: {e:#}") });
         Arc::new(Mutex::new(None))
     });
-    let mut cx = Session { out, native, slang: None, system: glassdeck_host::system(), now_playing };
+    let mut cx = Session { out, native, slang: None, system: glassdeck_host::system(), now_playing, wake };
     let mut running: Option<Running> = None;
     let mut playing = true;
     loop {
         let wait = running.as_ref().map_or(IDLE, |r| wait_for(r, playing, Instant::now()));
         match rx.recv_timeout(wait) {
-            Ok(Command::Show { run, files, values }) => {
+            Ok(Command::Show { run, folder, files, values }) => {
                 current.set(run);
-                match show(&mut cx, &files, &values) {
+                let network = folder.map_or_else(|| Ok(Vec::new()), |folder| DeckSource::read(&folder).map(|(deck, _)| deck.network)).unwrap_or_else(|e| {
+                    cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; net reaches no hosts"));
+                    Vec::new()
+                });
+                match show(&mut cx, &files, &values, network) {
                     Ok(mut started) => {
                         if let Some(r) = running.take() {
                             started.clock = r.clock;
@@ -246,7 +256,7 @@ fn run(app: AppHandle, native: Option<PathBuf>, rx: Receiver<Command>) {
                 running = None;
                 playing = true;
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(r) = &mut running
@@ -290,7 +300,7 @@ fn wait_for(r: &Running, playing: bool, now: Instant) -> Duration {
 fn step(cx: &Session, r: &mut Running, playing: bool) -> Result<()> {
     let now = Instant::now();
     if let Some(host) = &r.host {
-        if let Err(e) = host.run_timers(now) {
+        if let Err(e) = host.run_timers(now).and_then(|()| host.run_answers()) {
             cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}; host.luau stopped"));
             r.host = None;
         } else if let Some(payload) = host.take_options() {
@@ -417,6 +427,8 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
         message_limit: Some(MAX_SCRIPT_PAYLOAD_LEN),
         print: None,
         messages,
+        network: Vec::new(),
+        wake: None,
     };
     let nothing_playing: SharedNowPlaying = Arc::new(Mutex::new(None));
     if let Some(host) = HostSide::start(sources, &glassdeck_host::system(), &nothing_playing)? {
@@ -431,7 +443,7 @@ pub fn render_still(slang: &Slang, files: &[SourceFile], at: f32) -> Result<Vec<
 }
 
 /// Compiles the editor's files and starts the canvas and its host half.
-fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String, serde_json::Value>) -> Result<Running> {
+fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String, serde_json::Value>, network: Vec<NetworkHost>) -> Result<Running> {
     let compiled = compile(cx.slang()?, files)?;
     let sources = (compiled.options, compiled.host);
     let files = compiled.files;
@@ -446,6 +458,8 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         message_limit: Some(MAX_SCRIPT_PAYLOAD_LEN),
         print: Some(cx.printer(LogSource::Host)),
         messages: files.messages.clone(),
+        network,
+        wake: Some(Arc::clone(&cx.wake)),
     };
     let host = HostSide::start(host_sources, &cx.system, &cx.now_playing).unwrap_or_else(|e| {
         cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
@@ -534,8 +548,9 @@ mod tests {
             slang: None,
             system: glassdeck_host::system(),
             now_playing: Arc::new(Mutex::new(None)),
+            wake: Arc::new(|| {}),
         };
-        let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new()).unwrap();
+        let mut running = show(&mut cx, &crate::backgrounds::canvas_template(), &serde_json::Map::new(), Vec::new()).unwrap();
         step(&cx, &mut running, true).unwrap();
         let seen = seen.borrow();
         let program = seen.iter().position(|u| matches!(u, CanvasChange::Program { fragment, .. } if fragment.starts_with("#version 300 es")));

@@ -5,6 +5,7 @@
 
 mod api;
 mod media;
+mod net;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,16 +14,20 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glassdeck_luau::color::color_api;
+use glassdeck_luau::json::json_api;
+use glassdeck_luau::waiting::Waits;
 use glassdeck_luau::options::{OptionsScript, Panel, Values, any_function, changed_table, options_table};
 use glassdeck_luau::messages::{ScriptMessages, Sent, read_messages};
 use glassdeck_luau::{LuaResultExt, Print, ResourceReader, Vm, encode};
 use glassdeck_messages::Half;
-use glassdeck_package::ResourceKind;
+use glassdeck_package::{NetworkHost, ResourceKind};
 use mlua::{Function, Lua, Table, Value};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 use api::{LiveOutbox, image_api, live_api, media_api};
 pub use media::{NowPlaying, SharedNowPlaying, Track, start as start_media};
+pub use net::Wake;
+use net::{Net, net_api};
 
 /// The host's system stats, shared by every host side on one thread.
 pub type SharedSystem = Rc<RefCell<System>>;
@@ -38,6 +43,8 @@ type Slot = Rc<RefCell<Option<Vec<u8>>>>;
 /// A running `host.luau`.
 struct HostVm {
     messages: ScriptMessages,
+    net: Rc<Net>,
+    waits: Waits,
     vm: Vm,
     live: LiveOutbox,
     on_options: Rc<RefCell<Option<Function>>>,
@@ -77,6 +84,10 @@ pub struct Sources {
     pub print: Option<Print>,
     /// `bridge.luau`: what `host.luau` and the keyboard half send each other
     pub messages: Option<String>,
+    /// The hosts `net` may reach, from `deck.json`
+    pub network: Vec<NetworkHost>,
+    /// Called from another thread when a `net` answer is ready for `run_answers`
+    pub wake: Option<Wake>,
 }
 
 static NO_OPTIONS: Panel = Panel { items: Vec::new() };
@@ -84,7 +95,7 @@ static NO_OPTIONS: Panel = Panel { items: Vec::new() };
 impl HostSide {
     /// `None` when there's nothing to run: no options and no `host.luau`.
     pub fn start(sources: Sources, system: &SharedSystem, now_playing: &SharedNowPlaying) -> Result<Option<Self>> {
-        let Sources { label, options, host, reader, message_limit, print, messages } = sources;
+        let Sources { label, options, host, reader, message_limit, print, messages, network, wake } = sources;
         if options.is_none() && host.is_none() {
             return Ok(None);
         }
@@ -97,7 +108,7 @@ impl HostSide {
             None => None,
         };
         let run = match host {
-            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), reader, message_limit, print, system, now_playing)?),
+            Some(script) => Run::Script(HostVm::start(&script, messages.as_deref(), Net::new(network, wake, print.clone()), reader, message_limit, print, system, now_playing)?),
             None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
         };
         Ok(Some(Self { label, options, run }))
@@ -122,7 +133,7 @@ impl HostSide {
                 let Some(on_options) = host.on_options.borrow().clone() else { return Ok(()) };
                 let lua = host.vm.lua();
                 let args = (options_table(lua, first, &resolved.values)?, changed_table(lua, first, changed)?);
-                host.vm.call::<()>(&on_options, args).context("in script.on_options")
+                host.vm.run(&on_options, args).context("in script.on_options")
             }
             Run::Forward { vm, slot } => {
                 if self.options.is_none() {
@@ -165,6 +176,13 @@ impl HostSide {
         }
     }
 
+    /// Resumes the callbacks whose `net` answers have arrived; an error means the script failed and should stop.
+    pub fn run_answers(&self) -> Result<()> {
+        let Run::Script(host) = &self.run else { return Ok(()) };
+        host.net.deliver(host.vm.lua(), &host.waits)?;
+        host.vm.resume_answered()
+    }
+
     /// Runs due timers; an error means the script failed and should stop.
     pub fn run_timers(&self, now: Instant) -> Result<()> {
         let Run::Script(host) = &self.run else { return Ok(()) };
@@ -184,17 +202,20 @@ impl HostVm {
     fn start(
         script: &str,
         messages: Option<&str>,
+        net: Rc<Net>,
         reader: Option<ResourceReader>,
         message_limit: Option<usize>,
         print: Option<Print>,
         system: &SharedSystem,
         now_playing: &SharedNowPlaying,
     ) -> Result<Self> {
-        let vm = Vm::new()?;
+        let mut vm = Vm::new()?;
         if let Some(print) = print {
             vm.install_print(print)?;
         }
+        let (waits, wait) = vm.allow_waiting()?;
         let lua = vm.lua();
+        globals_set_net(lua, &net, &waits, wait)?;
         let globals = lua.globals();
         globals.set("every", vm.every_function()?).lua_context("installing every")?;
         globals.set("system", system_api(lua, system)?).lua_context("installing system")?;
@@ -212,8 +233,14 @@ impl HostVm {
         let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Host, message_limit)?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
-        Ok(Self { messages, vm, live, on_options })
+        Ok(Self { messages, net, waits, vm, live, on_options })
     }
+}
+
+fn globals_set_net(lua: &Lua, net: &Rc<Net>, waits: &Waits, wait: Function) -> Result<()> {
+    let globals = lua.globals();
+    globals.set("net", net_api(lua, net, waits, wait)?).lua_context("installing net")?;
+    globals.set("json", json_api(lua)?).lua_context("installing json")
 }
 
 /// `script.on_options(fn)`: what this script does when the options are set.

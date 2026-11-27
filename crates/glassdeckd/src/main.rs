@@ -124,7 +124,7 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     let held = ActivePackages::open(paths.active.clone())?;
     let (kept, active) = restored_theme(&paths)?;
-    module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), glassdeck_host::start_media()?, module_host_inbox)?;
+    module_host::start(paths.active.clone(), active.clone(), Arc::clone(&uplink), glassdeck_host::start_media()?, module_host.clone(), module_host_inbox)?;
     let api = Arc::new(Api {
         token,
         runner,

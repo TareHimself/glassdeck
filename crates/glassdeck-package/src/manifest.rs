@@ -21,6 +21,9 @@ pub struct Manifest {
     /// Entry name, such as `preview.jpg`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// The hosts `host.luau` may reach with `net`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network: Vec<crate::NetworkHost>,
     #[serde(flatten)]
     pub kind: Kind,
 }

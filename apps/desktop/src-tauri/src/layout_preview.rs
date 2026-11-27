@@ -5,10 +5,11 @@
 use std::path::PathBuf;
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use glassdeck_host::Wake;
 use glassdeck_luau::placement::Placement;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -48,6 +49,8 @@ pub enum Command {
     /// The layout, with each widget's library folder when it has one
     Show(PreviewRun, Vec<(Option<PathBuf>, PlacedSource)>),
     Stop,
+    /// A `net` answer arrived for one of the widgets' host halves
+    Answered,
 }
 
 pub struct LayoutPreview(Mutex<Sender<Command>>);
@@ -55,9 +58,11 @@ pub struct LayoutPreview(Mutex<Sender<Command>>);
 impl LayoutPreview {
     pub fn start(app: AppHandle) -> Self {
         let (tx, rx) = mpsc::channel();
+        let answered = tx.clone();
+        let wake: Wake = Arc::new(move || drop(answered.send(Command::Answered)));
         std::thread::Builder::new()
             .name("layout preview".into())
-            .spawn(move || run(app, rx))
+            .spawn(move || run(app, rx, wake))
             .expect("starting the layout preview thread");
         Self(Mutex::new(tx))
     }
@@ -77,7 +82,7 @@ struct Slot {
     running: Option<Running>,
 }
 
-fn run(app: AppHandle, rx: Receiver<Command>) {
+fn run(app: AppHandle, rx: Receiver<Command>, wake: Wake) {
     let current = Cell::new(PreviewRun(0));
     let emit = |change: LayoutChange| {
         if let Err(e) = (LayoutUpdate { run: current.get(), change }).emit(&app) {
@@ -88,7 +93,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
         if let PreviewChange::Log { source, text, .. } = update {
             eprintln!("overview widget, {source:?}: {text}");
         }
-    })) {
+    }), wake) {
         Ok(cx) => cx,
         Err(e) => return eprintln!("layout preview: {e:#}"),
     };
@@ -102,7 +107,7 @@ fn run(app: AppHandle, rx: Receiver<Command>) {
                 slots = arrange(&cx, &emit, slots, layout);
             }
             Ok(Command::Stop) => slots.clear(),
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::Answered) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
         for (index, slot) in slots.iter_mut().enumerate() {
@@ -187,7 +192,7 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&seen);
         let emit = move |update: LayoutChange| sink.borrow_mut().push(update);
-        let cx = Session::new(Rc::new(|_| {})).unwrap();
+        let cx = Session::new(Rc::new(|_| {}), Arc::new(|| {})).unwrap();
         let folder = |id: &str| Some(root.join(id));
         let layout = vec![
             (folder("widget.local.user.sky"), placed("widget.local.user.sky", 320)),

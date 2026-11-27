@@ -33,6 +33,9 @@ pub struct DeckSource {
     /// Seconds into a canvas or video at which the app draws its still; 0 when left out
     #[serde(default)]
     pub preview_at: Option<f32>,
+    /// The hosts `host.luau` may reach with `net`
+    #[serde(default)]
+    pub network: Vec<crate::NetworkHost>,
 }
 
 
@@ -47,7 +50,16 @@ impl DeckSource {
 
     /// The manifest. Packed folders carry no `preview`: the app draws stills itself and keeps them apart.
     pub fn manifest(&self, origin: Origin, kind: Kind) -> Manifest {
-        Manifest { format: FORMAT_VERSION, id: self.id.clone(), title: self.title.clone(), version: self.version.clone(), origin, preview: None, kind }
+        Manifest {
+            format: FORMAT_VERSION,
+            id: self.id.clone(),
+            title: self.title.clone(),
+            version: self.version.clone(),
+            origin,
+            preview: None,
+            network: self.network.clone(),
+            kind,
+        }
     }
 }
 

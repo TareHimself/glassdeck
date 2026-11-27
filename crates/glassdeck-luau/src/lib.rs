@@ -2,10 +2,12 @@
 //! package's halves, and the plain-data encoding the implicit host forwards options in.
 
 pub mod color;
+pub mod json;
 pub mod messages;
 pub mod options;
 pub mod placement;
 mod resource;
+pub mod waiting;
 
 pub use resource::{LiveName, MAX_LIVE_RESOURCE_BYTES, ResourceReader, ResourceRef, resource_of};
 
@@ -27,6 +29,8 @@ pub struct Vm {
     lua: Lua,
     deadline: Rc<Cell<Option<Instant>>>,
     timers: Rc<RefCell<Vec<Timer>>>,
+    /// Set by `allow_waiting`: callbacks then run as coroutines that may wait.
+    waiting: Option<Rc<waiting::Waiting>>,
 }
 
 struct Timer {
@@ -46,7 +50,7 @@ impl Vm {
             }
             _ => Ok(VmState::Continue),
         });
-        Ok(Self { lua, deadline, timers: Rc::new(RefCell::new(Vec::new())) })
+        Ok(Self { lua, deadline, timers: Rc::new(RefCell::new(Vec::new())), waiting: None })
     }
 
     pub fn lua(&self) -> &Lua {
@@ -108,7 +112,7 @@ impl Vm {
             due
         };
         for callback in due {
-            self.call::<()>(&callback, ())?;
+            self.run(&callback, ())?;
         }
         Ok(())
     }
@@ -143,7 +147,7 @@ impl<T> LuaResultExt<T> for mlua::Result<T> {
 /// MessagePack extension type for a Luau vector (colours, positions): its four f32s, little-endian.
 const VECTOR_EXT: i8 = 1;
 /// Deep enough for any real data, shallow enough that a table holding itself fails fast.
-const MAX_DEPTH: usize = 32;
+pub(crate) const MAX_DEPTH: usize = 32;
 
 /// Plain data only: tables, numbers, strings, booleans and vectors. Functions and userdata are refused.
 /// A table whose keys are exactly 1 to n goes as an array, any other as a map.
