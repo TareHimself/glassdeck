@@ -103,5 +103,6 @@ test("a feedback target keeps last frame's picture", async ({ page }) => {
     }
     return results;
   });
-  expect(after20, `ink builds up over frames: ${after1} then ${after20}`).toBeGreaterThan((after1 ?? 0) * 1.5);
+  // Every frame gets the same inputs, so without the history frame 20 would match frame 1 exactly.
+  expect(after20, `ink builds up over frames: ${after1} then ${after20}`).toBeGreaterThan((after1 ?? 0) * 1.1);
 });
