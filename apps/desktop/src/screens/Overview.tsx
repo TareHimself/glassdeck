@@ -295,9 +295,6 @@ export function Overview() {
               <BackgroundThumb className={styles.thumb} background={background} />
               <div className={styles.currentText}>
                 <div className={styles.currentTitle}>{background.title}</div>
-                <div className={styles.mono}>
-                  {background.id} {background.version}
-                </div>
               </div>
             </div>
             <div className={styles.twoButtons}>

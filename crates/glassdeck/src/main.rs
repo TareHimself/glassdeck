@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 use glassdeck_capture::monitors::{self, MonitorQuery};
 use glassdeck_capture::record::{self, RecordOptions};
 use glassdeck_convert::{Details, EncodeSettings};
-use glassdeck_api::{Status, Streams};
+use glassdeck_api::{KeyboardLink, Status, Streams};
 use glassdeck_package::{Origin, PackageId, PackageType, QualifiedId};
 
 #[derive(Parser)]
@@ -247,8 +247,12 @@ fn file_name(path: &Path) -> Result<String> {
 
 fn status() -> Result<()> {
     let status: Status = client::get("/status")?;
-    let connected = if status.link.connected { "connected" } else { "not connected" };
-    println!("Keyboard {}: {connected}", status.link.keyboard);
+    let connection = match status.link.connection {
+        KeyboardLink::Connected => "connected".to_owned(),
+        KeyboardLink::Unreachable => "not connected".to_owned(),
+        KeyboardLink::Incompatible { keyboard, host } => format!("incompatible (it speaks Link {keyboard}, glassdeckd speaks {host})"),
+    };
+    println!("Keyboard {}: {connection}", status.link.keyboard);
     theme::show_background()?;
     if let Some(playing) = &status.stream.playing {
         println!("Source: {playing} ({})", status.stream.state.describe());

@@ -13,7 +13,7 @@ pub const VERSION: u8 = 12;
 pub const HEADER_LEN: usize = 8;
 pub const MAX_BODY_LEN: u32 = 8 * 1024 * 1024;
 /// The built-in canvas's package id: the default background, always on the keyboard and never a file.
-pub const BUILT_IN_BACKGROUND: &str = "background.local.glassdeck.gradient";
+pub const BUILT_IN_BACKGROUND: &str = "background.core.glassdeck.gradient";
 /// Files at least this big pause the stream while they go to the keyboard, which shows their
 /// progress; smaller ones finish too quickly to be worth changing the screen for.
 pub const LARGE_FILE_BYTES: u64 = 10 * 1024 * 1024;

@@ -1,6 +1,6 @@
 {
   "$schema": "../../crates/glassdeck-package/schemas/deck.schema.json",
-  "id": "local.glassdeck.gradient",
+  "id": "core.glassdeck.gradient",
   "title": "Gradient",
   "version": "1.0.0",
   "type": "background"

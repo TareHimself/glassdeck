@@ -134,7 +134,7 @@ pub struct Theme {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeBackground {
-    /// A background's qualified id, such as `background.local.glassdeck.gradient`
+    /// A background's qualified id, such as `background.core.glassdeck.gradient`
     pub package: String,
     /// Chosen values by option path, as in [`OptionView::value`]
     #[serde(default)]
@@ -359,8 +359,8 @@ mod tests {
     #[test]
     fn unknown_fields_in_requests_are_refused() {
         assert!(serde_json::from_str::<ThemePush>(r#"{"theme":{"format":1,"background":{"package":"a.b"}},"extra":1}"#).is_err());
-        let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"background.local.glassdeck.gradient"}}"#).unwrap();
-        assert_eq!(theme, Theme::starting("background.local.glassdeck.gradient"));
+        let theme: Theme = serde_json::from_str(r#"{"format":1,"background":{"package":"background.core.glassdeck.gradient"}}"#).unwrap();
+        assert_eq!(theme, Theme::starting("background.core.glassdeck.gradient"));
         assert!(serde_json::from_str::<Theme>(r#"{"format":1,"background":{"package":"a.b"},"effects":[]}"#).is_err());
     }
 }

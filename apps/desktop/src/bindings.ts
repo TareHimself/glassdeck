@@ -74,7 +74,7 @@ export const events = {
 };
 
 /* Constants */
-export const BUILT_IN_BACKGROUND = "background.local.glassdeck.gradient" as const;
+export const BUILT_IN_BACKGROUND = "background.core.glassdeck.gradient" as const;
 
 export const GRID = 8 as const;
 
@@ -359,7 +359,7 @@ export type ThemeApplied = {
 };
 
 export type ThemeBackground = {
-	/**  A background's qualified id, such as `background.local.glassdeck.gradient` */
+	/**  A background's qualified id, such as `background.core.glassdeck.gradient` */
 	package: string,
 	/**  Chosen values by option path, as in [`OptionView::value`] */
 	options?: { [key in string]: Value },

@@ -60,10 +60,6 @@ export function SelectedWidget({
       <div className={styles.head}>
         <div className={styles.names}>
           <h2 className={styles.title}>{summary?.title ?? widget.package}</h2>
-          <div className={styles.id}>
-            {widget.package}
-            {summary && ` ${summary.version}`}
-          </div>
         </div>
         {summary && (
           <Link className={styles.edit} to={`/widgets/${widget.package}`}>

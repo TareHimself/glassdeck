@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "background": { "package": "background.local.glassdeck.gradient", "options": {} },
+  "background": { "package": "background.core.glassdeck.gradient", "options": {} },
   "widgets": [
     { "package": "widget.local.user.cpu-meter", "x": 0, "y": 64, "w": 320, "h": 120, "options": {} },
     { "package": "widget.local.user.clock", "x": 792, "y": 16, "w": 320, "h": 160, "options": { "seconds": true } },
