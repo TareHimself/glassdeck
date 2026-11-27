@@ -1,16 +1,19 @@
 //! glassdeckd: the one program that talks to the keyboard. It owns the Link, runs sources (each in a
-//! worker process) and the widgets' PC halves, and takes requests from the CLI over a local API.
+//! worker process) and the widgets' PC halves, sends streams to WebRTC viewers, and takes requests
+//! from the CLI over a local API.
 
 mod active;
 mod api;
 mod config;
 mod error;
+mod feeds;
 mod link;
 mod module_host;
 mod runner;
 mod streams;
 mod system;
 mod theme;
+mod whep;
 mod worker;
 
 use std::net::SocketAddr;
@@ -109,7 +112,8 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let status = Arc::new(StatusBoard::new(move |status| {
         let _ = stream_changed.send(Event::Stream { status: status.clone() });
     }));
-    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status)?;
+    let feeds = feeds::Feeds::new(token.clone());
+    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status, Arc::clone(&feeds))?;
     let linked = Arc::clone(&uplink);
     let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
@@ -127,6 +131,8 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
         theme: Mutex::new((kept, active)),
         module_host,
         events: published,
+        feeds,
+        whep: Arc::default(),
     });
     if let Err(e) = api.restore() {
         eprintln!("error: restoring the theme: {e:#}; the keyboard keeps its own");

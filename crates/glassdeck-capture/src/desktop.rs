@@ -59,20 +59,23 @@ impl FrameSource for DesktopSource {
     }
 
     fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
-        capture_live(self.monitor.monitor, self.encoder, self.settings, self.duration, out)
+        let captured = (self.monitor.info.width, self.monitor.info.height);
+        capture_live(self.monitor.monitor, captured, self.encoder, self.settings, self.duration, out)
     }
 }
 
 /// Captures a monitor or a window with Windows.Graphics.Capture and encodes every frame until stopped.
+/// Frames are `captured` in size; the GPU encoder scales them to the settings' size.
 pub fn capture_live<T: TryInto<GraphicsCaptureItemType> + Send + 'static>(
     target: T,
+    captured: (u32, u32),
     encoder: EncoderKind,
     settings: EncoderSettings,
     duration: Option<Duration>,
     out: SyncSender<EncodedFrame>,
 ) -> Result<()> {
     let interval = capture_interval(settings.fps);
-    let flags = Flags { tx: out, kind: encoder, settings };
+    let flags = Flags { tx: out, kind: encoder, settings, captured };
     let settings = Settings::new(
         target,
         CursorCaptureSettings::WithoutCursor,
@@ -105,6 +108,7 @@ struct Flags {
     tx: SyncSender<EncodedFrame>,
     kind: EncoderKind,
     settings: EncoderSettings,
+    captured: (u32, u32),
 }
 
 enum Backend {
@@ -124,10 +128,10 @@ impl GraphicsCaptureApiHandler for Capture {
     type Error = BoxError;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        let Flags { tx, kind, settings } = ctx.flags;
+        let Flags { tx, kind, settings, captured } = ctx.flags;
         let backend = match kind {
             EncoderKind::Gpu => {
-                let encoder = GpuEncoder::start(&ctx.device, &ctx.device_context, settings, tx)?;
+                let encoder = GpuEncoder::start(&ctx.device, &ctx.device_context, settings, captured, tx)?;
                 println!("Encoder: {}", encoder.name);
                 Backend::Gpu(encoder)
             }
@@ -136,10 +140,7 @@ impl GraphicsCaptureApiHandler for Capture {
                 Backend::Software(Box::new(SoftwareEncoder::new(settings, tx)?))
             }
         };
-        Ok(Self {
-            backend,
-            size: (settings.width, settings.height),
-        })
+        Ok(Self { backend, size: captured })
     }
 
     fn on_frame_arrived(

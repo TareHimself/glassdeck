@@ -11,6 +11,9 @@ export const commands = {
 	streams: (options?: InvokeOptions) => typedError<Streams, GlassdeckdError>(__TAURI_INVOKE("streams", undefined, options)),
 	/**  What a stream's monitor shows now, as a base64 JPEG, for the keyboard preview of a chosen stream. */
 	streamSnapshot: (name: string, options?: InvokeOptions) => typedError<string, GlassdeckdError>(__TAURI_INVOKE("stream_snapshot", { name }, options)),
+	/**  Starts a WebRTC session for the page to watch a stream live; see `Glassdeckd::watch_stream`. */
+	watchStream: (name: string, offer: string, options?: InvokeOptions) => typedError<Watching, GlassdeckdError>(__TAURI_INVOKE("watch_stream", { name, offer }, options)),
+	stopWatching: (stream: string, session: number, options?: InvokeOptions) => typedError<null, GlassdeckdError>(__TAURI_INVOKE("stop_watching", { stream, session }, options)),
 	/**  Packs every package `theme` uses from the library, the built-in background aside, then makes it the active theme. */
 	applyTheme: (theme: Theme, options?: InvokeOptions) => typedError<ThemeApplied, ApplyError>(__TAURI_INVOKE("apply_theme", { theme }, options)),
 	listWidgets: (options?: InvokeOptions) => typedError<WidgetSummary[], LibraryError>(__TAURI_INVOKE("list_widgets", undefined, options)),
@@ -524,6 +527,13 @@ export type VideoUpdate = {
 	id: string,
 	/**  `None` once the conversion is done */
 	state: ConversionState | null,
+};
+
+/**  A WHEP session watching a stream: the SDP answer for the page, and what ends it. */
+export type Watching = {
+	stream: string,
+	session: number,
+	answer: string,
 };
 
 /**  What checking a widget found, each problem as "name:line:column: message", and how many scripts it checked. */

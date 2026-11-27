@@ -103,3 +103,17 @@ test("an attached stream shows in the keyboard preview instead of the background
   await page.getByRole("option", { name: "None" }).click();
   await expect(page.getByRole("img", { name: "monitor-1 now" })).toHaveCount(0);
 });
+
+test("an attached stream plays live over WebRTC and the session ends with it", async ({ page }) => {
+  const streamCard = page.locator("section", { has: page.getByRole("heading", { name: "Stream", exact: true }) });
+  await streamCard.getByRole("combobox", { name: "Stream" }).click();
+  await page.getByRole("option", { name: "monitor-1" }).click();
+  const video = page.getByLabel("monitor-1 live");
+  await expect(video).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.videoWidth)).toBe(480);
+  expect(await page.evaluate(() => window.glassdeckMock?.watching())).toBe(1);
+  await streamCard.getByRole("combobox", { name: "Stream" }).click();
+  await page.getByRole("option", { name: "None" }).click();
+  await expect(video).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.glassdeckMock?.watching())).toBe(0);
+});

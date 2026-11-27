@@ -1,30 +1,21 @@
-//! At most one source at a time, each in its own worker process. Starting another switches to it; a
-//! source cut off by the Link going down starts again when the keyboard is back.
+//! At most one source at a time on the keyboard, each in its own worker process. Starting another
+//! switches to it; a source cut off by the Link going down starts again when the keyboard is back.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::windows::process::CommandExt;
-use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use glassdeck_api::{Ended, StreamState, StreamStatus};
 use glassdeck_capture::sources::SourceRequest;
 use glassdeck_proto::Message;
 
+use crate::feeds::Feeds;
 use crate::link::Uplink;
-use crate::worker::handshake;
-
-/// How long a worker gets to end its stream cleanly before it's killed.
-const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How long a new worker gets to connect back (CEF takes a few seconds to start).
-const CONNECT_GRACE: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(20);
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+use crate::worker::WorkerProcess;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerState {
@@ -150,12 +141,13 @@ impl Runner {
         events: Sender<RunnerEvent>,
         inbox: Receiver<RunnerEvent>,
         status: Arc<StatusBoard>,
+        feeds: Arc<Feeds>,
     ) -> Result<Self> {
         let runner = Self { events: events.clone(), status: Arc::clone(&status) };
         let looped = events.clone();
         thread::Builder::new()
             .name("sources".into())
-            .spawn(move || Loop { uplink, token, status, events: looped, workers: HashMap::new() }.run(inbox))?;
+            .spawn(move || Loop { uplink, token, status, events: looped, feeds, workers: HashMap::new() }.run(inbox))?;
         Ok(runner)
     }
 
@@ -173,7 +165,8 @@ struct Loop {
     token: String,
     status: Arc<StatusBoard>,
     events: Sender<RunnerEvent>,
-    workers: HashMap<u64, Arc<Worker>>,
+    feeds: Arc<Feeds>,
+    workers: HashMap<u64, Arc<WorkerProcess>>,
 }
 
 impl Loop {
@@ -181,8 +174,10 @@ impl Loop {
         let mut state = RunnerState::Idle;
         let mut next_worker = 1;
         for event in inbox {
-            if let RunnerEvent::WorkerEnded { worker, .. } = event {
-                self.workers.remove(&worker);
+            if let RunnerEvent::WorkerEnded { worker, .. } = event
+                && let Some(process) = self.workers.remove(&worker)
+            {
+                self.feeds.keyboard_ended(&process);
             }
             let (next, effects) = step(state, event, next_worker);
             state = next;
@@ -194,7 +189,11 @@ impl Loop {
                             let _ = self.events.send(RunnerEvent::WorkerEnded { worker, outcome: Outcome::Failed(format!("{e:#}")) });
                         }
                     }
-                    RunnerEffect::StopWorker(worker) => self.stop(worker),
+                    RunnerEffect::StopWorker(worker) => {
+                        if let Some(process) = self.workers.get(&worker) {
+                            process.stop();
+                        }
+                    }
                     RunnerEffect::Ended { worker, outcome } => {
                         let said = match outcome {
                             Outcome::Finished => "finished".to_owned(),
@@ -226,123 +225,49 @@ impl Loop {
     }
 
     fn spawn(&mut self, id: u64, request: SourceRequest) -> Result<()> {
-        let listener = TcpListener::bind("127.0.0.1:0").context("listening for the source worker")?;
-        let address = listener.local_addr()?;
-        let mut child = Command::new(std::env::current_exe()?)
-            .args(["source", "--uplink", &address.to_string(), "--token", &self.token])
-            .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .context("starting a source worker")?;
-        let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin.write_all(&serde_json::to_vec(&request)?)?;
-        drop(stdin);
-        let last_error = forward_stderr(id, child.stderr.take().expect("stderr is piped"));
-        println!("Source {id}: {}", request.play);
-        let worker = Arc::new(Worker { child: Mutex::new(child), socket: Mutex::new(None) });
-        self.workers.insert(id, Arc::clone(&worker));
-        let (uplink, status, events, token) = (Arc::clone(&self.uplink), Arc::clone(&self.status), self.events.clone(), self.token.clone());
+        let (process, listener) = WorkerProcess::spawn(format!("Source {id}"), &request, &self.token)?;
+        self.workers.insert(id, Arc::clone(&process));
+        let (uplink, status, events, token, feeds) =
+            (Arc::clone(&self.uplink), Arc::clone(&self.status), self.events.clone(), self.token.clone(), Arc::clone(&self.feeds));
         thread::Builder::new().name(format!("source {id}")).spawn(move || {
-            let outcome = worker.forward(id, listener, &token, &uplink, &status, &last_error);
+            let outcome = forward(id, &process, listener, &token, &request, &uplink, &status, &feeds);
             let _ = events.send(RunnerEvent::WorkerEnded { worker: id, outcome });
         })?;
         Ok(())
     }
+}
 
-    /// Asks the worker to end its stream, and kills it if it doesn't within the grace time.
-    fn stop(&mut self, id: u64) {
-        let Some(worker) = self.workers.get(&id) else { return };
-        match worker.socket.lock().expect("worker poisoned").as_mut() {
-            Some(socket) => {
-                let _ = socket.write_all(&[0]);
-            }
-            None => {
-                let _ = worker.child.lock().expect("worker poisoned").kill();
-                println!("Source {id} stopped before it began streaming");
-                return;
-            }
+#[allow(clippy::too_many_arguments)]
+fn forward(
+    id: u64,
+    process: &Arc<WorkerProcess>,
+    listener: TcpListener,
+    token: &str,
+    request: &SourceRequest,
+    uplink: &Uplink,
+    status: &StatusBoard,
+    feeds: &Arc<Feeds>,
+) -> Outcome {
+    let socket = match process.accept(listener, token) {
+        Ok(socket) => socket,
+        Err(e) => {
+            process.kill();
+            return Outcome::Failed(format!("{e:#}"));
         }
-        let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline {
-            if !matches!(worker.child.lock().expect("worker poisoned").try_wait(), Ok(None)) {
-                println!("Source {id} stopped");
-                return;
-            }
-            thread::sleep(POLL);
-        }
-        eprintln!("Source {id} didn't stop within {} s; killing it", STOP_GRACE.as_secs());
-        let _ = worker.child.lock().expect("worker poisoned").kill();
+    };
+    feeds.keyboard_started(process, request);
+    let link_lost = relay(id, socket, process, uplink, status, feeds);
+    let exit = process.wait();
+    match (link_lost, exit.success()) {
+        (true, _) => Outcome::LinkLost,
+        (false, true) => Outcome::Finished,
+        (false, false) => Outcome::Failed(process.last_error().unwrap_or_else(|| format!("the worker exited with {exit}"))),
     }
 }
 
-struct Worker {
-    child: Mutex<Child>,
-    /// Set once the worker connects back; writing to it asks the worker to stop.
-    socket: Mutex<Option<TcpStream>>,
-}
-
-impl Worker {
-    fn forward(&self, id: u64, listener: TcpListener, token: &str, uplink: &Uplink, status: &StatusBoard, last_error: &Mutex<Option<String>>) -> Outcome {
-        let result = self.accept(listener, token).and_then(|socket| {
-            *self.socket.lock().expect("worker poisoned") = Some(socket.try_clone()?);
-            Ok(relay(id, socket, uplink, status))
-        });
-        let link_lost = match result {
-            Ok(link_lost) => link_lost,
-            Err(e) => {
-                let _ = self.child.lock().expect("worker poisoned").kill();
-                return Outcome::Failed(format!("{e:#}"));
-            }
-        };
-        let exit = loop {
-            if let Ok(Some(exit)) = self.child.lock().expect("worker poisoned").try_wait() {
-                break exit;
-            }
-            thread::sleep(POLL);
-        };
-        match (link_lost, exit.success()) {
-            (true, _) => Outcome::LinkLost,
-            (false, true) => Outcome::Finished,
-            (false, false) => {
-                let why = last_error.lock().expect("worker poisoned").clone();
-                Outcome::Failed(why.unwrap_or_else(|| format!("the worker exited with {exit}")))
-            }
-        }
-    }
-
-    fn accept(&self, listener: TcpListener, token: &str) -> Result<TcpStream> {
-        listener.set_nonblocking(true)?;
-        let deadline = Instant::now() + CONNECT_GRACE;
-        loop {
-            match listener.accept() {
-                Ok((mut socket, _)) => {
-                    socket.set_nonblocking(false)?;
-                    let expected = handshake(token);
-                    let mut got = vec![0u8; expected.len()];
-                    socket.read_exact(&mut got).context("reading the worker's handshake")?;
-                    if got != expected.as_bytes() {
-                        bail!("something other than our worker connected");
-                    }
-                    return Ok(socket);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(e).context("accepting the source worker"),
-            }
-            if !matches!(self.child.lock().expect("worker poisoned").try_wait(), Ok(None)) {
-                bail!("the worker exited before streaming");
-            }
-            if Instant::now() > deadline {
-                bail!("the worker didn't connect within {} s", CONNECT_GRACE.as_secs());
-            }
-            thread::sleep(POLL);
-        }
-    }
-}
-
-/// Hands the worker's messages to the Link until the worker ends. Returns whether the Link dropped
-/// mid-stream; then the rest is read and discarded while the worker winds down.
-fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &StatusBoard) -> bool {
+/// Hands the worker's messages to the Link and its viewers until the worker ends. Returns whether the
+/// Link dropped mid-stream; then the worker is asked to stop and the rest only goes to viewers.
+fn relay(id: u64, mut socket: TcpStream, process: &Arc<WorkerProcess>, uplink: &Uplink, status: &StatusBoard, feeds: &Feeds) -> bool {
     let mut link_lost = false;
     loop {
         let message = match Message::read_from(&mut socket) {
@@ -353,13 +278,14 @@ fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &StatusBoard) 
                 return link_lost;
             }
         };
+        feeds.publish(process, &message);
         if link_lost {
             continue;
         }
         let starts = matches!(message, Message::StreamStart(_));
         if uplink.push_stream(message).is_err() {
             link_lost = true;
-            let _ = socket.write_all(&[0]);
+            process.ask_stop();
             continue;
         }
         if starts {
@@ -370,21 +296,6 @@ fn relay(id: u64, mut socket: TcpStream, uplink: &Uplink, status: &StatusBoard) 
             });
         }
     }
-}
-
-/// The worker's output goes to glassdeckd's log, and its last error line explains a failure.
-fn forward_stderr(id: u64, stderr: impl Read + Send + 'static) -> Arc<Mutex<Option<String>>> {
-    let last_error = Arc::new(Mutex::new(None));
-    let kept = Arc::clone(&last_error);
-    thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            eprintln!("[source {id}] {line}");
-            if let Some(error) = line.strip_prefix("error: ") {
-                *kept.lock().expect("worker poisoned") = Some(error.to_owned());
-            }
-        }
-    });
-    last_error
 }
 
 #[cfg(test)]

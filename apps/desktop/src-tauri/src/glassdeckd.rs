@@ -45,6 +45,14 @@ fn endpoint() -> Result<Endpoint, GlassdeckdError> {
     Ok(Endpoint { base: format!("http://127.0.0.1:{}", file.port), token: file.token })
 }
 
+/// A WHEP session watching a stream: the SDP answer for the page, and what ends it.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct Watching {
+    pub stream: String,
+    pub session: u32,
+    pub answer: String,
+}
+
 pub struct Glassdeckd {
     http: reqwest::Client,
 }
@@ -77,6 +85,40 @@ impl Glassdeckd {
 
     pub async fn streams(&self) -> Result<Streams, GlassdeckdError> {
         self.fetch("/streams").await
+    }
+
+    /// Hands glassdeckd a WebRTC offer to watch `name`'s stream (WHEP); the answer goes back to the page.
+    pub async fn watch_stream(&self, name: &str, offer: String) -> Result<Watching, GlassdeckdError> {
+        let at = endpoint()?;
+        let reply = self
+            .http
+            .post(format!("{}/streams/{name}/whep", at.base))
+            .bearer_auth(at.token)
+            .header(reqwest::header::CONTENT_TYPE, "application/sdp")
+            .body(offer)
+            .send()
+            .await
+            .map_err(unreachable)?;
+        if !reply.status().is_success() {
+            return Err(refusal(reply).await);
+        }
+        let bad = |reason: String| GlassdeckdError::BadAnswer { reason };
+        let location = reply.headers().get(reqwest::header::LOCATION).and_then(|l| l.to_str().ok()).ok_or_else(|| bad("a WHEP answer without a Location".into()))?;
+        let session = location
+            .rsplit_once("/whep/")
+            .and_then(|(_, id)| id.parse().ok())
+            .ok_or_else(|| bad(format!("a WHEP Location that isn't a session: {location}")))?;
+        let answer = reply.text().await.map_err(|e| bad(e.to_string()))?;
+        Ok(Watching { stream: name.to_owned(), session, answer })
+    }
+
+    pub async fn stop_watching(&self, stream: &str, session: u32) -> Result<(), GlassdeckdError> {
+        let at = endpoint()?;
+        let reply = self.http.delete(format!("{}/streams/{stream}/whep/{session}", at.base)).bearer_auth(at.token).send().await.map_err(unreachable)?;
+        if !reply.status().is_success() {
+            return Err(refusal(reply).await);
+        }
+        Ok(())
     }
 
     /// What the stream's monitor shows now, as JPEG bytes.

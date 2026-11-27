@@ -11,6 +11,11 @@ use glassdeck_capture::sources::{Play, SourceRequest};
 
 const MONITOR_PREFIX: &str = "monitor-";
 const MAX_NAME_BYTES: usize = 64;
+/// HEVC: fewer bits for the same picture, and the RK3566 decodes it faster
+const STREAM_CODEC: VideoCodec = VideoCodec::Hevc;
+const PREVIEW_WIDTH: u32 = 960;
+const PREVIEW_FPS: u32 = 30;
+const PREVIEW_MBPS: u32 = 3;
 
 /// A stream's name: `a-z 0-9 . -`, up to 64 bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,11 +51,31 @@ impl MonitorStream {
         let play = Play::Monitor {
             monitor: self.monitor.index.to_string(),
             encoder: EncoderKind::Gpu,
-            codec: VideoCodec::Hevc,
+            codec: STREAM_CODEC,
             mbps: 15,
             fps: 60,
             keyframe_every: 120,
             vbv_frames: None,
+            max_width: None,
+        };
+        SourceRequest { play, seconds: None }
+    }
+
+    pub fn codec(&self) -> glassdeck_proto::Codec {
+        STREAM_CODEC.into()
+    }
+
+    /// A small H.264 encoding of the monitor, for a viewer that can't decode the stream's own codec.
+    pub fn preview_request(&self) -> SourceRequest {
+        let play = Play::Monitor {
+            monitor: self.monitor.index.to_string(),
+            encoder: EncoderKind::Gpu,
+            codec: VideoCodec::H264,
+            mbps: PREVIEW_MBPS,
+            fps: PREVIEW_FPS,
+            keyframe_every: PREVIEW_FPS * 2,
+            vbv_frames: None,
+            max_width: Some(PREVIEW_WIDTH),
         };
         SourceRequest { play, seconds: None }
     }

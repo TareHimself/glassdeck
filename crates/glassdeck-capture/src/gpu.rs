@@ -21,7 +21,7 @@ use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMeanBitRate,
     CODECAPI_AVEncCommonRateControlMode,
-    CODECAPI_AVEncMPVGOPSize, CODECAPI_AVLowLatencyMode,
+    CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMF2DBuffer, IMFActivate, IMFAttributes, IMFDXGIDeviceManager,
     IMFMediaEventGenerator, IMFMediaType, IMFTransform, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
     METransformDrainComplete, METransformHaveOutput, METransformNeedInput, MFT_MESSAGE_COMMAND_DRAIN, MF_E_TRANSFORM_NEED_MORE_INPUT,
@@ -42,7 +42,7 @@ use windows::Win32::Foundation::{VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::System::Variant::{VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4};
 use windows::core::{GUID, Interface, PWSTR};
 
-use crate::pipeline::{EncodedFrame, EncoderSettings};
+use crate::pipeline::{EncodedFrame, EncoderSettings, take_keyframe_request};
 
 const QUEUED_FRAMES: usize = 2;
 const HUNDRED_NS_PER_US: u64 = 10;
@@ -84,12 +84,13 @@ impl GpuEncoder {
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         config: EncoderSettings,
+        input_size: (u32, u32),
         output: SyncSender<EncodedFrame>,
     ) -> Result<Self> {
         unsafe {
             let _ = context.cast::<ID3D11Multithread>()?.SetMultithreadProtected(true);
         }
-        let converter = Nv12Converter::new(device, context, config)?;
+        let converter = Nv12Converter::new(device, context, config, input_size)?;
         let (input, input_rx) = mpsc::sync_channel(QUEUED_FRAMES);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let shared = SendDevice(device.clone());
@@ -143,15 +144,16 @@ struct Nv12Converter {
 }
 
 impl Nv12Converter {
-    fn new(device: &ID3D11Device, context: &ID3D11DeviceContext, config: EncoderSettings) -> Result<Self> {
+    /// Converts `input_size` BGRA to NV12 at the encoder's size, scaling on the way when they differ.
+    fn new(device: &ID3D11Device, context: &ID3D11DeviceContext, config: EncoderSettings, (input_width, input_height): (u32, u32)) -> Result<Self> {
         let video_device: ID3D11VideoDevice = device.cast().context("GPU device has no video support")?;
         let video_context: ID3D11VideoContext = context.cast()?;
         let rate = DXGI_RATIONAL { Numerator: config.fps, Denominator: 1 };
         let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
             InputFrameRate: rate,
-            InputWidth: config.width,
-            InputHeight: config.height,
+            InputWidth: input_width,
+            InputHeight: input_height,
             OutputFrameRate: rate,
             OutputWidth: config.width,
             OutputHeight: config.height,
@@ -254,6 +256,7 @@ fn encoder_thread(
 
 struct HardwareEncoder {
     transform: IMFTransform,
+    codec: ICodecAPI,
     events: IMFMediaEventGenerator,
     _manager: IMFDXGIDeviceManager,
     name: String,
@@ -281,7 +284,8 @@ impl HardwareEncoder {
             manager.ResetDevice(device, token)?;
             transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
 
-            configure_codec(&transform.cast()?, config)?;
+            let codec: ICodecAPI = transform.cast()?;
+            configure_codec(&codec, config)?;
             transform.SetOutputType(0, &output_type(config)?, 0).context("setting H.264 output type")?;
             transform.SetInputType(0, &input_type(config)?, 0).context("setting NV12 input type")?;
 
@@ -292,6 +296,7 @@ impl HardwareEncoder {
             Ok(Self {
                 events: transform.cast()?,
                 transform,
+                codec,
                 _manager: manager,
                 name,
                 provides_samples: info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0,
@@ -330,6 +335,9 @@ impl HardwareEncoder {
 
     unsafe fn feed(&mut self, frame: GpuFrame) -> Result<()> {
         unsafe {
+            if take_keyframe_request() {
+                self.codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1)).context("encoder refused a keyframe request")?;
+            }
             let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &frame.texture, 0, false)?;
             let length = buffer.cast::<IMF2DBuffer>()?.GetContiguousLength()?;
             buffer.SetCurrentLength(length)?;
@@ -628,7 +636,7 @@ mod tests {
             keyframe_every: 60,
             vbv_frames: None,
         };
-        let converter = Nv12Converter::new(&device, &context, settings).unwrap();
+        let converter = Nv12Converter::new(&device, &context, settings, (settings.width, settings.height)).unwrap();
         let cases = [
             ([0, 0, 0, 255], (16, 128, 128), "black"),
             ([255, 255, 255, 255], (235, 128, 128), "white"),
@@ -656,7 +664,7 @@ mod tests {
             vbv_frames: None,
         };
         let (out, encoded) = mpsc::sync_channel(64);
-        let mut encoder = GpuEncoder::start(&device, &context, settings, out).unwrap();
+        let mut encoder = GpuEncoder::start(&device, &context, settings, (settings.width, settings.height), out).unwrap();
         let frame = solid_bgra_sized(&device, [40, 80, 120, 255], 1280, 720);
         const FRAMES: u64 = 30;
         for i in 0..FRAMES {
@@ -667,11 +675,31 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a GPU; run with cargo test -- --ignored"]
+    fn scales_down_and_makes_a_keyframe_when_asked() {
+        let (device, context) = device();
+        let settings = EncoderSettings { width: 960, height: 540, codec: Codec::H264, fps: 60, bitrate: 2_000_000, keyframe_every: 600, vbv_frames: None };
+        let (out, encoded) = mpsc::sync_channel(64);
+        let mut encoder = GpuEncoder::start(&device, &context, settings, (2560, 1440), out).unwrap();
+        let frame = solid_bgra_sized(&device, [40, 80, 120, 255], 2560, 1440);
+        for i in 0..30u64 {
+            if i == 15 {
+                crate::pipeline::request_keyframe();
+            }
+            encoder.submit(&frame, 1_000_000 + i * 16_667).unwrap();
+        }
+        drop(encoder);
+        let keyframes: Vec<u32> = encoded.try_iter().filter(|f| f.keyframe).map(|f| f.seq).collect();
+        assert_eq!(keyframes.first(), Some(&0));
+        assert!(keyframes.iter().any(|&seq| (10..20).contains(&seq)), "a keyframe soon after the request: {keyframes:?}");
+    }
+
+    #[test]
     #[ignore = "a benchmark that needs a GPU; run with cargo test --release -- --ignored --nocapture"]
     fn bench_convert() {
         let (device, context) = device();
         let settings = EncoderSettings { width: 1920, height: 1080, codec: Codec::Hevc, fps: 60, bitrate: 15_000_000, keyframe_every: 120, vbv_frames: None };
-        let converter = Nv12Converter::new(&device, &context, settings).unwrap();
+        let converter = Nv12Converter::new(&device, &context, settings, (settings.width, settings.height)).unwrap();
         let frame = solid_bgra_sized(&device, [40, 80, 120, 255], 2560, 1440);
         const FRAMES: u32 = 1000;
         let started = std::time::Instant::now();

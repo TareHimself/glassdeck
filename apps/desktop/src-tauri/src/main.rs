@@ -50,6 +50,19 @@ async fn streams(glassdeckd: State<'_, Glassdeckd>) -> Result<Streams, Glassdeck
     glassdeckd.streams().await
 }
 
+/// Starts a WebRTC session for the page to watch a stream live; see `Glassdeckd::watch_stream`.
+#[tauri::command]
+#[specta::specta]
+async fn watch_stream(glassdeckd: State<'_, Glassdeckd>, name: String, offer: String) -> Result<glassdeckd::Watching, GlassdeckdError> {
+    glassdeckd.watch_stream(&name, offer).await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn stop_watching(glassdeckd: State<'_, Glassdeckd>, stream: String, session: u32) -> Result<(), GlassdeckdError> {
+    glassdeckd.stop_watching(&stream, session).await
+}
+
 /// What a stream's monitor shows now, as a base64 JPEG, for the keyboard preview of a chosen stream.
 #[tauri::command]
 #[specta::specta]
@@ -521,6 +534,8 @@ fn bindings() -> Builder<tauri::Wry> {
             theme,
             streams,
             stream_snapshot,
+            watch_stream,
+            stop_watching,
             apply_theme,
             list_widgets,
             create_widget,

@@ -4,10 +4,10 @@ import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type Backgrou
 import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
-import { BackgroundThumb } from "../components/Thumbs";
+import { BackgroundThumb, StreamLayer } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
 import { seedDraft, setDraft, sameTheme, useDraft } from "../draft";
-import { nextPreviewRun, useStreamSnapshot } from "../previews";
+import { nextPreviewRun } from "../previews";
 import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
 import { describeLibraryError } from "../library";
 import { NewBackgroundDialog } from "./NewBackgroundDialog";
@@ -176,7 +176,6 @@ export function Overview() {
 
   /** The chosen stream, while it's attached: it overrides the background, on the keyboard and here. */
   const liveStream = draft?.stream && streams.some((s) => s.name === draft.stream) ? draft.stream : null;
-  const streamSnapshot = useStreamSnapshot(liveStream);
   const pending = useMemo(() => !!draft && !!active && !sameTheme(draft, active), [draft, active]);
   const known = draft ? library.backgrounds.find((b) => b.id === draft.background.package) : undefined;
   const background = known ?? { ...BUILT_IN, id: draft?.background.package ?? BUILT_IN_BACKGROUND, title: MISSING_BACKGROUND };
@@ -258,8 +257,8 @@ export function Overview() {
       <div className={styles.columns}>
         <section aria-label="Keyboard preview" className={styles.preview}>
           <div className={styles.panel} ref={panel} onPointerDown={() => setSelected(null)}>
-            <BackgroundThumb className={styles.layer} background={background} values={draft.background.options ?? {}} live={!streamSnapshot} />
-            {streamSnapshot && <img className={styles.layer} alt={`${liveStream} now`} src={streamSnapshot} />}
+            <BackgroundThumb className={styles.layer} background={background} values={draft.background.options ?? {}} live={!liveStream} />
+            {liveStream && <StreamLayer key={liveStream} className={styles.layer} name={liveStream} />}
             {area && <div className={styles.area} style={placed(area)} />}
             {area &&
               placedWidgets.map((widget, i) => {

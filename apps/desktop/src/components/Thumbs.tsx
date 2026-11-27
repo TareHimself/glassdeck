@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { BackgroundSummary, Value, WidgetSummary } from "../bindings";
-import { pngUrl, useLivePackageCanvas, useStill, useVideoSource, useWidgetPreview } from "../previews";
+import { pngUrl, useLivePackageCanvas, useStill, useStreamSnapshot, useStreamVideo, useVideoSource, useWidgetPreview } from "../previews";
 import { classes } from "./classes";
 import styles from "./Thumbs.module.css";
 
@@ -99,6 +99,18 @@ export function BackgroundThumb({
       {background.kind === "canvas" ? <CanvasFrame background={background} live={live} values={values} /> : <VideoFrame background={background} live={live} />}
       {children}
     </div>
+  );
+}
+
+/** A stream playing live, over snapshots of it until the first frame decodes or whenever it drops. */
+export function StreamLayer({ name, className }: { name: string; className?: string }) {
+  const { ref, playing } = useStreamVideo(name);
+  const snapshot = useStreamSnapshot(name, !playing);
+  return (
+    <>
+      {snapshot && <img className={className} alt={`${name} now`} src={snapshot} />}
+      <video ref={ref} className={classes(className, styles.live)} data-hidden={!playing || undefined} aria-label={`${name} live`} muted autoPlay playsInline />
+    </>
   );
 }
 

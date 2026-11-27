@@ -65,7 +65,7 @@ impl FrameSource for SceneSource {
         let scene = engine.open(&self.project, &self.window_name, (self.settings.width, self.settings.height))?;
         // The keyboard has no speakers. Wallpaper Engine's own mute skips windowed wallpapers, so mute its process instead.
         let _muted = ProcessMuted::start(scene.window.process_id().context("finding Wallpaper Engine's process")?);
-        capture_live(Window::from_raw_hwnd(scene.window.as_raw_hwnd()), EncoderKind::Gpu, self.settings, self.duration, out)
+        capture_live(Window::from_raw_hwnd(scene.window.as_raw_hwnd()), (self.settings.width, self.settings.height), EncoderKind::Gpu, self.settings, self.duration, out)
     }
 }
 

@@ -23,3 +23,4 @@ axum = { version = "0.8.9", features = ["macros"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "macros"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 glassdeck-api.workspace = true
+str0m = { version = "0.26", default-features = false, features = ["wincrypto"] }

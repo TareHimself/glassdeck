@@ -106,7 +106,7 @@ impl FrameSource for WebSource {
 
     fn run(self: Box<Self>, out: SyncSender<EncodedFrame>) -> Result<()> {
         let (device, context) = create_device()?;
-        let encoder = GpuEncoder::start(&device, &context, self.settings, out)?;
+        let encoder = GpuEncoder::start(&device, &context, self.settings, (self.settings.width, self.settings.height), out)?;
         println!("Encoder: {}", encoder.name);
         let (width, height) = (self.settings.width, self.settings.height);
         let sink = Box::new(Mutex::new(FrameSink::new(&device, context, encoder, (width, height))?));

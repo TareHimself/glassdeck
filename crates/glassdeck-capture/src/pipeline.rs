@@ -19,10 +19,21 @@ const QUEUED_FRAMES: usize = 4;
 const SEND_AHEAD: Duration = Duration::from_micros(PACED_SEND_AHEAD_US);
 
 static STOP: AtomicBool = AtomicBool::new(false);
+static KEYFRAME: AtomicBool = AtomicBool::new(false);
 
 /// Asks the running source to end its stream cleanly, so the receiver gets StreamEnd.
 pub fn request_stop() {
     STOP.store(true, Ordering::Relaxed);
+}
+
+/// Asks the running encoder for a keyframe on its next frame, for a viewer that just joined.
+pub fn request_keyframe() {
+    KEYFRAME.store(true, Ordering::Relaxed);
+}
+
+/// Encoders that can make a keyframe on demand take the request here; it's answered once.
+pub fn take_keyframe_request() -> bool {
+    KEYFRAME.swap(false, Ordering::Relaxed)
 }
 
 /// Sources poll this and stop as if their duration had run out.

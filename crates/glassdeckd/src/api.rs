@@ -61,6 +61,8 @@ pub struct Api {
     pub theme: Mutex<(Theme, ActiveTheme)>,
     pub module_host: Sender<HostCommand>,
     pub events: broadcast::Sender<Event>,
+    pub feeds: Arc<crate::feeds::Feeds>,
+    pub whep: Arc<crate::whep::Sessions>,
 }
 
 /// Held for the length of a large upload.
@@ -252,11 +254,10 @@ impl Api {
     /// What the stream's monitor shows now, as a JPEG at most `SNAPSHOT_WIDTH` wide: the app's preview of a
     /// stream before it's applied, when nothing is encoding it yet.
     fn stream_snapshot(&self, name: &str) -> Result<Vec<u8>> {
-        let name = StreamName::parse(name).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
-        let stream = self.find_stream(&name)?.ok_or_else(|| crate::error::not_found(format!("no stream {name} is attached")))?;
+        let stream = self.attached_stream(name)?;
         let found = monitors::find(&monitors::MonitorQuery::Index(stream.monitor.index))?;
         let (bgra, (width, height)) = glassdeck_capture::capture_still(found.monitor)?;
-        let rgb: Vec<u8> = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        let rgb: Vec<u8> = bgra.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0]]).collect();
         let mut image = image::RgbImage::from_raw(width, height, rgb).context("the frame isn't its size")?;
         if width > SNAPSHOT_WIDTH {
             image = image::imageops::thumbnail(&image, SNAPSHOT_WIDTH, height * SNAPSHOT_WIDTH / width);
@@ -264,6 +265,11 @@ impl Api {
         let mut jpeg = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SNAPSHOT_QUALITY).encode_image(&image).context("encoding the snapshot")?;
         Ok(jpeg)
+    }
+
+    fn attached_stream(&self, name: &str) -> Result<MonitorStream> {
+        let name = StreamName::parse(name).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
+        self.find_stream(&name)?.ok_or_else(|| crate::error::not_found(format!("no stream {name} is attached")))
     }
 
     fn find_stream(&self, name: &StreamName) -> Result<Option<MonitorStream>> {
@@ -320,6 +326,8 @@ fn router(api: Arc<Api>) -> Router {
         .route("/status", get(status))
         .route("/streams", get(list_streams))
         .route("/streams/{name}/snapshot", get(stream_snapshot))
+        .route("/streams/{name}/whep", axum::routing::post(whep_offer))
+        .route("/streams/{name}/whep/{session}", axum::routing::delete(whep_end))
         .route("/theme", get(get_theme).put(put_theme))
         .route("/events", get(events))
         .fallback(|| async { answer(ErrorCode::NotFound, "no such route".to_owned()) })
@@ -350,6 +358,38 @@ async fn status(State(api): State<Arc<Api>>) -> Reply<Status> {
 
 async fn list_streams(State(api): State<Arc<Api>>) -> Reply<Streams> {
     blocking(api, Api::streams).await
+}
+
+/// WHEP: the page's SDP offer in, the answer out, and the session's URL to DELETE when it's done.
+async fn whep_offer(State(api): State<Arc<Api>>, axum::extract::Path(name): axum::extract::Path<String>, offer: String) -> Result<Response, Failure> {
+    let offer = crate::whep::Offer::parse(&offer).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
+    let looked_up = Arc::clone(&api);
+    let named = name.clone();
+    let stream = match tokio::task::spawn_blocking(move || looked_up.attached_stream(&named)).await {
+        Ok(result) => result?,
+        Err(e) => return Err(anyhow!("the request's handler panicked: {e}").into()),
+    };
+    let feed = crate::whep::Feed::for_offer(&offer, stream.codec()).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
+    let request = match feed {
+        crate::whep::Feed::Stream(_) => stream.request(),
+        crate::whep::Feed::Preview => stream.preview_request(),
+    };
+    let feeds = Arc::clone(&api.feeds);
+    let (session, answer) = api.whep.start(offer, feed, move || feeds.watch(request)).await?;
+    let location = format!("/streams/{name}/whep/{session}");
+    Ok((
+        axum::http::StatusCode::CREATED,
+        [(axum::http::header::CONTENT_TYPE, "application/sdp".to_owned()), (axum::http::header::LOCATION, location)],
+        answer,
+    )
+        .into_response())
+}
+
+async fn whep_end(State(api): State<Arc<Api>>, axum::extract::Path((_name, session)): axum::extract::Path<(String, u64)>) -> Result<Response, Failure> {
+    if !api.whep.end(session) {
+        return Err(crate::error::not_found(format!("no WHEP session {session}")).into());
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 async fn stream_snapshot(State(api): State<Arc<Api>>, axum::extract::Path(name): axum::extract::Path<String>) -> Result<Response, Failure> {

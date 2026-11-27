@@ -131,6 +131,43 @@ function optionsPanel(source: string, values: Args): OptionsPanel {
   };
 }
 
+/** glassdeckd's WHEP sessions, played by a peer in this page sending a drawn monitor. */
+const watching = {
+  next: 0,
+  peers: new Map<number, { peer: RTCPeerConnection; timer: number }>(),
+  async answer(session: number, offer: string): Promise<string> {
+    const canvas = document.createElement("canvas");
+    [canvas.width, canvas.height] = [480, 270];
+    const g = canvas.getContext("2d");
+    if (!g) throw new Error("no 2D context");
+    const timer = window.setInterval(() => {
+      g.fillStyle = "#14203a";
+      g.fillRect(0, 0, 480, 270);
+      g.fillStyle = "#f4f5f8";
+      g.fillRect((performance.now() / 10) % 480, 75, 120, 120);
+    }, 33);
+    const peer = new RTCPeerConnection();
+    const [track] = canvas.captureStream(30).getVideoTracks();
+    if (!track) throw new Error("the canvas gave no video track");
+    peer.addTrack(track);
+    this.peers.set(session, { peer, timer });
+    await peer.setRemoteDescription({ type: "offer", sdp: offer });
+    await peer.setLocalDescription(await peer.createAnswer());
+    await new Promise<void>((done) => {
+      if (peer.iceGatheringState === "complete") return done();
+      peer.addEventListener("icegatheringstatechange", () => peer.iceGatheringState === "complete" && done());
+    });
+    return peer.localDescription?.sdp ?? "";
+  },
+  end(session: number) {
+    const ended = this.peers.get(session);
+    if (!ended) throw { kind: "refused", error: { code: "not_found", error: `no WHEP session ${session}` } };
+    window.clearInterval(ended.timer);
+    ended.peer.close();
+    this.peers.delete(session);
+  },
+};
+
 const handlers: Record<string, (args: Args) => unknown> = {
   status: () => state.status,
   theme: () => state.theme,
@@ -138,6 +175,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
   stream_snapshot: ({ name }) => {
     if (!STREAMS.some((s) => s.name === name)) throw { kind: "refused", error: { code: "not_found", error: `no stream ${String(name)} is attached` } };
     return monitorFrame();
+  },
+  watch_stream: async ({ name, offer }) => {
+    if (!STREAMS.some((s) => s.name === name)) throw { kind: "refused", error: { code: "not_found", error: `no stream ${String(name)} is attached` } };
+    const session = ++watching.next;
+    const answer = await watching.answer(session, offer as string);
+    return { stream: name, session, answer };
+  },
+  stop_watching: ({ session }) => {
+    watching.end(session as number);
+    return null;
   },
   apply_theme: ({ theme }) => {
     if (state.status.link.connection.state !== "connected") {
@@ -281,7 +328,7 @@ function setKeyboard(connection: KeyboardLink) {
 
 declare global {
   interface Window {
-    glassdeckMock?: { setKeyboard: typeof setKeyboard; staleFrame: string };
+    glassdeckMock?: { setKeyboard: typeof setKeyboard; staleFrame: string; watching: () => number };
   }
 }
 
@@ -295,5 +342,5 @@ export function installMockBackend() {
     },
     { shouldMockEvents: true },
   );
-  window.glassdeckMock = { setKeyboard, staleFrame: STALE_FRAME };
+  window.glassdeckMock = { setKeyboard, staleFrame: STALE_FRAME, watching: () => watching.peers.size };
 }

@@ -2,7 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { CanvasRenderer } from "./canvasRenderer";
-import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Still, type Value } from "./bindings";
+import { BUILT_IN_BACKGROUND, commands, events, type CanvasChange, type Dims, type PreviewRun, type SourceFile, type Still, type Value, type Watching } from "./bindings";
 
 type Values = { [key: string]: Value };
 
@@ -226,11 +226,11 @@ const SNAPSHOT_EVERY_MS = 1000;
  * preview of a stream, which overrides the background whenever it's attached. Each snapshot is asked
  * for only after the last one arrived, so a slow capture never piles requests up.
  */
-export function useStreamSnapshot(name: string | null): string | null {
+export function useStreamSnapshot(name: string | null, refresh = true): string | null {
   const [snapshot, setSnapshot] = useState<string | null>(null);
+  useEffect(() => setSnapshot(null), [name]);
   useEffect(() => {
-    setSnapshot(null);
-    if (!name) return;
+    if (!name || !refresh) return;
     let alive = true;
     let timer = 0;
     const take = async () => {
@@ -245,6 +245,55 @@ export function useStreamSnapshot(name: string | null): string | null {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [name]);
+  }, [name, refresh]);
   return snapshot;
+}
+
+/**
+ * A stream playing live in a `<video>`, watched over WebRTC from glassdeckd (WHEP). `playing` turns
+ * true on its first decoded frame and false again if the connection drops.
+ */
+export function useStreamVideo(name: string | null) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    setPlaying(false);
+    const video = ref.current;
+    if (!name || !video) return;
+    const connection = new RTCPeerConnection();
+    let watching: Watching | null = null;
+    let ended = false;
+    connection.addTransceiver("video", { direction: "recvonly" });
+    connection.ontrack = (e) => (video.srcObject = new MediaStream([e.track]));
+    connection.oniceconnectionstatechange = () => {
+      if (["disconnected", "failed", "closed"].includes(connection.iceConnectionState)) setPlaying(false);
+    };
+    const onPlaying = () => setPlaying(true);
+    video.addEventListener("playing", onPlaying);
+    const start = async () => {
+      await connection.setLocalDescription(await connection.createOffer());
+      const offer = connection.localDescription?.sdp;
+      if (!offer) throw new Error("no offer");
+      const result = await commands.watchStream(name, offer);
+      if (result.status !== "ok") throw new Error(JSON.stringify(result.error));
+      watching = result.data;
+      if (ended) return stopWatching(watching);
+      await connection.setRemoteDescription({ type: "answer", sdp: watching.answer });
+    };
+    start().catch((e: unknown) => console.error(`watching ${name}:`, e));
+    return () => {
+      ended = true;
+      video.removeEventListener("playing", onPlaying);
+      connection.close();
+      video.srcObject = null;
+      if (watching) stopWatching(watching);
+    };
+  }, [name]);
+  return { ref, playing };
+}
+
+function stopWatching({ stream, session }: Watching) {
+  void commands.stopWatching(stream, session).then((result) => {
+    if (result.status !== "ok") console.error(`ending the ${stream} session:`, result.error);
+  });
 }
