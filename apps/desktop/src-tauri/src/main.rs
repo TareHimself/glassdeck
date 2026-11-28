@@ -92,17 +92,67 @@ fn install_glassdeck() -> Result<(), keyboard::KeyboardError> {
     })
 }
 
+/// Checks the backup a restore would use in full; restoring itself isn't built yet.
 #[tauri::command]
 #[specta::specta]
-fn restore_flux_software(backup: String) -> Result<(), keyboard::KeyboardError> {
-    Err(keyboard::KeyboardError::Unavailable { reason: format!("Restoring from {backup} isn't ready yet") })
+async fn restore_flux_software(backup: String) -> Result<(), keyboard::KeyboardError> {
+    let contents = tauri::async_runtime::spawn_blocking(move || keyboard::check_for_restore(Path::new(&backup)))
+        .await
+        .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("checking the backup: {e}") })??;
+    Err(keyboard::KeyboardError::Unavailable {
+        reason: format!("The backup of {} checked out, but restoring isn't ready yet", contents.serial),
+    })
 }
 
+/// Asks for a backup made elsewhere: a zip, or with `folder`, a folder `glassdeck keyboard setup`
+/// made. `None` when the dialog is cancelled.
 #[tauri::command]
 #[specta::specta]
-fn open_folder(path: String) -> Result<(), keyboard::KeyboardError> {
+async fn pick_backup(app: AppHandle, folder: bool) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = app.dialog().file();
+        let picked = if folder { dialog.blocking_pick_folder() } else { dialog.add_filter("Backup", &["zip"]).blocking_pick_file() };
+        picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Checks a backup made elsewhere and adds it to `folder`. `serial` is the plugged-in keyboard's,
+/// if one is: a backup of another keyboard is refused then.
+#[tauri::command]
+#[specta::specta]
+async fn import_backup(folder: String, picked: String, serial: Option<String>) -> Result<keyboard::BackupSummary, keyboard::KeyboardError> {
+    tauri::async_runtime::spawn_blocking(move || keyboard::import(Path::new(&folder), Path::new(&picked), serial.as_deref()))
+        .await
+        .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("importing the backup: {e}") })?
+}
+
+/// Saves a copy of a backup where the user picks. `None` when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+async fn export_backup(app: AppHandle, file: String) -> Result<Option<String>, keyboard::KeyboardError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = PathBuf::from(&file);
+        let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(target) = app.dialog().file().set_file_name(&name).add_filter("Backup", &["zip"]).blocking_save_file() else {
+            return Ok(None);
+        };
+        let target = target.into_path().map_err(|e| keyboard::KeyboardError::Failed { reason: format!("where to save: {e}") })?;
+        std::fs::copy(&source, &target).map_err(|e| keyboard::KeyboardError::Failed { reason: format!("copying the backup: {e}") })?;
+        Ok(Some(target.display().to_string()))
+    })
+    .await
+    .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("exporting the backup: {e}") })?
+}
+
+/// Shows the backup's zip selected in Explorer.
+#[tauri::command]
+#[specta::specta]
+fn reveal_backup(file: String) -> Result<(), keyboard::KeyboardError> {
     std::process::Command::new("explorer")
-        .arg(&path)
+        .arg(format!("/select,{file}"))
         .spawn()
         .map(|_| ())
         .map_err(|e| keyboard::KeyboardError::Failed { reason: format!("opening Explorer: {e}") })
@@ -736,7 +786,10 @@ fn bindings() -> Builder<tauri::Wry> {
             back_up_keyboard,
             install_glassdeck,
             restore_flux_software,
-            open_folder,
+            pick_backup,
+            import_backup,
+            export_backup,
+            reveal_backup,
         ])
         .events(collect_events![GlassdeckdUpdate, PreviewUpdate, CanvasUpdate, VideoUpdate, LayoutUpdate, lsp::LspMessage, lsp::LspExited, stills::StillUpdate, keyboard::SetupUpdate])
         .constant("WIDGET_AREA", library::widget_area())
@@ -823,7 +876,7 @@ mod tests {
         let bindings = std::fs::read_to_string(BINDINGS).expect("reading the bindings");
         let manifest = include_str!("../build.rs");
         let capability = include_str!("../capabilities/default.json");
-        let called: Vec<&str> = bindings.split("__TAURI_INVOKE").filter(|call| call.starts_with('<')).filter_map(|call| call.split('"').nth(1)).collect();
+        let called: Vec<&str> = bindings.split("__TAURI_INVOKE").filter(|call| call.starts_with('<') || call.starts_with("(\"")).filter_map(|call| call.split('"').nth(1)).collect();
         assert!(!called.is_empty(), "no commands found in the bindings");
         for command in called {
             assert!(manifest.contains(&format!("\"{command}\"")), "{command} is missing from build.rs's command manifest");

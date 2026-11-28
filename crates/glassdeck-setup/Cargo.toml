@@ -10,7 +10,10 @@ flate2 = "1"
 glassdeck-scanner-dsp.workspace = true
 glassdeck-scanner-proto.workspace = true
 nusb = "0.2.9"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 sha2 = "0.11.2"
+zip = { version = "9.9.0", default-features = false, features = ["deflate-flate2"] }
 
 [build-dependencies]
 cc = "1.2"

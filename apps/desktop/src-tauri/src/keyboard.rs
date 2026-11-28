@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use glassdeck_api::KeyboardLink;
 use glassdeck_setup::bridge::{self, Bridge, Package};
 use glassdeck_setup::setup::{self, Ended, Event, Packages, Step};
+use glassdeck_setup::archive::{self, Contents};
 use glassdeck_setup::{Note, scanner};
 use serde::Serialize;
 use specta::Type;
@@ -110,8 +111,8 @@ pub enum SetupUpdate {
     NeedsYou { step: SetupStep, todo: Vec<String> },
     Finished { step: SetupStep },
     Failed { step: SetupStep, reason: String },
-    /// Every step is done.
-    BackedUp { folder: String },
+    /// Every step is done and the backup is saved, checked, as this zip.
+    BackedUp { file: String },
     /// The run is over, however it ended.
     Ended,
 }
@@ -149,10 +150,31 @@ impl Running {
     }
 }
 
-/// Where backups go unless the user picks another folder.
+/// Where backups go unless the user picks another folder: the app's own data.
 pub fn default_backups() -> Result<PathBuf, KeyboardError> {
-    let home = std::env::var_os("USERPROFILE").ok_or(KeyboardError::Failed { reason: "USERPROFILE isn't set".into() })?;
-    Ok(PathBuf::from(home).join("Documents").join("Glassdeck").join("Keyboard backups"))
+    let data = std::env::var_os("APPDATA").ok_or(KeyboardError::Failed { reason: "APPDATA isn't set".into() })?;
+    Ok(PathBuf::from(data).join("Glassdeck").join("Keyboard backups"))
+}
+
+/// Setup works in here, so an interrupted backup carries on; only finished, checked backups
+/// leave it, as zips.
+const STAGING: &str = ".staging";
+
+fn failed(what: &str) -> impl FnOnce(anyhow::Error) -> KeyboardError + '_ {
+    move |e| KeyboardError::Failed { reason: format!("{what}: {e:#}") }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Checks a finished setup folder and saves it into `store` as one zip; the folder goes once the
+/// zip is written.
+fn save_backup(folder: &Path, store: &Path, created: u64) -> anyhow::Result<PathBuf> {
+    let contents = archive::verify(folder, created)?;
+    let zip = store.join(archive::file_name(&contents.serial, contents.created));
+    archive::write(folder, &contents, &zip)?;
+    Ok(zip)
 }
 
 /// The keyboard packages setup installs: `GLASSDECK_PACKAGES`, else `packages` next to this
@@ -191,11 +213,20 @@ pub fn start_backup(app: AppHandle, running: Running, folder: PathBuf) -> Result
     std::thread::Builder::new()
         .name("keyboard backup".into())
         .spawn(move || {
-            let ended = fs::create_dir_all(&folder)
+            let staging = folder.join(STAGING);
+            let ended = fs::create_dir_all(&staging)
                 .map_err(anyhow::Error::from)
-                .and_then(|()| setup::run(&folder, &packages, &mut |event| emit(&app, event.into())));
+                .and_then(|()| setup::run(&staging, &packages, &mut |event| emit(&app, event.into())));
             if let Ok(Ended::Done(done)) = ended {
-                emit(&app, SetupUpdate::BackedUp { folder: done.display().to_string() });
+                match save_backup(&done, &folder, now()) {
+                    Ok(zip) => {
+                        if let Err(e) = fs::remove_dir_all(&done) {
+                            eprintln!("removing the staged backup {}: {e}", done.display());
+                        }
+                        emit(&app, SetupUpdate::BackedUp { file: zip.display().to_string() });
+                    }
+                    Err(e) => emit(&app, SetupUpdate::Failed { step: SetupStep::LinuxBackup, reason: format!("saving the backup: {e:#}") }),
+                }
             }
             worker.0.store(false, Ordering::SeqCst);
             emit(&app, SetupUpdate::Ended);
@@ -207,47 +238,97 @@ pub fn start_backup(app: AppHandle, running: Running, folder: PathBuf) -> Result
     Ok(())
 }
 
-/// A finished backup of one keyboard, as saved in the backups folder.
+/// One saved backup: a zip in the backups folder.
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct BackupSummary {
     pub serial: String,
-    pub folder: String,
-    /// Seconds since 1970 when it was finished.
-    pub finished: u64,
-    pub firmware: Option<String>,
+    pub file: String,
+    /// Seconds since 1970 when it was made.
+    pub created: u64,
+    pub firmware: String,
+    /// The display software on the keyboard's computer when it was backed up.
     pub display: Option<String>,
+    pub bytes: u64,
 }
 
-/// Every keyboard folder under `root` whose backup finished: the key scanner's checked copy and
-/// the Linux side's `VERIFIED`.
+fn summary(zip: &Path, contents: Contents) -> BackupSummary {
+    BackupSummary {
+        serial: contents.serial,
+        file: zip.display().to_string(),
+        created: contents.created,
+        firmware: contents.scanner_firmware,
+        display: contents.linux.map(|l| l.display),
+        bytes: fs::metadata(zip).map_or(0, |m| m.len()),
+    }
+}
+
+/// Every backup zip in `root`, newest first. A zip that can't be read is reported, not listed.
 pub fn backups(root: &Path) -> Vec<BackupSummary> {
     let Ok(entries) = fs::read_dir(root) else { return Vec::new() };
-    entries
-        .filter_map(|e| e.ok())
-        .filter_map(|entry| {
-            let folder = entry.path();
-            let verified = fs::metadata(folder.join("linux").join("VERIFIED")).ok()?;
-            let manifest = fs::read_to_string(folder.join("scanner").join("manifest.txt")).ok()?;
-            let versions = fs::read_to_string(folder.join("versions.txt")).unwrap_or_default();
-            let finished = verified.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-            Some(BackupSummary {
-                serial: entry.file_name().to_string_lossy().into_owned(),
-                folder: folder.display().to_string(),
-                finished,
-                firmware: field(&manifest, "firmware"),
-                display: field(&versions, "display"),
-            })
+    let mut found: Vec<BackupSummary> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "zip"))
+        .filter_map(|zip| match archive::read_contents(&zip) {
+            Ok(contents) => Some(summary(&zip, contents)),
+            Err(e) => {
+                eprintln!("error: {} isn't a readable backup: {e:#}", zip.display());
+                None
+            }
         })
-        .collect()
+        .collect();
+    found.sort_by_key(|b| std::cmp::Reverse(b.created));
+    found
 }
 
-/// The value after `name` on a `name value` or `name: value` line.
-fn field(text: &str, name: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let rest = line.strip_prefix(name)?;
-        let value = rest.strip_prefix(':').unwrap_or(rest);
-        (value.starts_with(' ')).then(|| value.trim().to_owned())
-    })
+/// Whether a backup may join this keyboard's: any backup when no keyboard is plugged in,
+/// otherwise only one from this keyboard.
+pub fn belongs(backup_serial: &str, keyboard_serial: Option<&str>) -> Result<(), KeyboardError> {
+    match keyboard_serial {
+        Some(keyboard) if keyboard != backup_serial => Err(KeyboardError::Failed {
+            reason: format!("This backup is of keyboard {backup_serial}, not the one plugged in ({keyboard})"),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Copies a backup made elsewhere into `store`: a zip, or a folder `glassdeck keyboard setup`
+/// made. Either is checked in full first.
+pub fn import(store: &Path, picked: &Path, keyboard_serial: Option<&str>) -> Result<BackupSummary, KeyboardError> {
+    fs::create_dir_all(store).map_err(|e| failed("creating the backups folder")(e.into()))?;
+    if picked.extension().is_some_and(|x| x == "zip") {
+        let contents = check_unpacked(store, picked, "import")?;
+        belongs(&contents.serial, keyboard_serial)?;
+        let zip = store.join(archive::file_name(&contents.serial, contents.created));
+        fs::copy(picked, &zip).map_err(|e| failed("copying the backup")(e.into()))?;
+        return Ok(summary(&zip, contents));
+    }
+    let folder = archive::setup_folder(picked).map_err(failed("finding the backup"))?;
+    let finished = fs::metadata(folder.join("linux").join("VERIFIED"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or_else(now, |d| d.as_secs());
+    let contents = archive::verify(&folder, finished).map_err(failed("checking the backup"))?;
+    belongs(&contents.serial, keyboard_serial)?;
+    let zip = store.join(archive::file_name(&contents.serial, contents.created));
+    archive::write(&folder, &contents, &zip).map_err(failed("saving the backup"))?;
+    Ok(summary(&zip, contents))
+}
+
+/// Unpacks `zip` into a scratch folder under `store`, checks it in full and removes it again.
+fn check_unpacked(store: &Path, zip: &Path, why: &str) -> Result<Contents, KeyboardError> {
+    let scratch = store.join(STAGING).join(format!("{why}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(store.join(STAGING)).map_err(|e| failed("creating the scratch folder")(e.into()))?;
+    let checked = archive::unpack(zip, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+    checked.map_err(failed("checking the backup"))
+}
+
+/// Unpacks and checks the backup a restore would use.
+pub fn check_for_restore(zip: &Path) -> Result<Contents, KeyboardError> {
+    let store = zip.parent().ok_or(KeyboardError::Failed { reason: "the backup has no folder".into() })?;
+    check_unpacked(store, zip, "restore")
 }
 
 #[cfg(test)]
@@ -268,31 +349,36 @@ mod tests {
     }
 
     #[test]
-    fn reads_fields_from_the_saved_files() {
-        assert_eq!(field("firmware 1.4.9.D\nusb_serial E46\n", "firmware").as_deref(), Some("1.4.9.D"));
-        assert_eq!(field("bridge: 1.4.8\ndisplay: 1.4.19\n", "display").as_deref(), Some("1.4.19"));
-        assert_eq!(field("displayed: x\n", "display"), None);
+    fn a_backup_joins_only_its_own_keyboard() {
+        assert!(belongs("E464", Some("E464")).is_ok());
+        assert!(belongs("E464", None).is_ok());
+        assert!(belongs("E464", Some("F123")).is_err());
     }
 
     #[test]
-    fn lists_only_finished_backups() {
+    fn lists_readable_backup_zips_newest_first() {
         let root = std::env::temp_dir().join(format!("glassdeck-backups-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        for (serial, linux_verified) in [("DONE1", true), ("HALF2", false)] {
-            let folder = root.join(serial);
-            fs::create_dir_all(folder.join("scanner")).unwrap();
-            fs::create_dir_all(folder.join("linux")).unwrap();
-            fs::write(folder.join("scanner").join("manifest.txt"), "firmware 1.4.9.D\n").unwrap();
-            fs::write(folder.join("versions.txt"), "display: 1.4.19\n").unwrap();
-            if linux_verified {
-                fs::write(folder.join("linux").join("VERIFIED"), "ok\n").unwrap();
-            }
+        let folder = root.join("src");
+        fs::create_dir_all(folder.join("scanner")).unwrap();
+        fs::write(folder.join("scanner").join("flash.bin"), [0u8; 16]).unwrap();
+        for (serial, created) in [("OLD", 100), ("NEW", 200)] {
+            let contents = Contents {
+                format: archive::FORMAT,
+                serial: serial.into(),
+                created,
+                scanner_firmware: "1.4.9.D".into(),
+                calibration_version: 2,
+                linux: archive::parse_versions("bridge: 1.4.8\ndisplay: 1.4.19\nos: 0.0.9\n"),
+                holds: vec!["scanner".into()],
+            };
+            archive::write(&folder, &contents, &root.join(archive::file_name(serial, created))).unwrap();
         }
+        fs::write(root.join("broken.zip"), "not a zip").unwrap();
         let found = backups(&root);
         fs::remove_dir_all(&root).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].serial, "DONE1");
-        assert_eq!(found[0].firmware.as_deref(), Some("1.4.9.D"));
+        assert_eq!(found.iter().map(|b| b.serial.as_str()).collect::<Vec<_>>(), ["NEW", "OLD"]);
         assert_eq!(found[0].display.as_deref(), Some("1.4.19"));
+        assert!(found[0].bytes > 0);
     }
 }

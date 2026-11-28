@@ -4,7 +4,7 @@ import { Button } from "../components/Button";
 import { PageHeader } from "../components/PageHeader";
 import { Problem } from "../components/Problem";
 import { keyboardLabel, useGlassdeckd } from "../glassdeckd";
-import { BACKUP_ROWS, backedUp, describeKeyboardError, rowState, setFolder, transfer, useKeyboard, type Row, type RowState, type Run } from "../keyboard";
+import { BACKUP_ROWS, backedUp, describeKeyboardError, importBackup, mine, rowState, setFolder, transfer, useKeyboard, type Row, type RowState, type Run } from "../keyboard";
 import { BUILT_IN } from "../library";
 import styles from "./Keyboard.module.css";
 
@@ -123,7 +123,6 @@ function SetUp({ keyboard }: { keyboard: KeyboardInfo }) {
   const { folder, run } = store;
   const [installProblem, setInstallProblem] = useState<string | null>(null);
   const done = backedUp(store);
-  const savedTo = run.backedUp ?? store.backups.find((b) => b.serial === keyboard.serial)?.folder ?? null;
   const change = async () => {
     const picked = await commands.pickBackupsFolder();
     if (picked) await setFolder(picked);
@@ -157,9 +156,7 @@ function SetUp({ keyboard }: { keyboard: KeyboardInfo }) {
           ))}
         </ol>
         {run.failed && !run.current && <Problem>{run.failed}</Problem>}
-        {done && savedTo && (
-          <div className={styles.done}>Backed up and checked in {savedTo}. Keep a copy off this PC; the factory calibration can't be made again.</div>
-        )}
+        <Backups />
       </section>
 
       <section aria-label="Install" className={styles.section} data-locked={done ? undefined : true}>
@@ -200,7 +197,64 @@ function Facts({ title, facts }: { title: string; facts: [string, string][] }) {
 const GIB = 1024 ** 3;
 
 function backupDate(backup: BackupSummary): string {
-  return new Date(backup.finished * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return new Date(backup.created * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function backupTime(backup: BackupSummary): string {
+  return new Date(backup.created * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+const MB = 1000 ** 2;
+
+/** This keyboard's backups: one row each, to show or export, and importing one made elsewhere. */
+function Backups() {
+  const store = useKeyboard();
+  const backups = mine(store);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const bring = async (folder: boolean) => {
+    setImporting(true);
+    setProblem(await importBackup(folder));
+    setImporting(false);
+  };
+  const act = async (done: Promise<{ status: "ok" } | { status: "error"; error: Parameters<typeof describeKeyboardError>[0] }>) => {
+    const result = await done;
+    setProblem(result.status === "error" ? describeKeyboardError(result.error) : null);
+  };
+  return (
+    <div className={styles.backups}>
+      <div className={styles.cardHead}>
+        <h2 className={styles.cardTitle}>Backups</h2>
+        <div className={styles.backupActions}>
+          <Button className={styles.small} disabled={importing} onClick={() => void bring(false)}>
+            Import zip
+          </Button>
+          <Button className={styles.small} disabled={importing} onClick={() => void bring(true)}>
+            Import folder
+          </Button>
+        </div>
+      </div>
+      {backups.length === 0 && <div className={styles.hint}>None yet</div>}
+      {backups.map((b) => (
+        <div key={b.file} className={styles.backup}>
+          <span className={styles.backupWhen}>
+            {backupDate(b)}, {backupTime(b)}
+          </span>
+          <span className={styles.backupWhat}>{[`Flux firmware ${b.firmware}`, b.display && `display ${b.display}`, `${Math.round(b.bytes / MB)} MB`].filter(Boolean).join(", ")}</span>
+          <div className={styles.backupActions}>
+            <Button className={styles.small} onClick={() => void act(commands.revealBackup(b.file))}>
+              Show in folder
+            </Button>
+            <Button className={styles.small} onClick={() => void act(commands.exportBackup(b.file))}>
+              Export
+            </Button>
+          </div>
+        </div>
+      ))}
+      {backups.length > 0 && <div className={styles.hint}>Keep a copy off this PC. The factory calibration can't be made again.</div>}
+      {problem && <Problem>{problem}</Problem>}
+    </div>
+  );
 }
 
 function Installed({ keyboard }: { keyboard: KeyboardInfo }) {
@@ -213,16 +267,15 @@ function Installed({ keyboard }: { keyboard: KeyboardInfo }) {
   }, []);
   const [confirming, setConfirming] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const mine = store.backups.filter((b) => b.serial === keyboard.serial);
+  const newest = mine(store)[0];
   const computer = keyboard.computer;
   const background = theme ? (backgrounds.find((b) => b.id === theme.background.package)?.title ?? null) : null;
   const linkFacts: [string, string][] = [["Connection", connection.state === "connected" ? keyboardLabel(connection.status.link.connection) : "No glassdeckd"]];
   if (background) linkFacts.push(["Background", background]);
   if (theme) linkFacts.push(["Widgets", String(theme.widgets?.length ?? 0)]);
-  const restore = async (backup: BackupSummary | undefined) => {
+  const restore = async (backup: BackupSummary) => {
     setConfirming(false);
-    if (!backup) return setProblem("There's no backup of this keyboard to restore from");
-    const result = await commands.restoreFluxSoftware(backup.folder);
+    const result = await commands.restoreFluxSoftware(backup.file);
     setProblem(result.status === "error" ? describeKeyboardError(result.error) : null);
   };
   return (
@@ -242,34 +295,25 @@ function Installed({ keyboard }: { keyboard: KeyboardInfo }) {
       </div>
 
       <section aria-label="Backups" className={styles.card}>
-        <div className={styles.cardHead}>
-          <h2 className={styles.cardTitle}>Backups</h2>
-          {store.folder && (
-            <Button className={styles.small} onClick={() => void commands.openFolder(mine[0]?.folder ?? store.folder ?? "")}>
-              Open folder
-            </Button>
-          )}
-        </div>
-        {mine.map((b) => (
-          <div key={b.folder} className={styles.backup}>
-            <span className={styles.backupWhen}>{backupDate(b)}, before Glassdeck</span>
-            <span className={styles.backupWhat}>{[b.firmware && `Flux firmware ${b.firmware}`, b.display && `display ${b.display}`].filter(Boolean).join(", ")}</span>
-          </div>
-        ))}
+        <Backups />
       </section>
 
       <section aria-label="Restore Flux software" className={styles.card}>
         <div className={styles.restoreHead}>
           <div className={styles.restoreText}>
             <h2 className={styles.restoreTitle}>Restore Flux software</h2>
-            <div className={styles.hint}>Puts the keyboard back as it was in the backup</div>
+            <div className={styles.hint}>{newest ? `From the backup of ${backupDate(newest)}` : "Back up first"}</div>
           </div>
-          {confirming ? (
+          {!newest ? (
+            <button type="button" className={styles.danger} disabled aria-disabled="true">
+              Restore
+            </button>
+          ) : confirming ? (
             <>
               <button type="button" className={styles.cancel} onClick={() => setConfirming(false)}>
                 Cancel
               </button>
-              <button type="button" className={styles.dangerNow} onClick={() => void restore(mine[0])}>
+              <button type="button" className={styles.dangerNow} onClick={() => void restore(newest)}>
                 Restore now
               </button>
             </>

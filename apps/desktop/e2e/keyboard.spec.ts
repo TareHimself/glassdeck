@@ -30,7 +30,8 @@ test("a backup stops for the driver, then finishes and unlocks Install", async (
   await backUp.getByRole("button", { name: "Back up" }).click();
   await expect(page.getByText("Windows needs a driver to read the key scanner's memory")).toBeVisible();
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(backUp.getByText("Backed up and checked in")).toBeVisible();
+  await expect(backUp.getByText("Flux firmware 1.4.9.D, display 1.4.19, 149 MB")).toBeVisible();
+  await expect(backUp.getByText("Keep a copy off this PC. The factory calibration can't be made again.")).toBeVisible();
   await expect(backUp.getByText("Firmware, settings and factory calibration")).toBeVisible();
   await expect(backUp.getByRole("button", { name: "Backed up" })).toBeDisabled();
   const install = section(page, "Install");
@@ -46,11 +47,31 @@ test("on Glassdeck, the page shows the keyboard and asks before restoring", asyn
   await expect(section(page, "Keyboard's computer").getByText("Flux OS 0.0.9")).toBeVisible();
   await expect(page.getByRole("button", { name: "Back up" })).toHaveCount(0);
   const restore = section(page, "Restore Flux software");
+  await expect(restore.getByText("Back up first")).toBeVisible();
+  await expect(restore.getByRole("button", { name: "Restore", exact: true })).toBeDisabled();
+  await section(page, "Backups").getByRole("button", { name: "Import folder" }).click();
+  await expect(section(page, "Backups").getByText("Flux firmware 1.4.9.D, display 1.4.19, 149 MB")).toBeVisible();
+  await expect(restore.getByText(/From the backup of/)).toBeVisible();
   await restore.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(restore.getByRole("button", { name: "Restore now" })).toBeVisible();
   await restore.getByRole("button", { name: "Cancel" }).click();
   await expect(restore.getByRole("button", { name: "Restore now" })).toHaveCount(0);
+  await restore.getByRole("button", { name: "Restore", exact: true }).click();
+  await restore.getByRole("button", { name: "Restore now" }).click();
+  await expect(restore.getByRole("alert")).toContainText("checked out, but restoring isn't ready yet");
   await expect(page.getByRole("img", { name: "Needs setup" })).toHaveCount(0);
+});
+
+test("importing a backup made elsewhere unlocks Install", async ({ page }) => {
+  await withKeyboard(page, "flux");
+  await page.goto("/keyboard");
+  const backUp = section(page, "Back up");
+  await expect(backUp.getByText("None yet")).toBeVisible();
+  await backUp.getByRole("button", { name: "Import zip" }).click();
+  await expect(backUp.getByText("Flux firmware 1.4.9.D, display 1.4.19, 149 MB")).toBeVisible();
+  await expect(backUp.getByRole("button", { name: "Show in folder" })).toBeVisible();
+  await expect(backUp.getByRole("button", { name: "Export" })).toBeVisible();
+  await expect(section(page, "Install").getByRole("button", { name: "Install Glassdeck" })).toBeEnabled();
 });
 
 test("on Flux software, the sidebar flags the keyboard and Overview can't apply", async ({ page }) => {

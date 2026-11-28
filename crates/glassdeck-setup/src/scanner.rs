@@ -242,6 +242,20 @@ pub struct Backup {
 }
 
 impl Backup {
+    /// The firmware the key scanner ran when it was backed up.
+    pub fn firmware(&self) -> &str {
+        &self.manifest.firmware
+    }
+
+    /// Which keyboard it came from, by its key scanner's USB serial.
+    pub fn usb_serial(&self) -> Option<&str> {
+        self.manifest.usb_serial.as_deref()
+    }
+
+    pub fn calibration_version(&self) -> u32 {
+        self.manifest.calibration_version
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
         let manifest_path = dir.join(MANIFEST);
         let manifest =

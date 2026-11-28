@@ -277,6 +277,18 @@
   color: var(--muted);
 }
 
+.backups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backupActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .restoreHead {
   display: flex;
   flex-wrap: wrap;

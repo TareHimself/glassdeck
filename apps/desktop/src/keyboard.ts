@@ -22,6 +22,7 @@ export type Run = {
   progress: string | null;
   needsYou: string[] | null;
   failed: string | null;
+  /** The zip this run saved, once it's checked. */
   backedUp: string | null;
 };
 
@@ -40,7 +41,7 @@ export function nextRun(run: Run, update: SetupUpdate): Run {
     case "failed":
       return { ...run, failed: update.reason };
     case "backed_up":
-      return { ...run, backedUp: update.folder };
+      return { ...run, backedUp: update.file };
     case "ended":
       return { ...run, running: false };
   }
@@ -78,6 +79,13 @@ export function describeKeyboardError(error: KeyboardError | string): string {
 }
 
 const FOLDER_KEY = "glassdeck.backupsFolder";
+/** Backups used to default to Documents; that default now moves to the app's own data. */
+const OLD_DEFAULT = /\\Documents\\Glassdeck\\Keyboard backups\\?$/i;
+
+/** The folder the user chose, unless it's only the old default. */
+export function chosenFolder(saved: string | null): string | null {
+  return saved && !OLD_DEFAULT.test(saved) ? saved : null;
+}
 
 type Store = {
   /** null until the first look. */
@@ -119,7 +127,8 @@ export async function followKeyboard(): Promise<() => void> {
       void refreshKeyboard();
     }
   });
-  const saved = localStorage.getItem(FOLDER_KEY);
+  const saved = chosenFolder(localStorage.getItem(FOLDER_KEY));
+  if (saved === null) localStorage.removeItem(FOLDER_KEY);
   const folder = saved ?? (await commands.defaultBackupsFolder().then((r) => (r.status === "ok" ? r.data : null)));
   useKeyboard.setState({ folder });
   void refreshBackups();
@@ -133,8 +142,25 @@ export async function followKeyboard(): Promise<() => void> {
   };
 }
 
-/** Whether this keyboard has a finished backup in the folder, from this run or an earlier one. */
-export function backedUp(store: Store): boolean {
+/** This keyboard's saved backups, newest first. */
+export function mine(store: Store): BackupSummary[] {
   const serial = store.keyboard?.serial;
-  return store.run.backedUp !== null || (!!serial && store.backups.some((b) => b.serial === serial));
+  return serial ? store.backups.filter((b) => b.serial === serial) : [];
+}
+
+/** Whether this keyboard has a saved, checked backup: what Install and Restore wait for. */
+export function backedUp(store: Store): boolean {
+  return store.run.backedUp !== null || mine(store).length > 0;
+}
+
+/** Adds a backup made elsewhere (a zip, or with `folder` a setup folder); why it was refused, or null. */
+export async function importBackup(folder: boolean): Promise<string | null> {
+  const { folder: store, keyboard } = useKeyboard.getState();
+  if (!store) return "Pick where backups go first";
+  const picked = await commands.pickBackup(folder);
+  if (!picked) return null;
+  const result = await commands.importBackup(store, picked, keyboard?.serial ?? null);
+  if (result.status === "error") return describeKeyboardError(result.error);
+  await refreshBackups();
+  return null;
 }

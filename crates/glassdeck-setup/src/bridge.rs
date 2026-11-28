@@ -521,6 +521,14 @@ fn poll_backup(bridge: &mut Bridge, last_log: &mut String, notes: Notes) -> Resu
     Ok(None)
 }
 
+/// A downloaded Linux backup that's whole: every partition matches its SHA-256, and the system
+/// files and the root filesystem's path list are there. Returns a line per partition checked.
+pub fn check_saved(dir: &Path) -> Result<Vec<String>> {
+    let checked = check_backup(dir)?;
+    system_files_saved(dir)?;
+    Ok(checked)
+}
+
 /// Joins each partition's pieces, unpacks them and checks the result against SHA256SUMS.
 /// Returns a line per partition checked.
 fn check_backup(dir: &Path) -> Result<Vec<String>> {

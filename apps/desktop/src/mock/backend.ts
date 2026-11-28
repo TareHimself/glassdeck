@@ -75,7 +75,12 @@ function background(id: string): BackgroundSummary {
 const glassdeckd = (update: GlassdeckdUpdate) => void emit("glassdeckd-update", update);
 
 const MOCK_SERIAL = "E4645852431F3223";
-const BACKUPS_FOLDER = "C:\\Users\\you\\Documents\\Glassdeck\\Keyboard backups";
+const BACKUPS_FOLDER = "C:\\Users\\you\\AppData\\Roaming\\Glassdeck\\Keyboard backups";
+
+/** A checked backup of the mock keyboard, saved as glassdeck-setup's archive would name it. */
+function mockBackup(folder: string, created: number): BackupSummary {
+  return { serial: MOCK_SERIAL, file: `${folder}\\${MOCK_SERIAL} 2026-11-27 21.04.zip`, created, firmware: "1.4.9.D", display: "1.4.19", bytes: 148_570_911 };
+}
 
 /** The plugged-in keyboard; a test picks Flux software with `localStorage["glassdeck.mock.keyboard"] = "flux"` before loading. */
 const keyboard = {
@@ -119,9 +124,9 @@ function runBackup(folder: string) {
   step("probe");
   step("linux_backup");
   plan.push(() => {
-    const done = `${folder}\\${MOCK_SERIAL}`;
-    keyboard.backups = [{ serial: MOCK_SERIAL, folder: done, finished: Math.floor(Date.now() / 1000), firmware: "1.4.9.D", display: "1.4.19" }];
-    send({ state: "backed_up", folder: done });
+    const saved = mockBackup(folder, Math.floor(Date.now() / 1000));
+    keyboard.backups = [saved, ...keyboard.backups];
+    send({ state: "backed_up", file: saved.file });
     return true;
   });
   const next = (i: number) => {
@@ -391,10 +396,17 @@ const handlers: Record<string, (args: Args) => unknown> = {
   install_glassdeck: () => {
     throw { kind: "unavailable", reason: "Installing isn't ready yet: the keyboard's launcher doesn't know how Flux starts its bridge" };
   },
-  restore_flux_software: ({ backup }) => {
-    throw { kind: "unavailable", reason: `Restoring from ${String(backup)} isn't ready yet` };
+  restore_flux_software: () => {
+    throw { kind: "unavailable", reason: `The backup of ${MOCK_SERIAL} checked out, but restoring isn't ready yet` };
   },
-  open_folder: () => null,
+  pick_backup: ({ folder }) => (folder ? "F:\\keyboard-backups\\" + MOCK_SERIAL : "F:\\backups\\copy.zip"),
+  import_backup: ({ folder }) => {
+    const imported = mockBackup(folder as string, 1_795_800_000);
+    keyboard.backups = [...keyboard.backups.filter((b) => b.file !== imported.file), imported];
+    return imported;
+  },
+  export_backup: ({ file }) => `D:\\${String(file).split("\\").pop()}`,
+  reveal_backup: () => null,
   lsp_start: () => ({ session: state.nextLspSession++, root: "file:///mock/package", settings: {} }),
   lsp_send: ({ session, message }) => {
     fakeLanguageServer(session as number, JSON.parse(message as string) as LspRequest);

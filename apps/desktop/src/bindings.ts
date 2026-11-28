@@ -103,8 +103,22 @@ export const commands = {
 	/**  Starts backing up the keyboard into `folder`; progress arrives as `SetupUpdate`s. */
 	backUpKeyboard: (folder: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("back_up_keyboard", { folder }, options)),
 	installGlassdeck: (options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("install_glassdeck", undefined, options)),
+	/**  Checks the backup a restore would use in full; restoring itself isn't built yet. */
 	restoreFluxSoftware: (backup: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("restore_flux_software", { backup }, options)),
-	openFolder: (path: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("open_folder", { path }, options)),
+	/**
+	 *  Asks for a backup made elsewhere: a zip, or with `folder`, a folder `glassdeck keyboard setup`
+	 *  made. `None` when the dialog is cancelled.
+	 */
+	pickBackup: (folder: boolean, options?: InvokeOptions) => __TAURI_INVOKE<string | null>("pick_backup", { folder }, options),
+	/**
+	 *  Checks a backup made elsewhere and adds it to `folder`. `serial` is the plugged-in keyboard's,
+	 *  if one is: a backup of another keyboard is refused then.
+	 */
+	importBackup: (folder: string, picked: string, serial: string | null, options?: InvokeOptions) => typedError<BackupSummary, KeyboardError>(__TAURI_INVOKE("import_backup", { folder, picked, serial }, options)),
+	/**  Saves a copy of a backup where the user picks. `None` when the dialog is cancelled. */
+	exportBackup: (file: string, options?: InvokeOptions) => typedError<string | null, KeyboardError>(__TAURI_INVOKE("export_backup", { file }, options)),
+	/**  Shows the backup's zip selected in Explorer. */
+	revealBackup: (file: string, options?: InvokeOptions) => typedError<null, KeyboardError>(__TAURI_INVOKE("reveal_backup", { file }, options)),
 };
 
 /** Events */
@@ -154,14 +168,16 @@ export type BackgroundSummary = {
 	preview: Still | null,
 };
 
-/**  A finished backup of one keyboard, as saved in the backups folder. */
+/**  One saved backup: a zip in the backups folder. */
 export type BackupSummary = {
 	serial: string,
-	folder: string,
-	/**  Seconds since 1970 when it was finished. */
-	finished: number,
-	firmware: string | null,
+	file: string,
+	/**  Seconds since 1970 when it was made. */
+	created: number,
+	firmware: string,
+	/**  The display software on the keyboard's computer when it was backed up. */
 	display: string | null,
+	bytes: number,
 };
 
 export type CanvasChange = 
@@ -519,8 +535,8 @@ export type SetupUpdate = { state: "started"; step: SetupStep } |
 { state: "note"; step: SetupStep; text: string; progress: boolean } | 
 /**  What the user has to do before the backup can go on; the run has stopped. */
 { state: "needs_you"; step: SetupStep; todo: string[] } | { state: "finished"; step: SetupStep } | { state: "failed"; step: SetupStep; reason: string } | 
-/**  Every step is done. */
-{ state: "backed_up"; folder: string } | 
+/**  Every step is done and the backup is saved, checked, as this zip. */
+{ state: "backed_up"; file: string } | 
 /**  The run is over, however it ended. */
 { state: "ended" };
 

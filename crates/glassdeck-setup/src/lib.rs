@@ -3,6 +3,7 @@
 //! setup. The CLI and the app share it; neither prints from here, both are told through [`Note`]s
 //! and setup [`Event`](setup::Event)s.
 
+pub mod archive;
 pub mod bridge;
 mod flash_image;
 mod picoboot;
