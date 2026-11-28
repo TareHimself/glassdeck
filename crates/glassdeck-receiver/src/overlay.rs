@@ -1,7 +1,7 @@
 use fontdue::Font;
 use glassdeck_layout::{Layout, PANEL_HEIGHT, PANEL_WIDTH, Variant};
 
-use crate::keymap::Keymap;
+use glassdeck_layout::keymap::Keymap;
 
 const KEY_INSET: f32 = 4.0;
 const OUTLINE: usize = 2;
@@ -20,14 +20,15 @@ const LABEL_SIDE_PADDING: f32 = 8.0;
 pub struct Labels {
     pub font: Font,
     pub variant: Variant,
+    /// What each key does, so remapping a key relabels it
+    pub keymap: Keymap,
 }
 
 /// The ISO Enter key spans two of the layout's rectangles; only the upper one is labelled.
 const ISO_ENTER_LOWER_HALF: usize = 59;
 
 /// Labels from the keymap's base layer, in the layout's key order, until profiles bring their own.
-fn default_labels(variant: Variant) -> Vec<String> {
-    let keymap = Keymap::default_for(variant);
+fn base_labels(keymap: &Keymap, variant: Variant) -> Vec<String> {
     (0..keymap.keys())
         .map(|key| match (variant, key) {
             (Variant::Iso, ISO_ENTER_LOWER_HALF) => String::new(),
@@ -53,12 +54,12 @@ pub struct Overlay {
 impl Overlay {
     /// Draws the labels at the keys' real positions, scaled from the panel to `width` x `height`.
     pub fn build(labels: &Labels, width: usize, height: usize) -> Self {
-        let Labels { font, variant } = labels;
+        let Labels { font, variant, keymap } = labels;
         let variant = *variant;
         let mut canvas = Canvas { width, height, pixels: Vec::new() };
         let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
         let layout = Layout::new(variant);
-        for (key, label) in layout.keys.iter().zip(default_labels(variant)) {
+        for (key, label) in layout.keys.iter().zip(base_labels(keymap, variant)) {
             let label = label.as_str();
             let key = Rect {
                 x: (key.x * scale_x + KEY_INSET) as i32,
@@ -222,7 +223,7 @@ mod tests {
     #[test]
     fn every_key_has_a_label() {
         for variant in [Variant::Ansi, Variant::Iso] {
-            assert_eq!(default_labels(variant).len(), Layout::new(variant).keys.len(), "{variant:?}");
+            assert_eq!(base_labels(&Keymap::default_for(variant), variant).len(), Layout::new(variant).keys.len(), "{variant:?}");
         }
     }
 

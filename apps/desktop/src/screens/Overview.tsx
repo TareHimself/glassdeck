@@ -18,16 +18,6 @@ import styles from "./Overview.module.css";
 
 const PANEL = { w: 1920, h: 1080 };
 
-/** The default keymap's base layer, in the layout's key order (row by row, left to right). */
-const KEY_LABELS = [
-  ["Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "PrtSc", "Ins", "Del"],
-  ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home"],
-  ["Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "PgUp"],
-  ["Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter", "PgDn"],
-  ["Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "↑", "End"],
-  ["Ctrl", "Win", "Alt", "Fn", "", "Alt", "Fn", "Ctrl", "←", "↓", "→"],
-].flat();
-
 /** What the background card says when the theme names a background that isn't in the library. */
 const MISSING_BACKGROUND = "Missing background";
 
@@ -282,7 +272,7 @@ export function Overview() {
             {showKeys &&
               layout?.keys.map((key, i) => (
                 <div key={i} className={styles.key} style={placed(key)}>
-                  {KEY_LABELS[i]}
+                  {layout.labels[i]}
                 </div>
               ))}
           </div>

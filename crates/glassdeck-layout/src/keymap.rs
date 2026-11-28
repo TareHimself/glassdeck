@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
-use glassdeck_layout::Variant;
+use crate::Variant;
 use serde::Deserialize;
 
 const DEFAULT_KEYMAP: &str = include_str!("../keymaps/default.json");
@@ -212,15 +212,16 @@ mod tests {
     #[test]
     fn the_default_keymap_fits_the_layouts() {
         for variant in [Variant::Ansi, Variant::Iso] {
-            assert_eq!(Keymap::default_for(variant).keys(), glassdeck_layout::Layout::new(variant).keys.len(), "{variant:?}");
+            assert_eq!(Keymap::default_for(variant).keys(), crate::Layout::new(variant).keys.len(), "{variant:?}");
         }
     }
 
     #[test]
     fn the_bottom_row_reads_as_the_keys_do() {
         let ansi = labels(Variant::Ansi, 0);
-        assert_eq!(ansi[74..], ["Ctrl", "Win", "Alt", "Globe", "Space", "Alt", "Fn", "Ctrl", "\u{2190}", "\u{2193}", "\u{2192}"]);
+        assert_eq!(ansi[74..], ["Ctrl", "Fn", "Win", "Alt", "Space", "Alt", "Fn", "Ctrl", "\u{2190}", "\u{2193}", "\u{2192}"]);
         assert_eq!(ansi[..4], ["Esc", "F1", "F2", "F3"]);
+        assert_eq!(ansi[13..16], ["PrtSc", "Ins", "Delete"]);
         assert_eq!(ansi[29..32], ["Backspace", "Home", "Tab"]);
     }
 

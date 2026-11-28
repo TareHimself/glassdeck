@@ -58,6 +58,8 @@ stop_weston() {
 
 # The panel is mounted the way Flux's Weston config says; the receiver turns it the same way.
 WESTON_INI=/etc/xdg/weston/weston.ini
+# What each key does, as Flux keeps it (Polymath edits it); the labels follow it.
+FLUX_KEYMAP=/home/root/flux/config/keymap.json
 panel_rotation() {
     transform=$(sed -n 's/^[[:space:]]*transform=[[:space:]]*//p' "$WESTON_INI" 2>/dev/null | head -1)
     case "$transform" in
@@ -151,7 +153,7 @@ usb_down() {
 }
 
 run_receiver() {
-    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --packages "$ROOT/packages/" --state "$ROOT/state/" "$@" >> "$GLASSDECK/receiver.log" 2>&1
+    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --keymap "$FLUX_KEYMAP" --packages "$ROOT/packages/" --state "$ROOT/state/" "$@" >> "$GLASSDECK/receiver.log" 2>&1
 }
 
 while true; do

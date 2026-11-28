@@ -1,5 +1,4 @@
 mod director;
-mod keymap;
 mod local;
 mod mailbox;
 mod mp4;
@@ -37,6 +36,7 @@ use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, Sc
 
 use director::{Director, SharedDirector, lock};
 use glassdeck_layout::Variant;
+use glassdeck_layout::keymap::Keymap;
 use mailbox::{Mailbox, ShownFrame, Timing};
 use overlay::Labels;
 use platform::{Compositor, Decoder};
@@ -68,6 +68,10 @@ struct Cli {
     /// How the panel is mounted; Flux's keyboard turns it 180 degrees
     #[arg(long, value_enum, default_value_t = PanelRotation::Upright)]
     panel_rotation: PanelRotation,
+    /// The keyboard's own keymap document (Flux keeps it at /home/root/flux/config/keymap.json), so
+    /// the labels follow remapped keys; without it, or if it can't be read, the built-in default
+    #[arg(long)]
+    keymap: Option<PathBuf>,
     /// The keyboard's physical layout, which places the key labels
     #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
     layout: KeyboardLayout,
@@ -108,7 +112,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let font = load_font(cli.font.as_deref())?;
     let variant = Variant::from(cli.layout);
-    let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant });
+    let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant, keymap: keymap(cli.keymap.as_deref(), variant) });
     let compositor = Compositor::open(labels, cli.panel_rotation)?;
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
     let folders = Folders { packages: cli.packages.clone() };
@@ -129,6 +133,22 @@ fn main() -> Result<()> {
 }
 
 pub(crate) use glassdeck_widget::load_font;
+
+/// The keyboard's own keymap, or the built-in default when there's none or it can't be read; a
+/// bad keymap must not leave the keys unlabelled, so it's reported and the default is used.
+fn keymap(path: Option<&std::path::Path>, variant: Variant) -> Keymap {
+    let Some(path) = path else { return Keymap::default_for(variant) };
+    match std::fs::read_to_string(path).map_err(anyhow::Error::from).and_then(|text| Keymap::parse(&text, variant)) {
+        Ok(keymap) => {
+            println!("Key labels from {}", path.display());
+            keymap
+        }
+        Err(e) => {
+            eprintln!("error: reading the keymap {}: {e:#}; labelling keys from the built-in default", path.display());
+            Keymap::default_for(variant)
+        }
+    }
+}
 
 /// The receiver is a server: one sender at a time, and a broken connection is reported, not fatal.
 fn accept_loop(listener: TcpListener, mailbox: &Mailbox, director: &SharedDirector, widgets: &Sender<Input>, folders: &Folders, upstream: &Upstream) {

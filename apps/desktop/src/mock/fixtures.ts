@@ -101,4 +101,7 @@ function ansiKeys(): PanelRect[] {
   });
 }
 
-export const PANEL_LAYOUT: PanelLayout = { keys: ansiKeys(), widget_area: { x: 8.1, y: 5, w: 1903.8, h: 250 } };
+/** The default keymap's base-layer labels, as `glassdeck_layout::keymap` gives them. */
+const KEY_LABELS = ["Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "PrtSc", "Ins", "Delete", "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace", "Home", "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\", "End", "Caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter", "PgUp", "Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Shift", "↑", "PgDn", "Ctrl", "Fn", "Win", "Alt", "Space", "Alt", "Fn", "Ctrl", "←", "↓", "→"];
+
+export const PANEL_LAYOUT: PanelLayout = { keys: ansiKeys(), labels: KEY_LABELS, widget_area: { x: 8.1, y: 5, w: 1903.8, h: 250 } };

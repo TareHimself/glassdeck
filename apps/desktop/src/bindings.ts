@@ -444,6 +444,8 @@ export type PanelItem = ({ item: "section"; path: string; label: string; items: 
 
 export type PanelLayout = {
 	keys: PanelRect[],
+	/**  Each key's label from the keymap's base layer, in the same order as `keys` */
+	labels: string[],
 	widget_area: PanelRect,
 };
 

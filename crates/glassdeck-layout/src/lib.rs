@@ -3,6 +3,8 @@
 //! Geometry adapted from Keyglass (github.com/keyglass-dev/keyglass, keyboard/display/src/layout.rs),
 //! Copyright (c) 2026 The OpenFlux Contributors, MIT OR Apache-2.0.
 
+pub mod keymap;
+
 pub const PANEL_WIDTH: f32 = 1920.0;
 pub const PANEL_HEIGHT: f32 = 1080.0;
 

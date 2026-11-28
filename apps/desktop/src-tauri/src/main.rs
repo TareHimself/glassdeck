@@ -402,6 +402,8 @@ struct PanelRect {
 #[derive(Clone, Debug, Serialize, Type)]
 struct PanelLayout {
     keys: Vec<PanelRect>,
+    /// Each key's label from the keymap's base layer, in the same order as `keys`
+    labels: Vec<String>,
     widget_area: PanelRect,
 }
 
@@ -410,8 +412,13 @@ struct PanelLayout {
 #[specta::specta]
 fn panel_layout() -> PanelLayout {
     let layout = glassdeck_layout::Layout::new(glassdeck_layout::Variant::Ansi);
+    let keymap = glassdeck_layout::keymap::Keymap::default_for(glassdeck_layout::Variant::Ansi);
     let rect = |r: &glassdeck_layout::Rect| PanelRect { x: r.x, y: r.y, w: r.width, h: r.height };
-    PanelLayout { keys: layout.keys.iter().map(rect).collect(), widget_area: rect(&layout.widget_area) }
+    PanelLayout {
+        keys: layout.keys.iter().map(rect).collect(),
+        labels: (0..layout.keys.len()).map(|key| keymap.label(0, key)).collect(),
+        widget_area: rect(&layout.widget_area),
+    }
 }
 
 /// Starts the language server an editor tab needs, working in the package's library folder.

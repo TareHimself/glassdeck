@@ -74,12 +74,12 @@
               "type": 0
             },
             {
-              "keyCode": "KC_F13",
+              "keyCode": "KC_PRINT_SCREEN",
               "modifiers": null,
               "type": 0
             },
             {
-              "keyCode": "KC_F14",
+              "keyCode": "KC_INSERT",
               "modifiers": null,
               "type": 0
             },
@@ -384,17 +384,17 @@
               "type": 0
             },
             {
+              "layerControlType": "momentaryLayer",
+              "targetLayer": 1,
+              "type": 2
+            },
+            {
               "keyCode": "KC_LEFT_GUI",
               "modifiers": null,
               "type": 0
             },
             {
               "keyCode": "KC_LEFT_ALT",
-              "modifiers": null,
-              "type": 0
-            },
-            {
-              "keyCode": "KC_GLOBE",
               "modifiers": null,
               "type": 0
             },
@@ -945,12 +945,12 @@
               "type": 0
             },
             {
-              "keyCode": "KC_F13",
+              "keyCode": "KC_PRINT_SCREEN",
               "modifiers": null,
               "type": 0
             },
             {
-              "keyCode": "KC_F14",
+              "keyCode": "KC_PAUSE",
               "modifiers": null,
               "type": 0
             },
@@ -1170,7 +1170,7 @@
               "type": 0
             },
             {
-              "keyCode": "KC_NONUS_HASH",
+              "keyCode": "KC_BACKSLASH",
               "modifiers": null,
               "type": 0
             },
@@ -1190,7 +1190,7 @@
               "type": 0
             },
             {
-              "keyCode": "KC_BACKSLASH",
+              "keyCode": "KC_NONUS_BACKSLASH",
               "modifiers": null,
               "type": 0
             },
@@ -1265,17 +1265,17 @@
               "type": 0
             },
             {
+              "layerControlType": "momentaryLayer",
+              "targetLayer": 1,
+              "type": 2
+            },
+            {
               "keyCode": "KC_LEFT_GUI",
               "modifiers": null,
               "type": 0
             },
             {
               "keyCode": "KC_LEFT_ALT",
-              "modifiers": null,
-              "type": 0
-            },
-            {
-              "keyCode": "KC_GLOBE",
               "modifiers": null,
               "type": 0
             },
