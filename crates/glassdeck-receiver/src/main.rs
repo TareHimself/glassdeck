@@ -114,6 +114,9 @@ fn main() -> Result<()> {
     let variant = Variant::from(cli.layout);
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant, keymap: keymap(cli.keymap.as_deref(), variant) });
     let compositor = Compositor::open(labels, cli.panel_rotation)?;
+    if cli.panel_rotation == PanelRotation::Turned180 {
+        platform::turn_decoded_video()?;
+    }
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
     let folders = Folders { packages: cli.packages.clone() };
     let config = widgets::Config { packages: cli.packages.clone(), state: cli.state.clone(), font };
@@ -230,7 +233,7 @@ fn serve(
                             Timing::Paced { late_us: wait_until(clock.due_us(picture.time_us)) }
                         }
                     };
-                    mailbox.put(ShownFrame { picture: platform::decoded(picture), timing });
+                    mailbox.put(ShownFrame { picture: platform::decoded(picture)?, timing });
                 }
             }
             Action::End => {

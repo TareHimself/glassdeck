@@ -145,7 +145,7 @@ fn play_video(background: &Package, entry: Entry, mailbox: &Mailbox, stop: &Atom
             for picture in decoder.decode(&access_unit, pts_us)? {
                 let clock = *clock.get_or_insert(PlayoutClock::start(picture.time_us, unix_micros(), LOCAL_PLAYOUT_DELAY_US));
                 let late_us = wait_until(clock.due_us(picture.time_us));
-                mailbox.put(ShownFrame { picture: platform::decoded(picture), timing: Timing::Paced { late_us } });
+                mailbox.put(ShownFrame { picture: platform::decoded(picture)?, timing: Timing::Paced { late_us } });
             }
         }
     }

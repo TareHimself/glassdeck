@@ -20,6 +20,10 @@ pub fn start_usb_link(_function: &std::path::Path, _listener: std::net::SocketAd
     anyhow::bail!("--usb-function only works on the keyboard")
 }
 
-pub fn decoded(picture: Picture) -> Picture {
-    picture
+pub fn decoded(picture: Picture) -> anyhow::Result<Picture> {
+    Ok(picture)
+}
+
+pub fn turn_decoded_video() -> anyhow::Result<()> {
+    anyhow::bail!("the desktop window only shows the panel upright")
 }

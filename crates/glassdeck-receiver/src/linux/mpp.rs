@@ -7,6 +7,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use glassdeck_proto::{Codec, Mode, StreamInfo};
 
+use super::rga::{Layout, Turned, Turner};
+
 /// A live access unit yields exactly one picture; this bounds how long we wait for the hardware.
 const LIVE_PICTURE_WAIT_MS: i64 = 50;
 const NO_WAIT_MS: i64 = 0;
@@ -111,7 +113,7 @@ impl Decoder {
                         "decoder produced format {:#x}; only 8-bit uncompressed NV12 is supported so far",
                         frame.0.format
                     );
-                    return Ok(Some(Picture { time_us: frame.0.pts.max(0) as u64, frame }));
+                    return Ok(Some(Picture::from_decoder(frame)));
                 }
                 error => bail!("MPP decode failed (error {error})"),
             }
@@ -176,24 +178,52 @@ pub struct Color {
 /// A decoded NV12 picture in a DMA buffer: luma rows `strides.0` bytes apart, chroma after `strides.1` luma rows.
 pub struct Picture {
     pub time_us: u64,
-    frame: Frame,
+    layout: Layout,
+    color: Color,
+    pixels: Pixels,
+}
+
+/// Where the picture's pixels are: MPP's own buffer, or a turned copy of it.
+enum Pixels {
+    Decoded(Frame),
+    Turned(Turned),
 }
 
 impl Picture {
+    fn from_decoder(frame: Frame) -> Self {
+        let raw = &frame.0;
+        Self {
+            time_us: raw.pts.max(0) as u64,
+            layout: Layout { size: (raw.width, raw.height), strides: (raw.hor_stride, raw.ver_stride) },
+            color: color_of(raw.colorspace, raw.color_range),
+            pixels: Pixels::Decoded(frame),
+        }
+    }
+
+    /// The picture turned 180 degrees by the RGA; MPP gets its buffer back as soon as it's copied.
+    pub fn turned(self, turner: &Turner) -> Result<Self> {
+        let turned = turner.turn(self.dma_buf(), self.layout)?;
+        Ok(Self { pixels: Pixels::Turned(turned), ..self })
+    }
+
     pub fn dma_buf(&self) -> BorrowedFd<'_> {
-        unsafe { BorrowedFd::borrow_raw(self.frame.0.fd) }
+        match &self.pixels {
+            // SAFETY: the frame owns this fd until it's released.
+            Pixels::Decoded(frame) => unsafe { BorrowedFd::borrow_raw(frame.0.fd) },
+            Pixels::Turned(turned) => turned.dma_buf(),
+        }
     }
 
     pub fn size(&self) -> (u32, u32) {
-        (self.frame.0.width, self.frame.0.height)
+        self.layout.size
     }
 
     pub fn strides(&self) -> (u32, u32) {
-        (self.frame.0.hor_stride, self.frame.0.ver_stride)
+        self.layout.strides
     }
 
     pub fn color(&self) -> Color {
-        color_of(self.frame.0.colorspace, self.frame.0.color_range)
+        self.color
     }
 }
 

@@ -2,12 +2,15 @@ mod compositor;
 mod doorbell;
 mod mpp;
 mod renderer;
+mod rga;
 mod scanout;
 mod canvas;
 mod usb_link;
 mod web;
 
-use anyhow::Result;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result};
 
 pub use compositor::{Compositor, Registrar};
 pub use doorbell::Doorbell;
@@ -26,8 +29,20 @@ pub enum Picture {
     Shared(renderer::SharedPicture),
 }
 
-pub fn decoded(picture: mpp::Picture) -> Picture {
-    Picture::Decoded(picture)
+static TURNER: OnceLock<rga::Turner> = OnceLock::new();
+
+/// For a turned panel: the video plane can't turn, so every decoded frame is turned as it arrives.
+pub fn turn_decoded_video() -> Result<()> {
+    let turner = rga::Turner::open().context("setting up the RGA to turn video")?;
+    TURNER.set(turner).map_err(|_| anyhow::anyhow!("decoded video is already being turned"))
+}
+
+pub fn decoded(picture: mpp::Picture) -> Result<Picture> {
+    let picture = match TURNER.get() {
+        Some(turner) => picture.turned(turner)?,
+        None => picture,
+    };
+    Ok(Picture::Decoded(picture))
 }
 
 pub fn init_decoder_thread() -> Result<()> {
