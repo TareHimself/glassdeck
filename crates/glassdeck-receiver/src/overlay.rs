@@ -1,4 +1,6 @@
 use fontdue::Font;
+
+use crate::widgets::Tile;
 use glassdeck_layout::{Layout, PANEL_HEIGHT, PANEL_WIDTH, Variant};
 
 use glassdeck_layout::keymap::Keymap;
@@ -17,6 +19,7 @@ const LABEL_COLOR: u32 = 0xFF_FF_FF;
 const LABEL_ALPHA: u8 = 217;
 
 /// What the key labels need: a font and which keyboard layout to place them on.
+#[derive(Clone)]
 pub struct Labels {
     pub font: Font,
     pub variant: Variant,
@@ -26,6 +29,18 @@ pub struct Labels {
 
 /// The ISO Enter key spans two of the layout's rectangles; only the upper one is labelled.
 const ISO_ENTER_LOWER_HALF: usize = 59;
+
+/// The keys whose label differs while Shift is held, each with the label it shows now: shifted
+/// when `shift`, the base label again when not.
+pub fn shift_changes(keymap: &Keymap, variant: Variant, shift: bool) -> Vec<(usize, String)> {
+    (0..keymap.keys())
+        .filter(|&key| !(variant == Variant::Iso && key == ISO_ENTER_LOWER_HALF))
+        .filter_map(|key| {
+            let (base, shifted) = (keymap.label(0, key), keymap.shifted_label(0, key));
+            (base != shifted).then(|| (key, if shift { shifted } else { base }))
+        })
+        .collect()
+}
 
 /// Labels from the keymap's base layer, in the layout's key order, until profiles bring their own.
 fn base_labels(keymap: &Keymap, variant: Variant) -> Vec<String> {
@@ -60,18 +75,30 @@ impl Overlay {
         let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
         let layout = Layout::new(variant);
         for (key, label) in layout.keys.iter().zip(base_labels(keymap, variant)) {
-            let cap = Rect {
-                x: (key.x * scale_x).round() as i32,
-                y: (key.y * scale_y).round() as i32,
-                w: (key.width * scale_x).round() as i32,
-                h: (key.height * scale_y).round() as i32,
-            };
-            canvas.cap(cap, CAP_RADIUS * scale_y, CAP_BORDER_WIDTH * scale_y);
-            let (pad_x, pad_y) = (LABEL_PAD.0 * scale_x, LABEL_PAD.1 * scale_y);
-            let label_px = fitted_size(font, &label, LABEL_PX * scale_y, cap.w as f32 - 2.0 * pad_x);
-            canvas.text(font, &label, cap.x as f32 + pad_x, cap.y as f32 + pad_y, label_px, LABEL_COLOR, LABEL_ALPHA);
+            canvas.keycap(font, cap_rect(key, scale_x, scale_y), &label, scale_x, scale_y);
         }
         Self { width, height, pixels: canvas.pixels }
+    }
+
+    /// Each changed key's cap redrawn with its new label, as a tile covering just that key.
+    pub fn key_tiles(labels: &Labels, changes: &[(usize, String)], width: usize, height: usize) -> Vec<Tile> {
+        let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
+        let layout = Layout::new(labels.variant);
+        changes
+            .iter()
+            .filter_map(|(key, label)| layout.keys.get(*key).map(|rect| (cap_rect(rect, scale_x, scale_y), label)))
+            .map(|(cap, label)| {
+                let (w, h) = (cap.w.max(0) as usize, cap.h.max(0) as usize);
+                let mut canvas = Canvas { width: w, height: h, pixels: Vec::new() };
+                canvas.keycap(&labels.font, Rect { x: 0, y: 0, ..cap }, label, scale_x, scale_y);
+                let mut pixels = vec![0u32; w * h];
+                for p in &canvas.pixels {
+                    let dst = &mut pixels[p.index as usize];
+                    *dst = over_premultiplied(*dst, p.color, p.alpha);
+                }
+                Tile { x: cap.x as u32, y: cap.y as u32, w: w as u32, h: h as u32, pixels }
+            })
+            .collect()
     }
 
     #[cfg(windows)]
@@ -96,6 +123,15 @@ impl Overlay {
             *dst = over_premultiplied(*dst, p.color, p.alpha);
         }
         image
+    }
+}
+
+fn cap_rect(key: &glassdeck_layout::Rect, scale_x: f32, scale_y: f32) -> Rect {
+    Rect {
+        x: (key.x * scale_x).round() as i32,
+        y: (key.y * scale_y).round() as i32,
+        w: (key.width * scale_x).round() as i32,
+        h: (key.height * scale_y).round() as i32,
     }
 }
 
@@ -126,6 +162,13 @@ impl Canvas {
             let index = (y as usize * self.width + x as usize) as u32;
             self.pixels.push(OverlayPixel { index, color, alpha });
         }
+    }
+
+    fn keycap(&mut self, font: &Font, cap: Rect, label: &str, scale_x: f32, scale_y: f32) {
+        self.cap(cap, CAP_RADIUS * scale_y, CAP_BORDER_WIDTH * scale_y);
+        let (pad_x, pad_y) = (LABEL_PAD.0 * scale_x, LABEL_PAD.1 * scale_y);
+        let label_px = fitted_size(font, label, LABEL_PX * scale_y, cap.w as f32 - 2.0 * pad_x);
+        self.text(font, label, cap.x as f32 + pad_x, cap.y as f32 + pad_y, label_px, LABEL_COLOR, LABEL_ALPHA);
     }
 
     /// A rounded keycap: the fill, then the border ring over it, both anti-aliased at the corners.
@@ -224,6 +267,18 @@ mod tests {
     fn label_over_shadow_stays_opaque_where_the_shadow_was() {
         let shadow = over_premultiplied(0, 0x00_00_00, 255);
         assert_eq!(over_premultiplied(shadow, 0xFF_FF_FF, 128), 0xFF_80_80_80);
+    }
+
+    #[test]
+    fn shift_changes_only_the_keys_whose_label_does_and_back() {
+        let keymap = Keymap::default_for(Variant::Ansi);
+        let held = shift_changes(&keymap, Variant::Ansi, true);
+        let released = shift_changes(&keymap, Variant::Ansi, false);
+        assert_eq!(held.len(), 21, "13 on the number row, 3 brackets, 2 by Enter, 3 by Right Shift");
+        assert!(held.contains(&(17, "!".into())) && held.contains(&(70, "?".into())));
+        assert!(!held.iter().any(|(key, _)| *key == 32), "letters already show capitals");
+        assert_eq!(held.iter().map(|(k, _)| k).collect::<Vec<_>>(), released.iter().map(|(k, _)| k).collect::<Vec<_>>());
+        assert!(released.contains(&(17, "1".into())));
     }
 
     #[test]

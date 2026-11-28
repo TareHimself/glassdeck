@@ -24,6 +24,10 @@ pub fn decoded(picture: Picture) -> anyhow::Result<Picture> {
     Ok(picture)
 }
 
+pub fn follow_scanner(_path: std::path::PathBuf, _shift: impl FnMut(bool) + Send + 'static) -> anyhow::Result<()> {
+    anyhow::bail!("the key scanner's serial link is only on the keyboard")
+}
+
 pub fn turn_decoded_video() -> anyhow::Result<()> {
     anyhow::bail!("the desktop window only shows the panel upright")
 }

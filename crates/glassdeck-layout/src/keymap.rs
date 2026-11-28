@@ -102,14 +102,22 @@ impl Keymap {
 
     /// The label for `key` on `layer`; a transparent key shows the layer beneath it.
     pub fn label(&self, layer: usize, key: usize) -> String {
+        self.action(layer, key).map(legend).unwrap_or_default()
+    }
+
+    /// The label while Shift is held: the shifted character on printing keys, else as [`Self::label`].
+    pub fn shifted_label(&self, layer: usize, key: usize) -> String {
+        self.action(layer, key).map(shifted_legend).unwrap_or_default()
+    }
+
+    fn action(&self, layer: usize, key: usize) -> Option<&KeyAction> {
         for below in (0..=layer.min(self.layers.len().saturating_sub(1))).rev() {
             match self.layers[below].get(key) {
                 Some(KeyAction::Key { code, .. }) if code == "KC_TRANSPARENT" => continue,
-                Some(action) => return legend(action),
-                None => return String::new(),
+                other => return other,
             }
         }
-        String::new()
+        None
     }
 
     pub fn keys(&self) -> usize {
@@ -132,6 +140,44 @@ pub fn legend(action: &KeyAction) -> String {
             if held.is_empty() || name.is_empty() { name } else { format!("{}+{name}", held.join("+")) }
         }
     }
+}
+
+/// [`legend`] with Shift held, on a US layout. Keys that already carry modifiers keep their label.
+pub fn shifted_legend(action: &KeyAction) -> String {
+    match action {
+        KeyAction::Key { code, modifiers: 0 } => match shifted_name(code.strip_prefix("KC_").unwrap_or(code)) {
+            Some(shifted) => shifted.to_owned(),
+            None => legend(action),
+        },
+        _ => legend(action),
+    }
+}
+
+fn shifted_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "1" => "!",
+        "2" => "@",
+        "3" => "#",
+        "4" => "$",
+        "5" => "%",
+        "6" => "^",
+        "7" => "&",
+        "8" => "*",
+        "9" => "(",
+        "0" => ")",
+        "GRAVE" => "~",
+        "MINUS" => "_",
+        "EQUAL" => "+",
+        "LEFT_BRACKET" => "{",
+        "RIGHT_BRACKET" => "}",
+        "BACKSLASH" | "NONUS_BACKSLASH" => "|",
+        "SEMICOLON" => ":",
+        "QUOTE" => "\"",
+        "COMMA" => "<",
+        "DOT" => ">",
+        "SLASH" => "?",
+        _ => return None,
+    })
 }
 
 fn key_name(code: &str) -> String {
@@ -214,6 +260,20 @@ mod tests {
         for variant in [Variant::Ansi, Variant::Iso] {
             assert_eq!(Keymap::default_for(variant).keys(), crate::Layout::new(variant).keys.len(), "{variant:?}");
         }
+    }
+
+    #[test]
+    fn shift_shows_the_symbols_over_digits_and_punctuation_and_leaves_the_rest() {
+        let keymap = Keymap::default_for(Variant::Ansi);
+        let shifted: Vec<String> = (0..keymap.keys()).map(|k| keymap.shifted_label(0, k)).collect();
+        assert_eq!(shifted[16..29], ["~", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+"]);
+        assert_eq!(shifted[42..45], ["{", "}", "|"]);
+        assert_eq!(shifted[56..58], [":", "\""]);
+        assert_eq!(shifted[68..71], ["<", ">", "?"]);
+        assert_eq!(shifted[32], "Q", "letters stay capitals");
+        assert_eq!(shifted[29], "Backspace");
+        let with_ctrl = KeyAction::Key { code: "KC_1".into(), modifiers: 1 };
+        assert_eq!(shifted_legend(&with_ctrl), legend(&with_ctrl));
     }
 
     #[test]

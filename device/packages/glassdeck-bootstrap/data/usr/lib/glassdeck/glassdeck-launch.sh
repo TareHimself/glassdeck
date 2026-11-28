@@ -60,6 +60,8 @@ stop_weston() {
 WESTON_INI=/etc/xdg/weston/weston.ini
 # What each key does, as Flux keeps it (Polymath edits it); the labels follow it.
 FLUX_KEYMAP=/home/root/flux/config/keymap.json
+# The key scanner's serial link; garfunkel read it, and with garfunkel not started the receiver does.
+SCANNER_UART=/dev/ttyS3
 panel_rotation() {
     transform=$(sed -n 's/^[[:space:]]*transform=[[:space:]]*//p' "$WESTON_INI" 2>/dev/null | head -1)
     case "$transform" in
@@ -153,7 +155,7 @@ usb_down() {
 }
 
 run_receiver() {
-    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --keymap "$FLUX_KEYMAP" --packages "$ROOT/packages/" --state "$ROOT/state/" "$@" >> "$GLASSDECK/receiver.log" 2>&1
+    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --keymap "$FLUX_KEYMAP" --scanner-uart "$SCANNER_UART" --packages "$ROOT/packages/" --state "$ROOT/state/" "$@" >> "$GLASSDECK/receiver.log" 2>&1
 }
 
 while true; do

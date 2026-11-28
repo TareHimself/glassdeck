@@ -49,7 +49,7 @@ impl Tiles {
         Self { waiting: Mutex::new(Vec::new()), doorbell }
     }
 
-    fn put(&self, tile: Tile) {
+    pub fn put(&self, tile: Tile) {
         let mut waiting = self.waiting.lock().expect("tiles poisoned");
         waiting.retain(|t| (t.x, t.y, t.w, t.h) != (tile.x, tile.y, tile.w, tile.h));
         waiting.push(tile);

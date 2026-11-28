@@ -3,6 +3,7 @@ mod doorbell;
 mod mpp;
 mod renderer;
 mod rga;
+mod scanner_uart;
 mod scanout;
 mod canvas;
 mod usb_link;
@@ -18,6 +19,7 @@ pub use mpp::Decoder;
 pub use canvas::{CanvasBackground, FallbackCanvas, ImageBackground};
 pub use web::WebBackground;
 pub use usb_link::start_usb_link;
+pub use scanner_uart::follow_scanner;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";
 pub const DEFAULT_PACKAGES: &str = "/var/lib/glassdeck/packages";

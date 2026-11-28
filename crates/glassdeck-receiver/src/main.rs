@@ -35,10 +35,10 @@ use glassdeck_package::QualifiedId;
 use glassdeck_proto::{Action, Message, Mode, PACED_PLAYOUT_DELAY_US, PutFile, ScriptTarget, SessionState, StreamInfo, WidgetSlot, step, unix_micros};
 
 use director::{Director, SharedDirector, lock};
-use glassdeck_layout::Variant;
+use glassdeck_layout::{PANEL_HEIGHT, PANEL_WIDTH, Variant};
 use glassdeck_layout::keymap::Keymap;
 use mailbox::{Mailbox, ShownFrame, Timing};
-use overlay::Labels;
+use overlay::{Labels, Overlay};
 use platform::{Compositor, Decoder};
 use playout::{PlayoutClock, wait_until};
 use presentation::Outcome;
@@ -72,6 +72,10 @@ struct Cli {
     /// the labels follow remapped keys; without it, or if it can't be read, the built-in default
     #[arg(long)]
     keymap: Option<PathBuf>,
+    /// The key scanner's serial link (/dev/ttyS3 on the keyboard), read for the keys held down;
+    /// Shift relabels the keys with their shifted characters
+    #[arg(long)]
+    scanner_uart: Option<PathBuf>,
     /// The keyboard's physical layout, which places the key labels
     #[arg(long, value_enum, default_value_t = KeyboardLayout::Ansi)]
     layout: KeyboardLayout,
@@ -113,11 +117,20 @@ fn main() -> Result<()> {
     let font = load_font(cli.font.as_deref())?;
     let variant = Variant::from(cli.layout);
     let labels = (!cli.no_labels).then(|| Labels { font: font.clone(), variant, keymap: keymap(cli.keymap.as_deref(), variant) });
-    let compositor = Compositor::open(labels, cli.panel_rotation)?;
+    let compositor = Compositor::open(labels.clone(), cli.panel_rotation)?;
     if cli.panel_rotation == PanelRotation::Turned180 {
         platform::turn_decoded_video()?;
     }
     let tiles = Arc::new(Tiles::new(compositor.doorbell()));
+    if let (Some(uart), Some(labels)) = (cli.scanner_uart.clone(), labels) {
+        let tiles = Arc::clone(&tiles);
+        platform::follow_scanner(uart, move |shift| {
+            let changes = overlay::shift_changes(&labels.keymap, labels.variant, shift);
+            for tile in Overlay::key_tiles(&labels, &changes, PANEL_WIDTH as usize, PANEL_HEIGHT as usize) {
+                tiles.put(tile);
+            }
+        })?;
+    }
     let folders = Folders { packages: cli.packages.clone() };
     let config = widgets::Config { packages: cli.packages.clone(), state: cli.state.clone(), font };
     let upstream = Arc::new(Upstream::default());

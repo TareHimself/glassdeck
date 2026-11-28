@@ -2028,6 +2028,7 @@ dependencies = [
  "glassdeck-luau",
  "glassdeck-package",
  "glassdeck-proto",
+ "glassdeck-scanner-proto",
  "glassdeck-widget",
  "minifb",
  "mlua",
