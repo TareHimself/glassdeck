@@ -1,13 +1,14 @@
-//! Wallpaper Engine scenes, rendered live by Wallpaper Engine itself in a hidden window of its own.
+//! A Wallpaper Engine wallpaper (scene, video or web page), rendered live by Wallpaper Engine itself in a hidden window of its own.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
-use glassdeck_wallpaper_engine::Item;
+use glassdeck_wallpaper_engine::{Item, engine};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW,
@@ -15,9 +16,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows_capture::window::Window;
 
-use crate::audio_mute::ProcessMuted;
-use crate::desktop::{EncoderKind, capture_live};
-use crate::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
+use glassdeck_capture::audio_mute::ProcessMuted;
+use glassdeck_capture::pipeline::{EncodedFrame, EncoderSettings, FrameSource, Timing, VideoFormat};
+use glassdeck_capture::{EncoderKind, capture_live};
 
 const WINDOW_APPEARS_WITHIN: Duration = Duration::from_secs(15);
 const WINDOW_POLL: Duration = Duration::from_millis(100);
@@ -41,9 +42,9 @@ impl SceneSource {
             height: u16::try_from(settings.height).context("scene too tall")?,
         };
         Ok(Self {
-            engine: engine_exe(&item.dir)?,
+            engine: engine::install()?.context("Wallpaper Engine is not installed in any Steam library")?.exe(),
             project: item.dir.join("project.json"),
-            window_name: format!("Glassdeck scene {}", item.id),
+            window_name: window_name(std::process::id(), OPENED.fetch_add(1, Ordering::Relaxed), &item.id),
             format,
             settings,
             duration,
@@ -143,13 +144,21 @@ fn hide(window: Window, size: (u32, u32)) -> Result<()> {
     Ok(())
 }
 
-/// Steam keeps workshop items in the library Wallpaper Engine is installed in.
-fn engine_exe(item_dir: &Path) -> Result<PathBuf> {
-    let steamapps = item_dir
-        .ancestors()
-        .find(|dir| dir.file_name().is_some_and(|name| name.eq_ignore_ascii_case("steamapps")))
-        .with_context(|| format!("{} is not inside a Steam library", item_dir.display()))?;
-    let exe = steamapps.join("common").join("wallpaper_engine").join("wallpaper64.exe");
-    ensure!(exe.is_file(), "Wallpaper Engine is not at {}", exe.display());
-    Ok(exe)
+/// Windows opened so far, so a window that's still closing is never mistaken for the next one.
+static OPENED: AtomicU32 = AtomicU32::new(0);
+
+/// Unique per program and per opening.
+fn window_name(process: u32, opened: u32, item: &str) -> String {
+    format!("Glassdeck {process}.{opened} {item}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_two_openings_share_a_window() {
+        assert_ne!(window_name(1, 0, "2927836891"), window_name(2, 0, "2927836891"));
+        assert_ne!(window_name(1, 0, "2927836891"), window_name(1, 1, "2927836891"));
+    }
 }

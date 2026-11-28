@@ -1,6 +1,7 @@
 //! Wallpaper Engine import, "bring your own install": reads items already in the local Steam workshop folder.
 //! Nothing is downloaded, and converted backgrounds stay on this PC and its keyboard.
 
+pub mod engine;
 pub mod library;
 pub mod project;
 pub mod steam;
@@ -19,7 +20,7 @@ pub use project::{Kind, Project};
 pub fn why_unsupported(kind: &Kind) -> Option<String> {
     Some(match kind {
         Kind::Video { .. } | Kind::Web { .. } => return None,
-        Kind::Scene => "scenes only render in Wallpaper Engine; they'll stream live once the Wallpaper Engine stream exists".into(),
+        Kind::Scene => "scenes only render in Wallpaper Engine; show them live with the wallpaper-engine stream".into(),
         Kind::Application => "application wallpapers run a program and are not supported".into(),
         Kind::Preset { base_id } => format!("a preset for workshop item {base_id}; presets are not supported yet"),
         Kind::Unknown { declared: Some(t) } => format!("unknown wallpaper type {t:?}"),

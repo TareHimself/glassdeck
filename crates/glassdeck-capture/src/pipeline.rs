@@ -26,6 +26,11 @@ pub fn request_stop() {
     STOP.store(true, Ordering::Relaxed);
 }
 
+/// Lets the next source run after a stopped one, for a program that runs one source after another.
+pub fn clear_stop_request() {
+    STOP.store(false, Ordering::Relaxed);
+}
+
 /// Asks the running encoder for a keyframe on its next frame, for a viewer that just joined.
 pub fn request_keyframe() {
     KEYFRAME.store(true, Ordering::Relaxed);

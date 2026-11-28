@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -11,21 +12,24 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use glassdeck_api::{Ended, StreamState, StreamStatus};
 use glassdeck_capture::sources::SourceRequest;
+use tokio::sync::mpsc;
 use glassdeck_proto::Message;
 
+use crate::attached::{Attachments, Tapped};
 use crate::feeds::Feeds;
+use crate::streams::{Playing, StreamName};
 use crate::link::Uplink;
 use crate::worker::WorkerProcess;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerState {
     Idle,
-    Running { request: SourceRequest, worker: u64 },
+    Running { playing: Playing, worker: u64 },
     /// The Link dropped mid-stream; this starts again once the keyboard is back.
-    WaitingForLink { request: SourceRequest },
+    WaitingForLink { playing: Playing },
     /// A large file is going to the keyboard, which shows its own background meanwhile; this starts
     /// again when the upload is answered.
-    PausedForUpload { request: SourceRequest },
+    PausedForUpload { playing: Playing },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +41,7 @@ pub enum Outcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerEvent {
-    Start(SourceRequest),
+    Start(Playing),
     Stop,
     WorkerEnded { worker: u64, outcome: Outcome },
     LinkUp,
@@ -47,7 +51,7 @@ pub enum RunnerEvent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerEffect {
-    Spawn { worker: u64, request: SourceRequest },
+    Spawn { worker: u64, playing: Playing },
     StopWorker(u64),
     Ended { worker: u64, outcome: Outcome },
 }
@@ -57,31 +61,31 @@ pub enum RunnerEffect {
 pub fn step(state: RunnerState, event: RunnerEvent, next_worker: u64) -> (RunnerState, Vec<RunnerEffect>) {
     use RunnerEffect::{Ended, Spawn, StopWorker};
     use RunnerState::{Idle, PausedForUpload, Running, WaitingForLink};
-    let spawn = |request: SourceRequest| (Running { request: request.clone(), worker: next_worker }, Spawn { worker: next_worker, request });
+    let spawn = |playing: Playing| (Running { playing: playing.clone(), worker: next_worker }, Spawn { worker: next_worker, playing });
     match (state, event) {
-        (PausedForUpload { .. }, RunnerEvent::Start(request)) => (PausedForUpload { request }, vec![]),
-        (Running { request, worker }, RunnerEvent::PauseForUpload) => (PausedForUpload { request }, vec![StopWorker(worker)]),
-        (PausedForUpload { request }, RunnerEvent::ResumeAfterUpload) => {
-            let (state, effect) = spawn(request);
+        (PausedForUpload { .. }, RunnerEvent::Start(playing)) => (PausedForUpload { playing }, vec![]),
+        (Running { playing, worker }, RunnerEvent::PauseForUpload) => (PausedForUpload { playing }, vec![StopWorker(worker)]),
+        (PausedForUpload { playing }, RunnerEvent::ResumeAfterUpload) => {
+            let (state, effect) = spawn(playing);
             (state, vec![effect])
         }
         (state, RunnerEvent::PauseForUpload | RunnerEvent::ResumeAfterUpload) => (state, vec![]),
-        (Idle | WaitingForLink { .. }, RunnerEvent::Start(request)) => {
-            let (state, effect) = spawn(request);
+        (Idle | WaitingForLink { .. }, RunnerEvent::Start(playing)) => {
+            let (state, effect) = spawn(playing);
             (state, vec![effect])
         }
-        (Running { worker, .. }, RunnerEvent::Start(request)) => {
-            let (state, effect) = spawn(request);
+        (Running { worker, .. }, RunnerEvent::Start(playing)) => {
+            let (state, effect) = spawn(playing);
             (state, vec![StopWorker(worker), effect])
         }
         (Running { worker, .. }, RunnerEvent::Stop) => (Idle, vec![StopWorker(worker)]),
         (Idle | WaitingForLink { .. } | PausedForUpload { .. }, RunnerEvent::Stop) => (Idle, vec![]),
-        (Running { request, worker }, RunnerEvent::WorkerEnded { worker: ended, outcome }) if ended == worker => match outcome {
-            Outcome::LinkLost => (WaitingForLink { request }, vec![Ended { worker, outcome: Outcome::LinkLost }]),
+        (Running { playing, worker }, RunnerEvent::WorkerEnded { worker: ended, outcome }) if ended == worker => match outcome {
+            Outcome::LinkLost => (WaitingForLink { playing }, vec![Ended { worker, outcome: Outcome::LinkLost }]),
             outcome => (Idle, vec![Ended { worker, outcome }]),
         },
-        (WaitingForLink { request }, RunnerEvent::LinkUp) => {
-            let (state, effect) = spawn(request);
+        (WaitingForLink { playing }, RunnerEvent::LinkUp) => {
+            let (state, effect) = spawn(playing);
             (state, vec![effect])
         }
         (state, RunnerEvent::WorkerEnded { .. } | RunnerEvent::LinkUp) => (state, vec![]),
@@ -142,12 +146,13 @@ impl Runner {
         inbox: Receiver<RunnerEvent>,
         status: Arc<StatusBoard>,
         feeds: Arc<Feeds>,
+        attachments: Arc<Attachments>,
     ) -> Result<Self> {
         let runner = Self { events: events.clone(), status: Arc::clone(&status) };
         let looped = events.clone();
         thread::Builder::new()
             .name("sources".into())
-            .spawn(move || Loop { uplink, token, status, events: looped, feeds, workers: HashMap::new() }.run(inbox))?;
+            .spawn(move || Loop { uplink, token, status, events: looped, feeds, attachments, running: HashMap::new() }.run(inbox))?;
         Ok(runner)
     }
 
@@ -166,7 +171,31 @@ struct Loop {
     status: Arc<StatusBoard>,
     events: Sender<RunnerEvent>,
     feeds: Arc<Feeds>,
-    workers: HashMap<u64, Arc<WorkerProcess>>,
+    attachments: Arc<Attachments>,
+    running: HashMap<u64, Running>,
+}
+
+/// What the runner has started for one `Spawn`.
+enum Running {
+    Worker(Arc<WorkerProcess>),
+    /// The keyboard's watch on an attached stream, and the thread relaying it to the Link
+    Attached { tapped: Option<Tapped>, stopped: Arc<AtomicBool>, relay: Option<thread::JoinHandle<()>> },
+}
+
+impl Running {
+    /// Returns once its last message is on the Link, so the next stream can't be cut by its end.
+    fn stop(&mut self) {
+        match self {
+            Self::Worker(process) => process.stop(),
+            Self::Attached { tapped, stopped, relay } => {
+                stopped.store(true, Ordering::Relaxed);
+                drop(tapped.take());
+                if let Some(relay) = relay.take() {
+                    let _ = relay.join();
+                }
+            }
+        }
+    }
 }
 
 impl Loop {
@@ -175,7 +204,7 @@ impl Loop {
         let mut next_worker = 1;
         for event in inbox {
             if let RunnerEvent::WorkerEnded { worker, .. } = event
-                && let Some(process) = self.workers.remove(&worker)
+                && let Some(Running::Worker(process)) = self.running.remove(&worker)
             {
                 self.feeds.keyboard_ended(&process);
             }
@@ -183,15 +212,19 @@ impl Loop {
             state = next;
             for effect in effects {
                 match effect {
-                    RunnerEffect::Spawn { worker, request } => {
+                    RunnerEffect::Spawn { worker, playing } => {
                         next_worker = worker + 1;
-                        if let Err(e) = self.spawn(worker, request) {
+                        let spawned = match playing {
+                            Playing::Source(request) => self.spawn(worker, request),
+                            Playing::Attached(name) => self.relay_attached(worker, &name),
+                        };
+                        if let Err(e) = spawned {
                             let _ = self.events.send(RunnerEvent::WorkerEnded { worker, outcome: Outcome::Failed(format!("{e:#}")) });
                         }
                     }
                     RunnerEffect::StopWorker(worker) => {
-                        if let Some(process) = self.workers.get(&worker) {
-                            process.stop();
+                        if let Some(running) = self.running.get_mut(&worker) {
+                            running.stop();
                         }
                     }
                     RunnerEffect::Ended { worker, outcome } => {
@@ -212,9 +245,9 @@ impl Loop {
     fn show(&self, state: &RunnerState) {
         let (state, playing, worker) = match state {
             RunnerState::Idle => (StreamState::Idle, None, None),
-            RunnerState::Running { request, worker } => (StreamState::Running, Some(request.play.to_string()), Some(*worker)),
-            RunnerState::WaitingForLink { request } => (StreamState::WaitingForKeyboard, Some(request.play.to_string()), None),
-            RunnerState::PausedForUpload { request } => (StreamState::PausedForUpload, Some(request.play.to_string()), None),
+            RunnerState::Running { playing, worker } => (StreamState::Running, Some(playing.to_string()), Some(*worker)),
+            RunnerState::WaitingForLink { playing } => (StreamState::WaitingForKeyboard, Some(playing.to_string()), None),
+            RunnerState::PausedForUpload { playing } => (StreamState::PausedForUpload, Some(playing.to_string()), None),
         };
         self.status.update(|status| {
             if status.worker != worker {
@@ -226,7 +259,7 @@ impl Loop {
 
     fn spawn(&mut self, id: u64, request: SourceRequest) -> Result<()> {
         let (process, listener) = WorkerProcess::spawn(format!("Source {id}"), &request, &self.token)?;
-        self.workers.insert(id, Arc::clone(&process));
+        self.running.insert(id, Running::Worker(Arc::clone(&process)));
         let (uplink, status, events, token, feeds) =
             (Arc::clone(&self.uplink), Arc::clone(&self.status), self.events.clone(), self.token.clone(), Arc::clone(&self.feeds));
         thread::Builder::new().name(format!("source {id}")).spawn(move || {
@@ -234,6 +267,64 @@ impl Loop {
             let _ = events.send(RunnerEvent::WorkerEnded { worker: id, outcome });
         })?;
         Ok(())
+    }
+
+    fn relay_attached(&mut self, id: u64, name: &StreamName) -> Result<()> {
+        let (tapped, frames) = self.attachments.tap_link(name).with_context(|| format!("no stream {name} is attached"))?;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (uplink, status, events, ending) = (Arc::clone(&self.uplink), Arc::clone(&self.status), self.events.clone(), Arc::clone(&stopped));
+        let cut = self.attachments.cut_reasons(&tapped);
+        let relay = thread::Builder::new().name(format!("attached {id}")).spawn(move || {
+            let outcome = forward_attached(id, frames, &ending, &uplink, &status, cut);
+            let _ = events.send(RunnerEvent::WorkerEnded { worker: id, outcome });
+        })?;
+        self.running.insert(id, Running::Attached { tapped: Some(tapped), stopped, relay: Some(relay) });
+        Ok(())
+    }
+}
+
+/// Hands an attached stream's messages to the Link until the runner stops it or the stream stops
+/// feeding the keyboard. A stream left open on the Link is ended there.
+fn forward_attached(
+    id: u64,
+    mut frames: mpsc::Receiver<Message>,
+    stopped: &AtomicBool,
+    uplink: &Uplink,
+    status: &StatusBoard,
+    cut_reason: impl FnOnce() -> Option<String>,
+) -> Outcome {
+    let mut open = None;
+    while let Some(message) = frames.blocking_recv() {
+        let starts = match &message {
+            Message::StreamStart(info) => {
+                open = Some(info.stream_id);
+                true
+            }
+            Message::StreamEnd { .. } => {
+                open = None;
+                false
+            }
+            _ => false,
+        };
+        if uplink.push_stream(message).is_err() {
+            return Outcome::LinkLost;
+        }
+        if starts {
+            status.update(|status| {
+                if status.worker == Some(id) {
+                    status.streaming = true;
+                }
+            });
+        }
+    }
+    if let Some(stream_id) = open
+        && uplink.push_stream(Message::StreamEnd { stream_id }).is_err()
+    {
+        return Outcome::LinkLost;
+    }
+    match stopped.load(Ordering::Relaxed) {
+        true => Outcome::Finished,
+        false => Outcome::Failed(cut_reason().unwrap_or_else(|| "it stopped feeding the keyboard".to_owned())),
     }
 }
 
@@ -303,23 +394,23 @@ mod tests {
     use super::RunnerEffect::{Ended, Spawn, StopWorker};
     use super::RunnerState::{Idle, PausedForUpload, Running, WaitingForLink};
     use super::*;
-    use glassdeck_capture::sources::Play;
+    use glassdeck_capture::sources::{Play, SourceRequest};
 
-    fn request(name: &str) -> SourceRequest {
-        SourceRequest { play: Play::File { path: name.into(), looping: false }, seconds: None }
+    fn request(name: &str) -> Playing {
+        Playing::Source(SourceRequest { play: Play::File { path: name.into(), looping: false }, seconds: None })
     }
 
     #[test]
     fn walks_the_whole_transition_table() {
         let (a, b) = (request("a"), request("b"));
-        let running = Running { request: a.clone(), worker: 1 };
-        let waiting = WaitingForLink { request: a.clone() };
-        let paused = PausedForUpload { request: a.clone() };
+        let running = Running { playing: a.clone(), worker: 1 };
+        let waiting = WaitingForLink { playing: a.clone() };
+        let paused = PausedForUpload { playing: a.clone() };
         let ended = |worker, outcome| RunnerEvent::WorkerEnded { worker, outcome };
         let table = vec![
-            (Idle, RunnerEvent::Start(b.clone()), Running { request: b.clone(), worker: 9 }, vec![Spawn { worker: 9, request: b.clone() }]),
-            (running.clone(), RunnerEvent::Start(b.clone()), Running { request: b.clone(), worker: 9 }, vec![StopWorker(1), Spawn { worker: 9, request: b.clone() }]),
-            (waiting.clone(), RunnerEvent::Start(b.clone()), Running { request: b.clone(), worker: 9 }, vec![Spawn { worker: 9, request: b.clone() }]),
+            (Idle, RunnerEvent::Start(b.clone()), Running { playing: b.clone(), worker: 9 }, vec![Spawn { worker: 9, playing: b.clone() }]),
+            (running.clone(), RunnerEvent::Start(b.clone()), Running { playing: b.clone(), worker: 9 }, vec![StopWorker(1), Spawn { worker: 9, playing: b.clone() }]),
+            (waiting.clone(), RunnerEvent::Start(b.clone()), Running { playing: b.clone(), worker: 9 }, vec![Spawn { worker: 9, playing: b.clone() }]),
             (Idle, RunnerEvent::Stop, Idle, vec![]),
             (running.clone(), RunnerEvent::Stop, Idle, vec![StopWorker(1)]),
             (waiting.clone(), RunnerEvent::Stop, Idle, vec![]),
@@ -328,18 +419,18 @@ mod tests {
             (running.clone(), ended(1, Outcome::LinkLost), waiting.clone(), vec![Ended { worker: 1, outcome: Outcome::LinkLost }]),
             (running.clone(), ended(2, Outcome::Finished), running.clone(), vec![]),
             (Idle, ended(1, Outcome::Finished), Idle, vec![]),
-            (waiting.clone(), RunnerEvent::LinkUp, Running { request: a.clone(), worker: 9 }, vec![Spawn { worker: 9, request: a.clone() }]),
+            (waiting.clone(), RunnerEvent::LinkUp, Running { playing: a.clone(), worker: 9 }, vec![Spawn { worker: 9, playing: a.clone() }]),
             (running.clone(), RunnerEvent::LinkUp, running.clone(), vec![]),
             (Idle, RunnerEvent::LinkUp, Idle, vec![]),
             (running.clone(), RunnerEvent::PauseForUpload, paused.clone(), vec![StopWorker(1)]),
             (Idle, RunnerEvent::PauseForUpload, Idle, vec![]),
             (waiting.clone(), RunnerEvent::PauseForUpload, waiting.clone(), vec![]),
             (paused.clone(), RunnerEvent::PauseForUpload, paused.clone(), vec![]),
-            (paused.clone(), RunnerEvent::ResumeAfterUpload, Running { request: a.clone(), worker: 9 }, vec![Spawn { worker: 9, request: a.clone() }]),
+            (paused.clone(), RunnerEvent::ResumeAfterUpload, Running { playing: a.clone(), worker: 9 }, vec![Spawn { worker: 9, playing: a.clone() }]),
             (Idle, RunnerEvent::ResumeAfterUpload, Idle, vec![]),
             (running.clone(), RunnerEvent::ResumeAfterUpload, running.clone(), vec![]),
             (waiting.clone(), RunnerEvent::ResumeAfterUpload, waiting.clone(), vec![]),
-            (paused.clone(), RunnerEvent::Start(b.clone()), PausedForUpload { request: b.clone() }, vec![]),
+            (paused.clone(), RunnerEvent::Start(b.clone()), PausedForUpload { playing: b.clone() }, vec![]),
             (paused.clone(), RunnerEvent::Stop, Idle, vec![]),
             (paused.clone(), ended(1, Outcome::Finished), paused.clone(), vec![]),
             (paused.clone(), RunnerEvent::LinkUp, paused.clone(), vec![]),

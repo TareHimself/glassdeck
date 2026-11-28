@@ -266,7 +266,9 @@ export type Event =
 /**  Everything at once: first on connecting, and again if this client fell behind */
 { type: "status"; status: Status } | { type: "link"; connection: KeyboardLink } | { type: "stream"; status: StreamStatus } | 
 /**  A new active theme */
-{ type: "theme"; theme: Theme };
+{ type: "theme"; theme: Theme } | 
+/**  A program attached or detached a stream */
+{ type: "streams"; streams: Streams };
 
 /**  Why a call to glassdeckd didn't get an answer. */
 export type GlassdeckdError = 

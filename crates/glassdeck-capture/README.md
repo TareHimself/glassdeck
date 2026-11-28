@@ -18,7 +18,7 @@ flowchart LR
 | `Web` | Render a URL offscreen with CEF | Paced | GPU |
 | `File` | An H.264 or HEVC MP4 | Paced | None, sent as it is |
 | `Background` | A background `.deck`: video sent as it is, web rendered with CEF | Paced | None, or GPU for web |
-| `Wallpaper` | A Wallpaper Engine item: video and web via its `.deck` (built on first use), scenes live | Paced | As above, GPU for scenes |
+| `Wallpaper` | A Wallpaper Engine video or web item, via its `.deck` (built on first use) | Paced | As above |
 
 Canvas backgrounds can't be streamed. The keyboard draws them itself.
 

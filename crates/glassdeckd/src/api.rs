@@ -30,7 +30,8 @@ use crate::error::{Failure, answer, conflict};
 use crate::link::Uplink;
 use crate::module_host::HostCommand;
 use crate::runner::{Runner, RunnerEvent};
-use crate::streams::{MonitorStream, StreamName, monitor_streams};
+use crate::attached::{Attachments, Change};
+use crate::streams::{self, Playing, Stream, StreamName, monitor_streams};
 use crate::theme::{self, ActiveTheme};
 
 /// How long starting a source may take before the client is told it's still starting (CEF is the slow one).
@@ -62,6 +63,9 @@ pub struct Api {
     pub events: broadcast::Sender<Event>,
     pub feeds: Arc<crate::feeds::Feeds>,
     pub whep: Arc<crate::whep::Sessions>,
+    pub attachments: Arc<Attachments>,
+    /// Where programs attach streams, for `api.json`
+    pub stream_port: u16,
 }
 
 /// Held for the length of a large upload.
@@ -108,7 +112,7 @@ impl Api {
         if let Some(folder) = api_file.parent() {
             std::fs::create_dir_all(folder)?;
         }
-        let file = ApiFile { format: API_FORMAT_VERSION, port, token: self.token.clone() };
+        let file = ApiFile { format: API_FORMAT_VERSION, port, stream_port: self.stream_port, token: self.token.clone() };
         std::fs::write(api_file, serde_json::to_vec_pretty(&file)?).with_context(|| format!("writing {}", api_file.display()))?;
         println!("API: http://127.0.0.1:{port} (token in {})", api_file.display());
         axum::serve(listener, router(self)).await.context("serving the local API")
@@ -127,13 +131,14 @@ impl Api {
 
     fn streams(&self) -> Result<Streams> {
         let shown = self.theme.lock().expect("theme poisoned").1.stream.clone().filter(|_| self.runner.status().worker.is_some());
-        let streams = monitor_streams(&monitors::enumerate()?)
+        let streams = self
+            .all_streams()?
             .into_iter()
             .map(|s| StreamEntry {
-                name: s.name.as_str().to_owned(),
+                name: s.name().as_str().to_owned(),
                 mode: StreamMode::Live,
-                from: "built in".to_owned(),
-                shown: shown.as_ref() == Some(&s.name),
+                from: s.from().to_owned(),
+                shown: shown.as_ref() == Some(s.name()),
             })
             .collect();
         Ok(Streams { streams })
@@ -150,7 +155,7 @@ impl Api {
         let active = &guard.1;
         if let Some(name) = &active.stream {
             match self.find_stream(name)? {
-                Some(stream) => self.runner.send(RunnerEvent::Start(stream.request()))?,
+                Some(stream) => self.runner.send(RunnerEvent::Start(stream.playing()))?,
                 None => println!("Theme: {name} isn't there now"),
             }
         }
@@ -253,7 +258,13 @@ impl Api {
     /// What the stream's monitor shows now, as a JPEG at most `SNAPSHOT_WIDTH` wide: the app's preview of a
     /// stream before it's applied, when nothing is encoding it yet.
     fn stream_snapshot(&self, name: &str) -> Result<Vec<u8>> {
-        let stream = self.attached_stream(name)?;
+        let stream = match self.attached_stream(name)? {
+            Stream::Monitor(stream) => stream,
+            Stream::Attached { name, .. } => {
+                let still = self.attachments.still(&name).ok_or_else(|| crate::error::not_found(format!("{name} has sent no still yet")))?;
+                return Ok(still.to_vec());
+            }
+        };
         let found = monitors::find(&monitors::MonitorQuery::Index(stream.monitor.index))?;
         let (bgra, (width, height)) = glassdeck_capture::capture_still(found.monitor)?;
         let rgb: Vec<u8> = bgra.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0]]).collect();
@@ -266,13 +277,35 @@ impl Api {
         Ok(jpeg)
     }
 
-    fn attached_stream(&self, name: &str) -> Result<MonitorStream> {
+    fn attached_stream(&self, name: &str) -> Result<Stream> {
         let name = StreamName::parse(name).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
         self.find_stream(&name)?.ok_or_else(|| crate::error::not_found(format!("no stream {name} is attached")))
     }
 
-    fn find_stream(&self, name: &StreamName) -> Result<Option<MonitorStream>> {
-        Ok(monitor_streams(&monitors::enumerate()?).into_iter().find(|s| s.name == *name))
+    fn find_stream(&self, name: &StreamName) -> Result<Option<Stream>> {
+        Ok(self.all_streams()?.into_iter().find(|s| s.name() == name))
+    }
+
+    fn all_streams(&self) -> Result<Vec<Stream>> {
+        Ok(streams::all(monitor_streams(&monitors::enumerate()?), self.attachments.list()))
+    }
+
+    /// Run as programs attach and detach streams. A stream the theme shows starts on arrival, so the
+    /// keyboard plays its own background until then.
+    pub fn streams_changed(&self, change: &Change) {
+        if let Change::Attached(name) = change {
+            let chosen = self.theme.lock().expect("theme poisoned").1.stream.as_ref() == Some(name);
+            if chosen && self.runner.status().state == StreamState::Idle {
+                println!("Theme: {name} is here; showing it");
+                if let Err(e) = self.runner.send(RunnerEvent::Start(Playing::Attached(name.clone()))) {
+                    eprintln!("error: showing {name}: {e:#}");
+                }
+            }
+        }
+        match self.streams() {
+            Ok(streams) => self.publish(Event::Streams { streams }),
+            Err(e) => eprintln!("error: listing streams: {e:#}"),
+        }
     }
 
     fn stop_stream(&self) -> Result<()> {
@@ -291,7 +324,7 @@ impl Api {
             return Ok(ShowState::Unavailable);
         };
         let before = self.runner.status();
-        self.runner.send(RunnerEvent::Start(stream.request()))?;
+        self.runner.send(RunnerEvent::Start(stream.playing()))?;
         let reached = self.runner.status.wait_for(Instant::now() + START_WAIT, |now| {
             if *now == before {
                 return None;
@@ -369,12 +402,23 @@ async fn whep_offer(State(api): State<Arc<Api>>, axum::extract::Path(name): axum
         Err(e) => return Err(anyhow!("the request's handler panicked: {e}").into()),
     };
     let feed = crate::whep::Feed::for_offer(&offer, stream.codec()).map_err(|e| crate::error::bad_request(format!("{e:#}")))?;
-    let request = match feed {
-        crate::whep::Feed::Stream(_) => stream.request(),
-        crate::whep::Feed::Preview => stream.preview_request(),
+    let (session, answer) = match (stream, feed) {
+        (Stream::Monitor(stream), feed) => {
+            let request = match feed {
+                crate::whep::Feed::Stream(_) => stream.request(),
+                crate::whep::Feed::Preview => stream.preview_request(),
+            };
+            let feeds = Arc::clone(&api.feeds);
+            api.whep.start(offer, feed, move || feeds.watch(request)).await?
+        }
+        (Stream::Attached { name, codec }, crate::whep::Feed::Preview) => {
+            return Err(crate::error::bad_request(format!("{name} is {codec:?}, which this page can't play")).into());
+        }
+        (Stream::Attached { name, .. }, feed) => {
+            let attachments = Arc::clone(&api.attachments);
+            api.whep.start(offer, feed, move || attachments.tap_viewer(&name)).await?
+        }
     };
-    let feeds = Arc::clone(&api.feeds);
-    let (session, answer) = api.whep.start(offer, feed, move || feeds.watch(request)).await?;
     let location = format!("/streams/{name}/whep/{session}");
     Ok((
         axum::http::StatusCode::CREATED,

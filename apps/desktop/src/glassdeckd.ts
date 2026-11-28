@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type KeyboardLink, type Status, type Theme } from "./bindings";
+import { commands, events, type Event, type GlassdeckdError, type GlassdeckdUpdate, type KeyboardLink, type Status, type StreamEntry, type Theme } from "./bindings";
 
 export type Connection =
   | { state: "connecting" }
@@ -32,6 +32,7 @@ function applyEvent(current: Connection, event: Event): Connection {
     case "stream":
       return { state: "connected", status: { ...status, stream: event.status } };
     case "theme":
+    case "streams":
       return current;
   }
 }
@@ -75,9 +76,14 @@ export function keyboardLabel(link: KeyboardLink): string {
   }
 }
 
-type Store = { connection: Connection; theme: Theme | null };
+type Store = { connection: Connection; theme: Theme | null; streams: StreamEntry[] };
 
-export const useGlassdeckd = create<Store>(() => ({ connection: { state: "connecting" }, theme: null }));
+export const useGlassdeckd = create<Store>(() => ({ connection: { state: "connecting" }, theme: null, streams: [] }));
+
+export async function refreshStreams() {
+  const streams = await commands.streams();
+  if (streams.status === "ok") useGlassdeckd.setState({ streams: streams.data.streams });
+}
 
 async function refreshTheme() {
   const theme = await commands.theme();
@@ -89,6 +95,8 @@ export async function followGlassdeckd(): Promise<() => void> {
     useGlassdeckd.setState(({ connection }) => ({ connection: nextConnection(connection, payload) }));
     if (payload.state === "message" && payload.event.type === "theme") {
       useGlassdeckd.setState({ theme: payload.event.theme });
+    } else if (payload.state === "message" && payload.event.type === "streams") {
+      useGlassdeckd.setState({ streams: payload.event.streams.streams });
     } else if (payload.state === "message" && payload.event.type === "status") {
       void refreshTheme();
     }

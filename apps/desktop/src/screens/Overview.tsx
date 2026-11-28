@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useLocation } from "react-router";
-import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type PreviewRun, type StreamEntry, type ThemeWidget, type WidgetSummary } from "../bindings";
+import { BUILT_IN_BACKGROUND, commands, events, GRID, WIDGET_AREA, type BackgroundSummary, type PanelLayout, type PanelRect, type PreviewRun, type ThemeWidget, type WidgetSummary } from "../bindings";
 import { Button } from "../components/Button";
 import { BACK_TO_OVERVIEW, PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
@@ -9,7 +9,7 @@ import { Problem } from "../components/Problem";
 import { useApplyTheme } from "../applying";
 import { setDraft, sameTheme, useSeededDraft } from "../draft";
 import { nextPreviewRun } from "../previews";
-import { describeError, useGlassdeckd } from "../glassdeckd";
+import { describeError, refreshStreams, useGlassdeckd } from "../glassdeckd";
 import { useKeyboard } from "../keyboard";
 import { BUILT_IN, useBuiltInBackground } from "../library";
 import { overlaps, type Box } from "../widgetArea";
@@ -121,7 +121,7 @@ export function Overview() {
   const draft = useSeededDraft();
   const library = useLibrary();
   const [layout, setLayout] = useState<PanelLayout | null>(null);
-  const [streams, setStreams] = useState<StreamEntry[]>([]);
+  const streams = useGlassdeckd((s) => s.streams);
   const [showKeys, setShowKeys] = useState(true);
   const added = addedWidget(useLocation().state);
   const [selected, setSelected] = useState<number | null>(added);
@@ -136,7 +136,7 @@ export function Overview() {
 
   const streamStatus = connection.state === "connected" ? connection.status.stream : null;
   useEffect(() => {
-    void commands.streams().then((r) => r.status === "ok" && setStreams(r.data.streams));
+    void refreshStreams();
   }, [streamStatus?.playing, streamStatus?.streaming]);
 
   /** The chosen stream, while it's attached: it overrides the background, on the keyboard and here. */

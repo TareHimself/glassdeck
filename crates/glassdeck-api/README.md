@@ -4,7 +4,7 @@ The types glassdeckd's local API sends and takes, shared by glassdeckd, the `gla
 
 ## Reaching the API
 
-glassdeckd listens on `127.0.0.1` at a random port and writes `%LOCALAPPDATA%\Glassdeck\api.json` (`ApiFile`) with the port and a token. Every request carries `Authorization: Bearer <token>`.
+glassdeckd listens on `127.0.0.1` at a random port and writes `%LOCALAPPDATA%\Glassdeck\api.json` (`ApiFile`) with the port, the stream port (for [glassdeck-stream](../glassdeck-stream)) and a token. Every request carries `Authorization: Bearer <token>`.
 
 ## Routes
 

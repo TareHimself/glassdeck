@@ -1,0 +1,18 @@
+[package]
+name = "glassdeck-wallpaper-engine-stream"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Attaches the wallpaper-engine stream to glassdeckd: what Wallpaper Engine shows, rendered by Wallpaper Engine"
+
+[dependencies]
+anyhow.workspace = true
+glassdeck-capture.workspace = true
+glassdeck-package.workspace = true
+glassdeck-proto.workspace = true
+glassdeck-stream.workspace = true
+glassdeck-wallpaper-engine.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
+windows.workspace = true
+windows-capture.workspace = true

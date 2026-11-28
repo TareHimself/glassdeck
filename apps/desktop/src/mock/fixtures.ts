@@ -24,7 +24,10 @@ export const STATUS: Status = {
   stream: { state: "idle", playing: null, worker: null, streaming: false, last_ended: null },
 };
 
-export const STREAMS: StreamEntry[] = [{ name: "monitor-1", mode: "live", from: "built in", shown: false }];
+export const STREAMS: StreamEntry[] = [
+  { name: "monitor-1", mode: "live", from: "built in", shown: false },
+  { name: "wallpaper-engine", mode: "live", from: "attached", shown: false },
+];
 
 export const CLOCK_KEYBOARD = `--[[ Draws the time ]]
 local seconds: boolean = false

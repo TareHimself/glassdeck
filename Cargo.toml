@@ -23,6 +23,7 @@ glassdeck-scanner-dsp = { path = "crates/glassdeck-scanner-dsp" }
 glassdeck-setup = { path = "crates/glassdeck-setup" }
 glassdeck-gpu = { path = "crates/glassdeck-gpu" }
 glassdeck-host = { path = "crates/glassdeck-host" }
+glassdeck-stream = { path = "crates/glassdeck-stream" }
 glassdeck-slang = { path = "crates/glassdeck-slang" }
 glassdeck-wallpaper-engine = { path = "crates/glassdeck-wallpaper-engine" }
 glassdeck-widget = { path = "crates/glassdeck-widget" }

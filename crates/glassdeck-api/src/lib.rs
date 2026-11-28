@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use specta::Type;
 
-pub const API_FORMAT_VERSION: u32 = 4;
+pub const API_FORMAT_VERSION: u32 = 5;
 pub const THEME_FORMAT_VERSION: u32 = 1;
 
 fn local_folder() -> Result<PathBuf> {
@@ -49,6 +49,8 @@ pub fn active_packages() -> Result<PathBuf> {
 pub struct ApiFile {
     pub format: u32,
     pub port: u16,
+    /// Where programs attach streams with stream protocol v1 (the `glassdeck-stream` crate)
+    pub stream_port: u16,
     pub token: String,
 }
 
@@ -334,6 +336,8 @@ pub enum Event {
     Stream { status: StreamStatus },
     /// A new active theme
     Theme { theme: Theme },
+    /// A program attached or detached a stream
+    Streams { streams: Streams },
 }
 
 #[cfg(test)]

@@ -93,6 +93,13 @@ test("Live shows only for a chosen stream, green while it's attached", async ({ 
   expect((await streamCard.boundingBox())?.height, "the card doesn't grow when the pill appears").toBe(heightWithNone);
 });
 
+test("a stream another program attached can be chosen like a monitor", async ({ page }) => {
+  const streamCard = page.locator("section", { has: page.getByRole("heading", { name: "Stream", exact: true }) });
+  await streamCard.getByRole("combobox", { name: "Stream" }).click();
+  await page.getByRole("option", { name: "wallpaper-engine" }).click();
+  await expect(streamCard.getByText("Live")).toHaveAttribute("data-live", "true");
+});
+
 test("an attached stream shows in the keyboard preview instead of the background", async ({ page }) => {
   const streamCard = page.locator("section", { has: page.getByRole("heading", { name: "Stream", exact: true }) });
   await expect(page.getByRole("img", { name: "monitor-1 now" })).toHaveCount(0);

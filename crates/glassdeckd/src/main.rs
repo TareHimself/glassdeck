@@ -3,6 +3,7 @@
 //! from the CLI over a local API.
 
 mod active;
+mod attached;
 mod api;
 mod config;
 mod error;
@@ -22,7 +23,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use active::ActivePackages;
@@ -121,7 +122,13 @@ fn run(keyboard: Option<KeyboardAddress>, log: bool) -> Result<()> {
         let _ = stream_changed.send(Event::Stream { status: status.clone() });
     }));
     let feeds = feeds::Feeds::new(token.clone());
-    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status, Arc::clone(&feeds))?;
+    let (stream_changes, streams_changed) = mpsc::channel();
+    let attachments = attached::Attachments::new(token.clone(), stream_changes);
+    let stream_listener = std::net::TcpListener::bind("127.0.0.1:0").context("listening for attached streams")?;
+    let stream_port = stream_listener.local_addr()?.port();
+    let serving = Arc::clone(&attachments);
+    thread::Builder::new().name("attached streams".into()).spawn(move || serving.serve(stream_listener))?;
+    let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status, Arc::clone(&feeds), Arc::clone(&attachments))?;
     let linked = Arc::clone(&uplink);
     let to = match config.keyboard {
         KeyboardAddress::Network(address) => address,
@@ -145,10 +152,18 @@ fn run(keyboard: Option<KeyboardAddress>, log: bool) -> Result<()> {
         events: published,
         feeds,
         whep: Arc::default(),
+        attachments,
+        stream_port,
     });
     if let Err(e) = api.restore() {
         eprintln!("error: restoring the theme: {e:#}; the keyboard keeps its own");
     }
+    let watching = Arc::clone(&api);
+    thread::Builder::new().name("stream changes".into()).spawn(move || {
+        for change in streams_changed {
+            watching.streams_changed(&change);
+        }
+    })?;
     let syncing = Arc::clone(&api);
     thread::Builder::new().name("keyboard sync".into()).spawn(move || {
         for () in keyboard_reports {

@@ -2082,6 +2082,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "glassdeck-stream"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "glassdeck-wallpaper-engine"
 version = "0.1.0"
 dependencies = [
@@ -2093,6 +2101,22 @@ dependencies = [
  "serde",
  "serde_json",
  "windows",
+]
+
+[[package]]
+name = "glassdeck-wallpaper-engine-stream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glassdeck-capture",
+ "glassdeck-package",
+ "glassdeck-proto",
+ "glassdeck-stream",
+ "glassdeck-wallpaper-engine",
+ "image",
+ "sysinfo",
+ "windows",
+ "windows-capture",
 ]
 
 [[package]]
@@ -2123,6 +2147,7 @@ dependencies = [
  "glassdeck-luau",
  "glassdeck-package",
  "glassdeck-proto",
+ "glassdeck-stream",
  "image",
  "mlua",
  "nusb",

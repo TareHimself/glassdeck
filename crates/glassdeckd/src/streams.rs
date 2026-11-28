@@ -1,5 +1,5 @@
-//! The streams a theme can show while the host is on. For now the only streams are the built-in
-//! ones, one per monitor.
+//! The streams a theme can show while the host is on: the built-in ones, one per monitor, and the
+//! ones other programs attach (see `attached`).
 
 use std::fmt;
 
@@ -9,7 +9,7 @@ use glassdeck_capture::monitors::MonitorInfo;
 use glassdeck_capture::pipeline::VideoCodec;
 use glassdeck_capture::sources::{Play, SourceRequest};
 
-const MONITOR_PREFIX: &str = "monitor-";
+pub const MONITOR_PREFIX: &str = "monitor-";
 const MAX_NAME_BYTES: usize = 64;
 /// HEVC: fewer bits for the same picture, and the RK3566 decodes it faster
 const STREAM_CODEC: VideoCodec = VideoCodec::Hevc;
@@ -31,6 +31,70 @@ impl StreamName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Built-in streams' names, which programs can't attach as.
+    pub fn is_reserved(&self) -> bool {
+        self.0.starts_with(MONITOR_PREFIX)
+    }
+}
+
+/// A stream that's there now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stream {
+    Monitor(MonitorStream),
+    Attached { name: StreamName, codec: glassdeck_proto::Codec },
+}
+
+impl Stream {
+    pub fn name(&self) -> &StreamName {
+        match self {
+            Self::Monitor(monitor) => &monitor.name,
+            Self::Attached { name, .. } => name,
+        }
+    }
+
+    pub fn from(&self) -> &'static str {
+        match self {
+            Self::Monitor(_) => "built in",
+            Self::Attached { .. } => "attached",
+        }
+    }
+
+    pub fn codec(&self) -> glassdeck_proto::Codec {
+        match self {
+            Self::Monitor(monitor) => monitor.codec(),
+            Self::Attached { codec, .. } => *codec,
+        }
+    }
+
+    /// What the runner plays to show it on the keyboard.
+    pub fn playing(&self) -> Playing {
+        match self {
+            Self::Monitor(monitor) => Playing::Source(monitor.request()),
+            Self::Attached { name, .. } => Playing::Attached(name.clone()),
+        }
+    }
+}
+
+/// What the runner plays: a source in a worker it starts, or a stream a program attached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Playing {
+    Source(SourceRequest),
+    Attached(StreamName),
+}
+
+impl fmt::Display for Playing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(request) => write!(f, "{}", request.play),
+            Self::Attached(name) => write!(f, "attached stream {name}"),
+        }
+    }
+}
+
+/// Every stream there now: monitors first, then attached streams.
+pub fn all(monitors: Vec<MonitorStream>, attached: Vec<(StreamName, glassdeck_proto::Codec)>) -> Vec<Stream> {
+    monitors.into_iter().map(Stream::Monitor).chain(attached.into_iter().map(|(name, codec)| Stream::Attached { name, codec })).collect()
 }
 
 impl fmt::Display for StreamName {
@@ -107,6 +171,18 @@ mod tests {
 
     fn monitor(index: usize, name: &str) -> MonitorInfo {
         MonitorInfo { index, name: name.into(), width: 1920, height: 1080, refresh_hz: 60 }
+    }
+
+    #[test]
+    fn monitors_come_first_and_attached_streams_play_by_name() {
+        let name = StreamName::parse("wallpaper-engine").unwrap();
+        let streams = all(monitor_streams(&[monitor(1, "Q27G4ZD")]), vec![(name.clone(), glassdeck_proto::Codec::H264)]);
+        let names: Vec<&str> = streams.iter().map(|s| s.name().as_str()).collect();
+        assert_eq!(names, ["monitor-q27g4zd", "wallpaper-engine"]);
+        assert_eq!(streams[1].playing(), Playing::Attached(name));
+        assert_eq!((streams[0].from(), streams[1].from()), ("built in", "attached"));
+        assert!(matches!(streams[0].playing(), Playing::Source(_)));
+        assert!(streams[0].name().is_reserved() && !streams[1].name().is_reserved());
     }
 
     #[test]

@@ -48,9 +48,11 @@ flowchart LR
 | [glassdeck](crates/glassdeck) | host | The CLI. |
 | [glassdeck-api](crates/glassdeck-api) | host | The local API's shared request and response types. They derive `specta::Type` for the app's TypeScript bindings. |
 | [glassdeck-desktop](apps/desktop) | host | The desktop app (Tauri, React, CSS Modules). Owns the library, edits and previews packages, and pushes the active theme to glassdeckd. |
-| [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds, Wallpaper Engine scenes. |
+| [glassdeck-capture](crates/glassdeck-capture) | host | Sources and Encoders: monitors, web pages, files, backgrounds. |
 | [glassdeck-convert](crates/glassdeck-convert) | host | Turns a video file or web page folder into a background `.deck`. |
-| [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder. |
+| [glassdeck-wallpaper-engine](crates/glassdeck-wallpaper-engine) | host | Imports Wallpaper Engine items from the local Steam workshop folder, and reads which wallpaper Wallpaper Engine shows. |
+| [glassdeck-stream](crates/glassdeck-stream) | host | Stream protocol v1: how another program attaches a named stream to glassdeckd. |
+| [glassdeck-wallpaper-engine-stream](crates/glassdeck-wallpaper-engine-stream) | host | Attaches `wallpaper-engine`: the wallpaper Wallpaper Engine shows, rendered by Wallpaper Engine and captured. |
 | [glassdeck-slang](crates/glassdeck-slang) | host | Slang compiler bindings and `glassdeck pack` for canvases. |
 | [glassdeck-luau-check](crates/glassdeck-luau-check) | host | Luau type checker bindings, for checking scripts when packing and in the app. |
 | [glassdeck-proto](crates/glassdeck-proto) | both | The Link wire protocol and the keyboard's compositor socket protocol. |
