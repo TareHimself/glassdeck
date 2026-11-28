@@ -3,18 +3,18 @@ use glassdeck_layout::{Layout, PANEL_HEIGHT, PANEL_WIDTH, Variant};
 
 use glassdeck_layout::keymap::Keymap;
 
-const KEY_INSET: f32 = 4.0;
-const OUTLINE: usize = 2;
-const OUTLINE_COLOR: u32 = 0xFF_FF_FF;
-const OUTLINE_ALPHA: u8 = 70;
+/// Keycaps as the app's Overview draws them, in panel pixels: a translucent cap with a faint
+/// border and a small label in its top-left corner.
+const CAP_RADIUS: f32 = 13.0;
+const CAP_FILL: u32 = 0x06_04_14;
+const CAP_FILL_ALPHA: u8 = 77;
+const CAP_BORDER: u32 = 0xFF_FF_FF;
+const CAP_BORDER_ALPHA: u8 = 36;
+const CAP_BORDER_WIDTH: f32 = 2.0;
+const LABEL_PX: f32 = 17.0;
+const LABEL_PAD: (f32, f32) = (11.0, 9.0);
 const LABEL_COLOR: u32 = 0xFF_FF_FF;
-const LABEL_ALPHA: u8 = 235;
-const SHADOW_COLOR: u32 = 0x00_00_00;
-const SHADOW_ALPHA: u8 = 170;
-const SHADOW_OFFSET: i32 = 2;
-/// Label size as a share of the key's height, shrunk further when a label is wider than its key.
-const LABEL_HEIGHT_SHARE: f32 = 0.28;
-const LABEL_SIDE_PADDING: f32 = 8.0;
+const LABEL_ALPHA: u8 = 217;
 
 /// What the key labels need: a font and which keyboard layout to place them on.
 pub struct Labels {
@@ -60,17 +60,16 @@ impl Overlay {
         let (scale_x, scale_y) = (width as f32 / PANEL_WIDTH, height as f32 / PANEL_HEIGHT);
         let layout = Layout::new(variant);
         for (key, label) in layout.keys.iter().zip(base_labels(keymap, variant)) {
-            let label = label.as_str();
-            let key = Rect {
-                x: (key.x * scale_x + KEY_INSET) as i32,
-                y: (key.y * scale_y + KEY_INSET) as i32,
-                w: (key.width * scale_x - 2.0 * KEY_INSET) as i32,
-                h: (key.height * scale_y - 2.0 * KEY_INSET) as i32,
+            let cap = Rect {
+                x: (key.x * scale_x).round() as i32,
+                y: (key.y * scale_y).round() as i32,
+                w: (key.width * scale_x).round() as i32,
+                h: (key.height * scale_y).round() as i32,
             };
-            let label_px = fitted_size(font, label, key.h as f32 * LABEL_HEIGHT_SHARE, key.w as f32 - 2.0 * LABEL_SIDE_PADDING);
-            canvas.outline(key, OUTLINE_COLOR, OUTLINE_ALPHA);
-            canvas.text(font, label, key, label_px, SHADOW_OFFSET, SHADOW_COLOR, SHADOW_ALPHA);
-            canvas.text(font, label, key, label_px, 0, LABEL_COLOR, LABEL_ALPHA);
+            canvas.cap(cap, CAP_RADIUS * scale_y, CAP_BORDER_WIDTH * scale_y);
+            let (pad_x, pad_y) = (LABEL_PAD.0 * scale_x, LABEL_PAD.1 * scale_y);
+            let label_px = fitted_size(font, &label, LABEL_PX * scale_y, cap.w as f32 - 2.0 * pad_x);
+            canvas.text(font, &label, cap.x as f32 + pad_x, cap.y as f32 + pad_y, label_px, LABEL_COLOR, LABEL_ALPHA);
         }
         Self { width, height, pixels: canvas.pixels }
     }
@@ -129,39 +128,46 @@ impl Canvas {
         }
     }
 
-    fn outline(&mut self, r: Rect, color: u32, alpha: u8) {
-        for t in 0..OUTLINE as i32 {
+    /// A rounded keycap: the fill, then the border ring over it, both anti-aliased at the corners.
+    fn cap(&mut self, r: Rect, radius: f32, border: f32) {
+        let (half_w, half_h) = (r.w as f32 / 2.0, r.h as f32 / 2.0);
+        let radius = radius.min(half_w).min(half_h);
+        for y in r.y..r.y + r.h {
             for x in r.x..r.x + r.w {
-                self.plot(x, r.y + t, color, alpha);
-                self.plot(x, r.y + r.h - 1 - t, color, alpha);
-            }
-            for y in r.y + OUTLINE as i32..r.y + r.h - OUTLINE as i32 {
-                self.plot(r.x + t, y, color, alpha);
-                self.plot(r.x + r.w - 1 - t, y, color, alpha);
+                let (px, py) = (x as f32 + 0.5 - r.x as f32 - half_w, y as f32 + 0.5 - r.y as f32 - half_h);
+                let edge = rounded_box_distance(px, py, half_w, half_h, radius);
+                let inside = (0.5 - edge).clamp(0.0, 1.0);
+                let ring = inside - (0.5 - (edge + border)).clamp(0.0, 1.0);
+                self.plot(x, y, CAP_FILL, (inside * CAP_FILL_ALPHA as f32) as u8);
+                self.plot(x, y, CAP_BORDER, (ring * CAP_BORDER_ALPHA as f32) as u8);
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn text(&mut self, font: &Font, text: &str, within: Rect, px: f32, offset: i32, color: u32, alpha: u8) {
-        let glyphs: Vec<_> = text.chars().map(|c| font.rasterize(c, px)).collect();
-        let text_width: f32 = glyphs.iter().map(|(m, _)| m.advance_width).sum();
-        let mut pen_x = within.x as f32 + (within.w as f32 - text_width) / 2.0;
-        let baseline = within.y as f32 + within.h as f32 / 2.0 + px * 0.35;
-
-        for (metrics, coverage) in &glyphs {
-            let gx = pen_x.round() as i32 + metrics.xmin + offset;
-            let gy = baseline.round() as i32 - metrics.ymin - metrics.height as i32 + offset;
+    /// `text` with its top-left at (`left`, `top`).
+    fn text(&mut self, font: &Font, text: &str, left: f32, top: f32, px: f32, color: u32, alpha: u8) {
+        let baseline = top + px * 0.8;
+        let mut pen_x = left;
+        for c in text.chars() {
+            let (metrics, coverage) = font.rasterize(c, px);
+            let gx = pen_x.round() as i32 + metrics.xmin;
+            let gy = baseline.round() as i32 - metrics.ymin - metrics.height as i32;
             for row in 0..metrics.height {
                 for col in 0..metrics.width {
-                    let c = coverage[row * metrics.width + col] as u32;
-                    let a = (c * alpha as u32 / 255) as u8;
+                    let a = (coverage[row * metrics.width + col] as u32 * alpha as u32 / 255) as u8;
                     self.plot(gx + col as i32, gy + row as i32, color, a);
                 }
             }
             pen_x += metrics.advance_width;
         }
     }
+}
+
+/// Signed distance from a point (relative to the box's centre) to a rounded box's edge; negative inside.
+fn rounded_box_distance(px: f32, py: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
+    let (qx, qy) = (px.abs() - (half_w - radius), py.abs() - (half_h - radius));
+    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+    outside + qx.max(qy).min(0.0) - radius
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
