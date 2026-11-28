@@ -6,11 +6,12 @@ import { BACK_TO_OVERVIEW, PageHeader } from "../components/PageHeader";
 import { Select } from "../components/Select";
 import { BackgroundThumb, StreamLayer } from "../components/Thumbs";
 import { Problem } from "../components/Problem";
+import { useApplyTheme } from "../applying";
 import { setDraft, sameTheme, useSeededDraft } from "../draft";
 import { nextPreviewRun } from "../previews";
-import { describeError, keyboardProblem, useGlassdeckd } from "../glassdeckd";
+import { describeError, useGlassdeckd } from "../glassdeckd";
 import { useKeyboard } from "../keyboard";
-import { BUILT_IN, describeLibraryError, useBuiltInBackground } from "../library";
+import { BUILT_IN, useBuiltInBackground } from "../library";
 import { overlaps, type Box } from "../widgetArea";
 import { SelectedWidget } from "./SelectedWidget";
 import { addedWidget } from "./Widgets";
@@ -127,8 +128,7 @@ export function Overview() {
   /** The widget being dragged, where it is now; the draft changes only when the drag ends. */
   const [ghost, setGhost] = useState<{ index: number; box: Box } | null>(null);
   const panel = useRef<HTMLDivElement>(null);
-  const [applying, setApplying] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const { apply: applyTheme, applying, problem } = useApplyTheme();
 
   useEffect(() => {
     void commands.panelLayout().then(setLayout);
@@ -147,14 +147,7 @@ export function Overview() {
   const tiles = useWidgetTiles(draft?.widgets ?? []);
 
   const apply = async () => {
-    if (!draft) return;
-    setApplying(true);
-    const result = await commands.applyTheme(draft);
-    setApplying(false);
-    if (result.status === "ok") return setProblem(null);
-    const error = result.error;
-    const keyboard = connection.state === "connected" ? keyboardProblem(connection.status.link.connection) : null;
-    setProblem(error.kind === "glassdeckd" ? (keyboard ?? describeError(error.error)) : describeLibraryError(error.error));
+    if (draft) await applyTheme(draft);
   };
 
   if (connection.state === "lost") {

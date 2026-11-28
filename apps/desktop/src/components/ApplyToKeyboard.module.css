@@ -1,0 +1,8 @@
+.setUp {
+  font-size: 13px;
+}
+
+.onKeyboard:disabled {
+  opacity: 1;
+  color: var(--ok);
+}

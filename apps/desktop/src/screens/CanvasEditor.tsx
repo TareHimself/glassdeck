@@ -1,3 +1,5 @@
+import { noteSaved, useApplyTheme } from "../applying";
+import { ApplyToKeyboard } from "../components/ApplyToKeyboard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type BackgroundSummary, type CanvasCheck, type InputReading, type LibraryError, type OptionsPanel, type PanelLayout, type PanelRect, type SourceFile, type Value } from "../bindings";
 import { useLiveCanvas } from "../previews";
@@ -92,6 +94,7 @@ export function CanvasEditor({ id }: { id: string }) {
   const [background, setBackground] = useState<BackgroundSummary | null>(null);
   const [failed, setFailed] = useState<LibraryError | null>(null);
   const [files, setFiles] = useState<Files>({});
+  const applying = useApplyTheme();
   const [saved, setSaved] = useState<{ files: Files; title: string; version: string }>({ files: {}, title: "", version: "" });
   const [title, setTitle] = useState("");
   const [version, setVersion] = useState("");
@@ -205,6 +208,7 @@ export function CanvasEditor({ id }: { id: string }) {
     setProblem(null);
     setBackground(result.data);
     setSaved({ files, title: result.data.title, version: result.data.version });
+    noteSaved(id);
     await runCheck();
     return true;
   };
@@ -249,14 +253,14 @@ export function CanvasEditor({ id }: { id: string }) {
           <>
             <Button onClick={() => void runCheck()}>Check</Button>
             <Button onClick={() => void pack()}>Pack .deck</Button>
-            <Button variant="primary" onClick={() => void (dirty && save())}>
-              {dirty ? "Save" : "Saved"}
-            </Button>
+            <Button onClick={() => void (dirty && save())}>{dirty ? "Save" : "Saved"}</Button>
+            <ApplyToKeyboard id={id} unsaved={dirty} save={save} apply={applying} />
           </>
         }
       />
 
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+      {applying.problem && <Problem>{applying.problem}</Problem>}
 
       <div className={styles.columns}>
         <SourcePanel

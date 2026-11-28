@@ -1,3 +1,5 @@
+import { noteSaved, useApplyTheme } from "../applying";
+import { ApplyToKeyboard } from "../components/ApplyToKeyboard";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { commands, events, type LibraryError, type VideoBackground, type VideoFacts } from "../bindings";
@@ -110,6 +112,7 @@ export function VideoPage({ id }: { id: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const applying = useApplyTheme();
   if (!loaded) return problem ? <Problem>{describeLibraryError(problem)}</Problem> : <PageHeader back={back} title="" />;
 
   const { background, record, video, conversion } = loaded;
@@ -130,12 +133,17 @@ export function VideoPage({ id }: { id: string }) {
     else setProblem(result.error);
   };
 
-  const save = async () => {
-    if (!staged) return;
+  const save = async (): Promise<boolean> => {
+    if (!staged) return true;
     const result = await commands.setVideoPreview(id, staged.seconds);
-    if (result.status === "error") return setProblem(result.error);
+    if (result.status === "error") {
+      setProblem(result.error);
+      return false;
+    }
     setLoaded({ ...loaded, video: video && { ...video, preview: result.data } });
     setStaged(null);
+    noteSaved(id);
+    return true;
   };
 
   const preview = staged?.jpeg ?? video?.preview ?? null;
@@ -147,13 +155,15 @@ export function VideoPage({ id }: { id: string }) {
         title={background.title}
         id={`${background.id} ${background.version}, video background`}
         actions={
-          <Button variant="primary" onClick={() => void save()}>
-            {staged ? "Save" : "Saved"}
-          </Button>
+          <>
+            <Button onClick={() => void save()}>{staged ? "Save" : "Saved"}</Button>
+            <ApplyToKeyboard id={id} unsaved={!!staged} save={save} apply={applying} />
+          </>
         }
       />
 
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+      {applying.problem && <Problem>{applying.problem}</Problem>}
       {conversion?.state === "failed" && <Problem>{conversion.reason}</Problem>}
 
       <div className={styles.columns}>

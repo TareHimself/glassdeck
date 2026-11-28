@@ -1,3 +1,5 @@
+import { noteSaved, useApplyTheme } from "../applying";
+import { ApplyToKeyboard } from "../components/ApplyToKeyboard";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { commands, type ImageBackground, type LibraryError } from "../bindings";
@@ -16,6 +18,7 @@ export function ImagePage({ id }: { id: string }) {
   const back = useBack(LIBRARY);
   const [loaded, setLoaded] = useState<{ image: ImageBackground; at: number } | null>(null);
   const [problem, setProblem] = useState<LibraryError | null>(null);
+  const applying = useApplyTheme();
   const replacing = usePicker(commands.pickImage, (source) => commands.replaceImage(id, source));
   const replaced = replacing.picking.state === "chosen" ? replacing.picking.chosen.value : null;
 
@@ -27,17 +30,25 @@ export function ImagePage({ id }: { id: string }) {
   }, [id]);
 
   useEffect(() => {
-    if (replaced) setLoaded({ image: replaced, at: Date.now() });
-  }, [replaced]);
+    if (!replaced) return;
+    setLoaded({ image: replaced, at: Date.now() });
+    noteSaved(id);
+  }, [replaced, id]);
 
   if (!loaded) return problem ? <Problem>{describeLibraryError(problem)}</Problem> : <PageHeader back={back} title="" />;
   const { background, record, path, width, height } = loaded.image;
 
   return (
     <div className={styles.page}>
-      <PageHeader back={back} title={background.title} id={`${background.id} ${background.version}, image background`} />
+      <PageHeader
+        back={back}
+        title={background.title}
+        id={`${background.id} ${background.version}, image background`}
+        actions={<ApplyToKeyboard id={id} unsaved={false} save={async () => true} apply={applying} />}
+      />
 
       {problem && <Problem>{describeLibraryError(problem)}</Problem>}
+      {applying.problem && <Problem>{applying.problem}</Problem>}
       {replacing.problem && <Problem>{describeLibraryError(replacing.problem)}</Problem>}
 
       <div className={styles.columns}>
