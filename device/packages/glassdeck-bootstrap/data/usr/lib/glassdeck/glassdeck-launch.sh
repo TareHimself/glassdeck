@@ -98,9 +98,81 @@ confirm_when_up() {
 }
 confirm_when_up &
 
+# The receiver's own USB function, added beside garfield's in garfield's gadget only while the
+# receiver runs. Garfield's function is never touched; while ours is in, the device is composite and
+# gets its own bcdDevice, so Windows reads the descriptors that pick WinUSB again.
+GADGET=/sys/kernel/config/usb_gadget/g1
+FUNCTION=$GADGET/functions/ffs.glassdeck
+LINK=$GADGET/configs/c.1/ffs.glassdeck
+FFS=/dev/ffs-glassdeck
+COMPOSITE_BCD=0x4744
+SAVED_BCD=/tmp/glassdeck-usb-bcd
+SAVED_UDC=/tmp/glassdeck-usb-udc
+EP1_WAIT_S=10
+
+usb_udc() {
+    if [ -s "$SAVED_UDC" ]; then cat "$SAVED_UDC"; else ls /sys/class/udc | head -1; fi
+}
+
+# Unbinds the controller and adds our function; the receiver then writes its descriptors.
+usb_prepare() {
+    [ -d "$GADGET" ] || { log "no USB gadget at $GADGET"; return 1; }
+    udc=$(cat "$GADGET/UDC" 2>/dev/null)
+    [ -n "$udc" ] || { log "garfield's USB gadget isn't bound"; return 1; }
+    echo "$udc" > "$SAVED_UDC"
+    cat "$GADGET/bcdDevice" > "$SAVED_BCD" || return 1
+    echo "" > "$GADGET/UDC" || return 1
+    echo "$COMPOSITE_BCD" > "$GADGET/bcdDevice" || return 1
+    mkdir -p "$FUNCTION" || return 1
+    [ -e "$LINK" ] || ln -s "$FUNCTION" "$LINK" || return 1
+    mkdir -p "$FFS" || return 1
+    mountpoint -q "$FFS" || mount -t functionfs glassdeck "$FFS" || return 1
+}
+
+# FunctionFS makes ep1 once the receiver's descriptors are in; the controller binds only then.
+usb_bind_when_ready() {
+    waited=0
+    until [ -e "$FFS/ep1" ]; do
+        [ "$waited" -ge "$EP1_WAIT_S" ] && { log "the receiver didn't set up its USB function within ${EP1_WAIT_S}s"; return 1; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    usb_udc > "$GADGET/UDC"
+}
+
+# Takes our function out and binds garfield's gadget as it was. Safe to run at any stage.
+usb_down() {
+    echo "" > "$GADGET/UDC" 2>/dev/null
+    rm -f "$LINK"
+    umount -l "$FFS" 2>/dev/null
+    rmdir "$FUNCTION" 2>/dev/null
+    [ -s "$SAVED_BCD" ] && cat "$SAVED_BCD" > "$GADGET/bcdDevice"
+    usb_udc > "$GADGET/UDC" || log "couldn't bind the USB controller again"
+}
+
+run_receiver() {
+    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --packages "$ROOT/packages/" --state "$ROOT/state/" "$@" >> "$GLASSDECK/receiver.log" 2>&1
+}
+
 while true; do
-    "$BIN/glassdeck-receiver" --panel-rotation "$ROTATION" --packages "$ROOT/packages/" --state "$ROOT/state/" >> "$GLASSDECK/receiver.log" 2>&1
-    log "receiver exited with $?; restarting in ${RESTART_DELAY_S}s"
+    if usb_prepare; then
+        run_receiver --usb-function "$FFS" &
+        receiver=$!
+        if usb_bind_when_ready; then
+            log "USB link up"
+        else
+            usb_down
+        fi
+        wait "$receiver"
+        status=$?
+        usb_down
+    else
+        log "couldn't add the USB function; running the receiver without it"
+        usb_down
+        run_receiver
+        status=$?
+    fi
+    log "receiver exited with $status; restarting in ${RESTART_DELAY_S}s"
     tail -n 2000 "$GLASSDECK/receiver.log" > "$GLASSDECK/receiver.log.tmp" && mv -f "$GLASSDECK/receiver.log.tmp" "$GLASSDECK/receiver.log"
     sleep "$RESTART_DELAY_S"
 done

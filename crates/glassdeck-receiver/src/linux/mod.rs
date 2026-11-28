@@ -4,6 +4,7 @@ mod mpp;
 mod renderer;
 mod scanout;
 mod canvas;
+mod usb_link;
 mod web;
 
 use anyhow::Result;
@@ -13,6 +14,7 @@ pub use doorbell::Doorbell;
 pub use mpp::Decoder;
 pub use canvas::{CanvasBackground, FallbackCanvas, ImageBackground};
 pub use web::WebBackground;
+pub use usb_link::start_usb_link;
 
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:7878";
 pub const DEFAULT_PACKAGES: &str = "/var/lib/glassdeck/packages";

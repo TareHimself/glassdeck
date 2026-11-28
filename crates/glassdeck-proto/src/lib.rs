@@ -2,6 +2,7 @@
 
 pub mod compositor;
 mod session;
+pub mod usb;
 
 use std::fmt;
 use std::io::{self, Read};

@@ -13,6 +13,7 @@ mod runner;
 mod streams;
 mod system;
 mod theme;
+mod usb_link;
 mod whep;
 mod worker;
 
@@ -26,7 +27,7 @@ use clap::{Parser, Subcommand};
 
 use active::ActivePackages;
 use api::Api;
-use config::Paths;
+use config::{KeyboardAddress, Paths};
 use link::Uplink;
 use glassdeck_api::{Event, KeyboardLink};
 use runner::{Runner, RunnerEvent, StatusBoard};
@@ -43,9 +44,9 @@ struct Cli {
 enum Command {
     /// Run glassdeckd
     Run {
-        /// The keyboard's address, overriding config.json
+        /// `usb`, or the keyboard's network address, overriding config.json
         #[arg(long)]
-        keyboard: Option<SocketAddr>,
+        keyboard: Option<KeyboardAddress>,
         /// Write output to the log file and close this console, as when started at login
         #[arg(long)]
         log: bool,
@@ -83,7 +84,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
+fn run(keyboard: Option<KeyboardAddress>, log: bool) -> Result<()> {
     let paths = Paths::for_user()?;
     let _instance = system::single_instance(&paths.api)?;
     if log {
@@ -120,7 +121,11 @@ fn run(keyboard: Option<SocketAddr>, log: bool) -> Result<()> {
     let feeds = feeds::Feeds::new(token.clone());
     let runner = Runner::start(Arc::clone(&uplink), token.clone(), events, inbox, status, Arc::clone(&feeds))?;
     let linked = Arc::clone(&uplink);
-    let (to, rate) = (config.keyboard, config.link_bytes_per_sec);
+    let to = match config.keyboard {
+        KeyboardAddress::Network(address) => address,
+        KeyboardAddress::Usb => usb_link::start()?,
+    };
+    let rate = config.link_bytes_per_sec;
     thread::Builder::new().name("link".into()).spawn(move || link::run(&linked, to, rate))?;
     let held = ActivePackages::open(paths.active.clone())?;
     let (kept, active) = restored_theme(&paths)?;

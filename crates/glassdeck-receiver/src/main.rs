@@ -10,6 +10,8 @@ mod put;
 mod screen;
 mod stats;
 mod upstream;
+#[cfg(any(target_os = "linux", test))]
+mod usb_link;
 mod widgets;
 
 #[cfg(target_os = "linux")]
@@ -53,6 +55,10 @@ const STATS_INTERVAL: Duration = Duration::from_secs(1);
 struct Cli {
     #[arg(long, default_value = platform::DEFAULT_LISTEN)]
     listen: SocketAddr,
+    /// A FunctionFS mount for the receiver's own USB function, which carries the Link from the PC
+    /// to the listener above (the keyboard only)
+    #[arg(long)]
+    usb_function: Option<PathBuf>,
     /// A .ttf or .otf to draw labels and widgets with, instead of the built-in Noto Sans JP Bold
     #[arg(long)]
     font: Option<PathBuf>,
@@ -111,6 +117,9 @@ fn main() -> Result<()> {
     let widgets = widgets::start(config, Arc::clone(&tiles), Arc::clone(&upstream))?;
     let listener = TcpListener::bind(cli.listen).with_context(|| format!("listening on {}", cli.listen))?;
     println!("Waiting for streams on {}", cli.listen);
+    if let Some(function) = &cli.usb_function {
+        platform::start_usb_link(function, cli.listen)?;
+    }
 
     let mailbox = Arc::new(Mailbox::new(compositor.doorbell()));
     let director = Director::start(cli.packages, cli.state, compositor.registrar(), Arc::clone(&mailbox), Arc::clone(&upstream))?;

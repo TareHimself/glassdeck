@@ -2,7 +2,6 @@
 //! The routes and their types are in glassdeck-api. Handlers run glassdeckd's blocking work on
 //! tokio's blocking pool; `/events` streams what changes as it happens.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -50,7 +49,7 @@ pub struct Api {
     pub token: String,
     pub runner: Runner,
     pub uplink: Arc<Uplink>,
-    pub keyboard: SocketAddr,
+    pub keyboard: crate::config::KeyboardAddress,
     /// Copies of the active theme's packages, which host sides run from. Locked after `theme`.
     pub active: Mutex<ActivePackages>,
     /// Large uploads running now; the source stays paused until the last one is answered.
