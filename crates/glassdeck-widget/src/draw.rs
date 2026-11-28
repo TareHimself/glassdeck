@@ -94,6 +94,58 @@ pub enum Command {
     Arc { cx: f32, cy: f32, r: f32, from: f32, to: f32, width: f32, color: Color },
 }
 
+impl Command {
+    /// The same drawing, `by` further right and down.
+    pub fn translated(self, (dx, dy): (f32, f32)) -> Self {
+        let moved = |area: Area| Area { x: area.x + dx, y: area.y + dy, ..area };
+        match self {
+            Self::Text { text, x, y, size, color, align, fit, font } => Self::Text { text, x: x + dx, y: y + dy, size, color, align, fit, font },
+            Self::Rect { area, fill, stroke, radius } => Self::Rect { area: moved(area), fill, stroke, radius },
+            Self::Bar { fraction, area, color } => Self::Bar { fraction, area: moved(area), color },
+            Self::Graph { values, area, color, min, max } => Self::Graph { values, area: moved(area), color, min, max },
+            Self::Image { resource, area, radius } => Self::Image { resource, area: moved(area), radius },
+            Self::Arc { cx, cy, r, from, to, width, color } => Self::Arc { cx: cx + dx, cy: cy + dy, r, from, to, width, color },
+        }
+    }
+}
+
+/// What layout needs to know about text and images before they're drawn, from the fonts and pictures
+/// the drawing will use.
+pub trait Measure {
+    /// How wide `text` is in `font` (the built-in one for `None`) at `px`.
+    fn text_width(&mut self, font: Option<&Resource>, text: &str, px: f32) -> Result<f32>;
+    /// How tall one line of text is at `px`, from its top to the bottom of its descenders.
+    fn line_height(&mut self, font: Option<&Resource>, px: f32) -> Result<f32>;
+    /// An image's own size; `None` while a live resource hasn't arrived.
+    fn image_size(&mut self, resource: &ResourceRef) -> Result<Option<(f32, f32)>>;
+}
+
+/// Measures with the module's fonts and pictures, through the cache drawing fills anyway.
+pub struct Measurer<'a, 'r> {
+    pub font: &'a Font,
+    pub images: &'a mut ResourceCache,
+    pub read: ReadResource<'r>,
+}
+
+impl Measure for Measurer<'_, '_> {
+    fn text_width(&mut self, font: Option<&Resource>, text: &str, px: f32) -> Result<f32> {
+        let (font, _) = self.images.text_font(font, self.font, self.read)?;
+        Ok(text.chars().map(|c| font.metrics(c, px).advance_width).sum())
+    }
+
+    fn line_height(&mut self, font: Option<&Resource>, px: f32) -> Result<f32> {
+        let (font, _) = self.images.text_font(font, self.font, self.read)?;
+        Ok(font.horizontal_line_metrics(px).map_or(px * 1.2, |m| m.ascent - m.descent))
+    }
+
+    fn image_size(&mut self, resource: &ResourceRef) -> Result<Option<(f32, f32)>> {
+        Ok(self.images.get(resource, self.read)?.map(|image| match image {
+            Image::Raster(pixmap) => (pixmap.width() as f32, pixmap.height() as f32),
+            Image::Vector(tree) => (tree.size().width(), tree.size().height()),
+        }))
+    }
+}
+
 enum Image {
     Raster(Pixmap),
     Vector(Box<usvg::Tree>),

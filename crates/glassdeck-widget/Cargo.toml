@@ -12,3 +12,4 @@ glassdeck-messages.workspace = true
 glassdeck-package.workspace = true
 mlua = { version = "0.12.3", features = ["luau", "serde"] }
 resvg = { version = "0.50.0", default-features = false, features = ["raster-images"] }
+taffy = { version = "0.9", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }

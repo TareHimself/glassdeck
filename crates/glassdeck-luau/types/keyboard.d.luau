@@ -2,16 +2,22 @@
 -- Callbacks are registered on the injected `script` table, script.on_draw(function(ui) ... end), and the
 -- script keeps its state in its own locals.
 -- Colors are "#rrggbb" or "#rrggbbaa". Coordinates are local: (0, 0) is the widget's top-left.
+-- At the top level every call draws where its x and y say. Inside ui:row, ui:column or ui:stack the
+-- container places its children instead, and x, y, right and bottom need position = "absolute".
+
+-- Pixels, a share of the container like "50%", or "fit" (the default): the element's own size
+export type Length = number | string
 
 export type TextOptions = {
     x: number?,
     y: number?,
-    size: number?,
+    -- "fill", only in a container: the largest size that fits the text's box
+    size: (number | "fill")?,
     color: string?,
     -- "left", "center" or "right": within w when given, otherwise around x
     align: ("left" | "center" | "right")?,
     -- the width the text fits in; overflow says what happens when it's wider
-    w: number?,
+    w: Length?,
     -- "ellipsis" (the default) cuts it with "…"; "shrink" scales it down, to min_size; "wrap" breaks it onto
     -- more lines, at most lines or as many as fit h; "scroll" pans it back and forth; "clip" cuts it off
     overflow: ("ellipsis" | "shrink" | "wrap" | "scroll" | "clip")?,
@@ -19,24 +25,69 @@ export type TextOptions = {
     lines: number?,
     -- a multiple of size; 1.2 by default
     line_height: number?,
-    h: number?,
+    h: Length?,
     -- pixels per second, 30 by default, and seconds held at each end, 1.5 by default
     speed: number?,
     pause: number?,
     -- a .ttf or .otf the module bundles, from keyboard.resource(...); the built-in font otherwise
     font: Resource?,
+    grow: number?,
+    position: "absolute"?,
+    right: number?,
+    bottom: number?,
 }
 
-export type RectOptions = { fill: string?, stroke: string?, stroke_width: number?, radius: number? }
+-- In a container, ui:rect takes only these, plus w, h, grow and position
+export type RectOptions = {
+    fill: string?,
+    stroke: string?,
+    stroke_width: number?,
+    radius: number?,
+    w: Length?,
+    h: Length?,
+    grow: number?,
+    position: "absolute"?,
+    x: number?,
+    y: number?,
+    right: number?,
+    bottom: number?,
+}
 
--- x, y, w and h default to the whole module
-export type AreaOptions = { x: number?, y: number?, w: number?, h: number? }
+-- How an element sits in its container: grow shares out the spare room along it, position = "absolute"
+-- takes it out of the flow, pinned by x, y, right and bottom
+export type Placement = {
+    w: Length?,
+    h: Length?,
+    grow: number?,
+    position: "absolute"?,
+    x: number?,
+    y: number?,
+    right: number?,
+    bottom: number?,
+}
 
-export type ImageOptions = { x: number?, y: number?, w: number?, h: number?, radius: number? }
+-- At the top level x, y, w and h default to the whole module
+export type ImageOptions = Placement & { radius: number? }
 
-export type BarOptions = { x: number?, y: number?, w: number?, h: number?, color: string? }
+export type BarOptions = Placement & { color: string? }
 
-export type GraphOptions = { x: number?, y: number?, w: number?, h: number?, color: string?, min: number?, max: number? }
+export type GraphOptions = Placement & { color: string?, min: number?, max: number? }
+
+export type ContainerOptions = Placement & {
+    gap: number?,
+    -- every side, or each one
+    padding: (number | { top: number?, right: number?, bottom: number?, left: number? })?,
+    -- across the container
+    align: ("start" | "center" | "end" | "stretch")?,
+    -- along it
+    justify: ("start" | "center" | "end" | "between" | "around" | "evenly")?,
+    fill: string?,
+    stroke: string?,
+    stroke_width: number?,
+    radius: number?,
+}
+
+export type Box = { width: number, height: number }
 
 export type ArcOptions = { width: number?, color: string? }
 
@@ -46,13 +97,22 @@ declare extern type Ui with
 
     -- Drawing, only inside script.on_draw
     function text(self, text: string, options: TextOptions?): ()
-    function rect(self, x: number, y: number, w: number, h: number, options: RectOptions?): ()
+    -- ui:rect(x, y, w, h, options) at the top level, ui:rect(options) in a container
+    function rect(self, x: number | RectOptions?, y: number?, w: number?, h: number?, options: RectOptions?): ()
     function bar(self, fraction: number, options: BarOptions?): ()
     function graph(self, values: { number }, options: GraphOptions?): ()
     -- an .svg or .png: ui:image(keyboard.resource("icons/dot.svg"), ...)
     function image(self, image: Resource, options: ImageOptions?): ()
     -- degrees, clockwise from 12 o'clock
     function arc(self, cx: number, cy: number, r: number, from: number, to: number, options: ArcOptions?): ()
+
+    -- Containers: children run inside build and are placed in call order
+    function row(self, options: ContainerOptions?, build: () -> ()): ()
+    function column(self, options: ContainerOptions?, build: () -> ()): ()
+    -- children layered in one box
+    function stack(self, options: ContainerOptions?, build: () -> ()): ()
+    -- a laid out box, drawn by hand: inside draw, (0, 0) is the box's top-left and ui.width and ui.height its size
+    function box(self, options: Placement?, draw: (box: Box) -> ()): ()
 end
 
 -- Each callback is registered once; a second call is an error.

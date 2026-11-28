@@ -5,6 +5,7 @@
 mod draw;
 mod installing;
 mod instance;
+mod layout;
 mod live;
 mod text;
 mod ui;

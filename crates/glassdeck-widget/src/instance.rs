@@ -15,7 +15,7 @@ use glassdeck_package::{Package, ResourceKind};
 use mlua::{Function, Table, Value};
 
 use crate::Installed;
-use crate::draw::{self, Align, Area, Color, Command, ResourceCache};
+use crate::draw::{self, Align, Area, Color, Command, Measure, Measurer, ResourceCache};
 use crate::text::{Fit, Overflow, Scrolls};
 use crate::live::LiveCache;
 use crate::ui::Ui;
@@ -222,14 +222,18 @@ impl Instance {
             && (rerun || pan_due)
         {
             let started = Instant::now();
-            let commands = if rerun { live.draw() } else { Ok(std::mem::take(&mut self.drawn)) };
+            let package = Rc::clone(&self.installed.package);
+            let read = |resource: &ResourceRef| match resource {
+                ResourceRef::Packaged(packaged) => package.resource(packaged).map(Some),
+                ResourceRef::Live(name) => Ok(resources.get(name)),
+            };
+            let commands = if rerun {
+                live.draw(&mut Measurer { font, images: &mut self.images, read: &read })
+            } else {
+                Ok(std::mem::take(&mut self.drawn))
+            };
             let result = commands.map(|commands| self.drawn = commands).and_then(|()| {
                 let listed = started.elapsed();
-                let package = Rc::clone(&self.installed.package);
-                let read = |resource: &ResourceRef| match resource {
-                    ResourceRef::Packaged(packaged) => package.resource(packaged).map(Some),
-                    ResourceRef::Live(name) => Ok(resources.get(name)),
-                };
                 let tile = draw::render(&self.drawn, size, font, &mut self.images, &read, &mut self.scrolls, now)?;
                 self.scrolling = self.scrolls.finish_render();
                 self.last_scroll_frame = Some(now);
@@ -296,13 +300,14 @@ impl Live {
         Ok(Self { callbacks, messages, ui, vm })
     }
 
-    fn draw(&self) -> Result<Vec<Command>> {
+    fn draw(&self, measure: &mut dyn Measure) -> Result<Vec<Command>> {
         let on_draw = self.callbacks.borrow().on_draw.clone().context("script.on_draw was never called")?;
         self.ui.begin_draw();
-        let result = self.vm.call::<()>(&on_draw, self.ui.clone());
-        let commands = self.ui.end_draw();
-        result.context("in script.on_draw")?;
-        Ok(commands)
+        let commands = self.vm.call::<()>(&on_draw, self.ui.clone()).context("in script.on_draw").and_then(|()| {
+            self.ui.finish_draw(measure, &|draw, size| self.vm.call::<()>(draw, size))
+        });
+        self.ui.end_draw();
+        commands
     }
 }
 
@@ -580,6 +585,40 @@ mod tests {
         assert!(tile.pixels.iter().any(|p| *p != 0));
         assert!(instance.draw(&font(), &LiveCache::default()).is_none());
         assert!(matches!(instance.run, Run::Failed(ref m) if m.contains("took longer than")));
+    }
+
+    /// Set GLASSDECK_WIDGET_SHOTS to a folder to get a PNG of each.
+    #[test]
+    fn the_bundled_widgets_lay_out_at_any_size() {
+        let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../modules");
+        for name in ["clock", "weather"] {
+            let dir = std::env::temp_dir().join(format!("glassdeck-widget-bundled-{name}-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let _scratch = Scratch(dir.clone());
+            let package = pack_folder(&modules.join(name), &dir.join("widget.deck")).unwrap();
+            let package = Rc::new(package.write_keyboard_copy(&dir.join("keyboard.deck")).unwrap());
+            let modified = fs::metadata(package.path().unwrap()).unwrap().modified().unwrap();
+            for (w, h) in [(120, 60), (240, 100), (480, 120)] {
+                let installed = Installed { package: Rc::clone(&package), modified };
+                let placed = PlacedWidget { placement: Placement { x: 0, y: 0, w, h }, ..widget() };
+                let mut instance = Instance::start(0, &placed, installed, None, None);
+                let tile = instance.draw(&font(), &LiveCache::default()).expect("a first draw");
+                assert!(instance.error().is_none(), "{name} at {w}x{h}: {:?}", instance.error());
+                assert!(opaque_pixels(&tile) > 0, "{name} at {w}x{h} drew nothing");
+                if let Some(shots) = std::env::var_os("GLASSDECK_WIDGET_SHOTS") {
+                    save_png(&tile, (w, h), &PathBuf::from(shots).join(format!("{name}-{w}x{h}.png")));
+                }
+            }
+        }
+    }
+
+    fn save_png(tile: &DrawnTile, (w, h): (u32, u32), path: &std::path::Path) {
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).unwrap();
+        for (out, argb) in pixmap.pixels_mut().iter_mut().zip(&tile.pixels) {
+            let [b, g, r, _] = argb.to_le_bytes();
+            *out = resvg::tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255).unwrap();
+        }
+        pixmap.save_png(path).unwrap();
     }
 
     #[test]
