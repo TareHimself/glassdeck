@@ -534,6 +534,7 @@ fn show(cx: &mut Session, files: &[SourceFile], values: &serde_json::Map<String,
         network,
         wake: Some(Arc::clone(&cx.wake)),
     };
+    // A preview has no keyboard to lose: keyboard.connected() stays true and script.on_keyboard never fires.
     let host = HostSide::start(host_sources, &cx.services).unwrap_or_else(|e| {
         cx.log(LogSource::Host, LogLevel::Error, format!("{e:#}"));
         None

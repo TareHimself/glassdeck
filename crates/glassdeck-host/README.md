@@ -9,6 +9,7 @@ A widget's or background's host half. `HostSide::start(sources, services)` runs 
 | `Sources` | What a host side is made from: the two scripts, `bridge.luau`, the resource reader, the `network` hosts from `deck.json`, the message limit, `print` and the `net` wake callback |
 | `Services` | What every host side on a thread shares: system readings, now playing and the audio tap |
 | `apply_options(chosen, changed)` | `script.on_options`, or the implicit host's forward |
+| `set_keyboard(connected)` | The keyboard came or went: `keyboard.connected()` follows it and `script.on_keyboard` hears each change |
 | `take_options()` | The implicit host's options since the last call, latest only |
 | `take_messages()`, `deliver_message(message, payload)` | `bridge` messages to and from the keyboard half |
 | `take_live()` | Live resources made since the last call |
@@ -21,7 +22,8 @@ A widget's or background's host half. `HostSide::start(sources, services)` runs 
 
 | Global | Module | What it does |
 |---|---|---|
-| `keyboard` | | `keyboard.bridge.<msg>(value)` sends to the keyboard half; `keyboard.resource(name)` |
+| `keyboard` | | `keyboard.bridge.<msg>(value)` sends to the keyboard half; `keyboard.resource(name)`; `keyboard.connected()` |
+| `script` | | `script.on_keyboard(fn(connected))`: the keyboard came or went. Not called at start; a script starts as if it's there |
 | `host` | | `host.resource(name)`: a resource that stays on the host |
 | `live`, `image` | `api` | Live resources for the keyboard half; image fitting so the keyboard only decodes small PNGs |
 | `media` | `media` | Now playing, from Windows' media controls |

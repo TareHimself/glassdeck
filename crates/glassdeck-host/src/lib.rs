@@ -8,7 +8,7 @@ mod audio;
 mod media;
 mod net;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -64,6 +64,9 @@ struct HostVm {
     vm: Vm,
     live: LiveOutbox,
     on_options: Rc<RefCell<Option<Function>>>,
+    /// What `keyboard.connected()` answers; every script starts as if the keyboard were there.
+    keyboard: Rc<Cell<bool>>,
+    on_keyboard: Rc<RefCell<Option<Function>>>,
 }
 
 /// A package's host side: what it declares the user can set, and who turns that into data.
@@ -128,6 +131,16 @@ impl HostSide {
             None => Run::Forward { vm: Vm::new()?, slot: Rc::default() },
         };
         Ok(Some(Self { label, options, run }))
+    }
+
+    /// The keyboard came or went: `keyboard.connected()` follows it, and `script.on_keyboard` hears
+    /// each change. A host side without `host.luau` has nobody to tell.
+    pub fn set_keyboard(&self, connected: bool) -> Result<()> {
+        let Run::Script(host) = &self.run else { return Ok(()) };
+        let Some(connected) = keyboard_change(host.keyboard.get(), connected) else { return Ok(()) };
+        host.keyboard.set(connected);
+        let Some(on_keyboard) = host.on_keyboard.borrow().clone() else { return Ok(()) };
+        host.vm.run(&on_keyboard, connected).context("in script.on_keyboard")
     }
 
     pub fn first(&self) -> &Panel {
@@ -245,11 +258,15 @@ impl HostVm {
             vm.install_resources(&ResourceKind::ALL, reader)?;
         }
         let on_options = Rc::new(RefCell::new(None));
-        install_on_options(lua, &on_options)?;
+        install_callback(lua, "on_options", &on_options)?;
+        let on_keyboard = Rc::new(RefCell::new(None));
+        install_callback(lua, "on_keyboard", &on_keyboard)?;
         let messages = ScriptMessages::install(lua, read_messages(messages)?, Half::Host, message_limit)?;
+        let keyboard = Rc::new(Cell::new(true));
+        install_connected(lua, &keyboard)?;
         vm.seal()?;
         vm.load::<()>(script, "host.luau")?;
-        Ok(Self { messages, net, waits, vm, live, on_options })
+        Ok(Self { messages, net, waits, vm, live, on_options, keyboard, on_keyboard })
     }
 }
 
@@ -259,29 +276,45 @@ fn globals_set_net(lua: &Lua, net: &Rc<Net>, waits: &Waits, wait: Function) -> R
     globals.set("json", json_api(lua)?).lua_context("installing json")
 }
 
-/// `script.on_options(fn)`: what this script does when the options are set.
-fn install_on_options(lua: &Lua, slot: &Rc<RefCell<Option<Function>>>) -> Result<()> {
-    let globals = lua.globals();
-    let script: Table = match globals.get::<Value>("script").lua_context("reading script")? {
-        Value::Table(table) => table,
-        _ => {
-            let table = lua.create_table().lua_context("creating script")?;
-            globals.set("script", &table).lua_context("installing script")?;
-            table
-        }
-    };
+/// `script.<name>(fn)`, which registers what this script does when that happens; once only.
+fn install_callback(lua: &Lua, name: &'static str, slot: &Rc<RefCell<Option<Function>>>) -> Result<()> {
+    let script = global_table(lua, "script")?;
     let registered = Rc::clone(slot);
     let register = lua
         .create_function(move |_, callback: Function| {
             let mut slot = registered.borrow_mut();
             if slot.is_some() {
-                return Err(mlua::Error::runtime("script.on_options was already called; register one function"));
+                return Err(mlua::Error::runtime(format!("script.{name} was already called; register one function")));
             }
             *slot = Some(callback);
             Ok(())
         })
-        .lua_context("creating script.on_options")?;
-    script.set("on_options", register).lua_context("installing script.on_options")
+        .lua_context(&format!("creating script.{name}"))?;
+    script.set(name, register).lua_context(&format!("installing script.{name}"))
+}
+
+/// `keyboard.connected()`: whether the keyboard is there now.
+fn install_connected(lua: &Lua, keyboard: &Rc<Cell<bool>>) -> Result<()> {
+    let state = Rc::clone(keyboard);
+    let connected = lua.create_function(move |_, ()| Ok(state.get())).lua_context("creating keyboard.connected")?;
+    global_table(lua, "keyboard")?.set("connected", connected).lua_context("installing keyboard.connected")
+}
+
+fn global_table(lua: &Lua, name: &str) -> Result<Table> {
+    let globals = lua.globals();
+    match globals.get::<Value>(name).lua_context(&format!("reading {name}"))? {
+        Value::Table(table) => Ok(table),
+        _ => {
+            let table = lua.create_table().lua_context(&format!("creating {name}"))?;
+            globals.set(name, &table).lua_context(&format!("installing {name}"))?;
+            Ok(table)
+        }
+    }
+}
+
+/// The news for a script that knew `known` when the keyboard is now `now`: only a change.
+fn keyboard_change(known: bool, now: bool) -> Option<bool> {
+    (known != now).then_some(now)
 }
 
 fn audio_api(lua: &Lua, audio: &SharedAudio) -> Result<Table> {
@@ -313,3 +346,57 @@ fn system_api(lua: &Lua, system: &SharedSystem) -> Result<Table> {
     Ok(api)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_script_hears_only_when_the_keyboard_comes_or_goes() {
+        assert_eq!(keyboard_change(true, true), None);
+        assert_eq!(keyboard_change(true, false), Some(false));
+        assert_eq!(keyboard_change(false, true), Some(true));
+        assert_eq!(keyboard_change(false, false), None);
+    }
+
+    fn host(script: &str) -> HostSide {
+        let sources = Sources {
+            label: "test".into(),
+            options: None,
+            host: Some(script.into()),
+            reader: None,
+            message_limit: None,
+            print: None,
+            messages: None,
+            network: Vec::new(),
+            wake: None,
+        };
+        HostSide::start(sources, &Services::new(Arc::default())).unwrap().unwrap()
+    }
+
+    fn global<T: mlua::FromLua>(side: &HostSide, name: &str) -> T {
+        let Run::Script(host) = &side.run else { panic!("a script runs") };
+        host.vm.lua().globals().get(name).unwrap()
+    }
+
+    #[test]
+    fn on_keyboard_follows_the_keyboard_and_connected_answers_now() {
+        let side = host(
+            "heard = {}\nscript.on_keyboard(function(connected) table.insert(heard, connected); seen = keyboard.connected() end)\nat_start = keyboard.connected()",
+        );
+        for connected in [true, false, false, true] {
+            side.set_keyboard(connected).unwrap();
+        }
+        assert!(global::<bool>(&side, "at_start"));
+        let heard: Vec<bool> = global::<Table>(&side, "heard").sequence_values().map(|v| v.unwrap()).collect();
+        assert_eq!(heard, [false, true]);
+        assert!(global::<bool>(&side, "seen"));
+    }
+
+    #[test]
+    fn a_failing_on_keyboard_is_reported() {
+        let side = host("script.on_keyboard(function() error('boom') end)");
+        let error = side.set_keyboard(false).unwrap_err();
+        assert!(format!("{error:#}").contains("script.on_keyboard"), "{error:#}");
+    }
+}

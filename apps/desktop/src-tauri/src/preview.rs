@@ -345,6 +345,7 @@ pub(crate) fn show(
         network: package.manifest().network.clone(),
         wake: cx.wake.clone(),
     };
+    // A preview has no keyboard to lose: keyboard.connected() stays true and script.on_keyboard never fires.
     let host = match HostSide::start(sources, &cx.services) {
         Ok(host) => host,
         Err(e) => {

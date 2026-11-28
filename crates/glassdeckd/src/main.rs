@@ -100,11 +100,13 @@ fn run(keyboard: Option<KeyboardAddress>, log: bool) -> Result<()> {
     let (reported, keyboard_reports) = mpsc::channel::<()>();
     let (module_host, module_host_inbox) = mpsc::channel();
     let heard = module_host.clone();
+    let keyboard_news = module_host.clone();
     let uplink = Arc::new(Uplink::new(
         move |connection| {
             if connection == KeyboardLink::Connected {
                 let _ = link_up.send(RunnerEvent::LinkUp);
             }
+            let _ = keyboard_news.send(module_host::HostCommand::Keyboard(module_host::keyboard_is_there(&connection)));
             let _ = link_changed.send(Event::Link { connection });
         },
         move || {

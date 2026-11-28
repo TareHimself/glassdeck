@@ -18,6 +18,7 @@ use glassdeck_luau::messages::Sent;
 use glassdeck_luau::options::read_values;
 use glassdeck_luau::ResourceReader;
 use glassdeck_package::{Package, QualifiedId, is_package};
+use glassdeck_api::KeyboardLink;
 use glassdeck_proto::ScriptTarget;
 use glassdeck_proto::compositor::MAX_SCRIPT_PAYLOAD_LEN;
 
@@ -36,6 +37,13 @@ pub enum HostCommand {
     Message(ScriptTarget, Sent),
     /// A `net` answer arrived for some host side
     Answered,
+    /// The keyboard came or went, for every host side's `script.on_keyboard`
+    Keyboard(bool),
+}
+
+/// Whether host scripts can reach the keyboard: only over a Link that's up and speaks our version.
+pub fn keyboard_is_there(link: &KeyboardLink) -> bool {
+    matches!(link, KeyboardLink::Connected)
 }
 
 /// `commands` is the sender of `inbox`, for `net` answers to wake the loop.
@@ -62,6 +70,8 @@ struct Host {
     wake: Wake,
     background: Option<Running>,
     widgets: BTreeMap<u16, Running>,
+    /// Whether the keyboard is there, for host sides started later; it isn't until the Link says so.
+    keyboard: bool,
     /// The packages folder as the last scan saw it, to notice installs.
     seen: Option<Vec<(PathBuf, SystemTime)>>,
 }
@@ -120,7 +130,7 @@ fn widget_changes(running: &BTreeMap<u16, SideEntry>, wanted: &BTreeMap<u16, Sid
 impl Host {
     fn new(packages: PathBuf, theme: ActiveTheme, uplink: Arc<Uplink>, now_playing: SharedNowPlaying, wake: Wake) -> Self {
         let services = Services::new(now_playing);
-        Self { packages, theme, uplink, services, wake, background: None, widgets: BTreeMap::new(), seen: None }
+        Self { packages, theme, uplink, services, wake, background: None, widgets: BTreeMap::new(), keyboard: false, seen: None }
     }
 
     fn run(mut self, commands: &Receiver<HostCommand>) {
@@ -144,6 +154,13 @@ impl Host {
                     self.sync();
                 }
                 Ok(HostCommand::Message(from, sent)) => self.deliver(from, &sent),
+                Ok(HostCommand::Keyboard(connected)) => {
+                    self.keyboard = connected;
+                    self.widgets.retain(|_, widget| keeps_running_after(&widget.side, |side| side.set_keyboard(connected)));
+                    if self.background.as_ref().is_some_and(|b| !keeps_running_after(&b.side, |side| side.set_keyboard(connected))) {
+                        self.background = None;
+                    }
+                }
                 Ok(HostCommand::Answered) => {
                     self.widgets.retain(|_, widget| keeps_running_after(&widget.side, HostSide::run_answers));
                     if self.background.as_ref().is_some_and(|b| !keeps_running_after(&b.side, HostSide::run_answers)) {
@@ -290,6 +307,7 @@ impl Host {
             };
             let Some(side) = HostSide::start(sources, &self.services)? else { return Ok(None) };
             side.apply_options(&read_values(&label, side.first(), entry.options.iter()), None)?;
+            side.set_keyboard(self.keyboard)?;
             Ok(Some(side))
         })();
         match started {
@@ -338,6 +356,13 @@ fn snapshot(packages: &Path) -> Vec<(PathBuf, SystemTime)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_scripts_reach_the_keyboard_only_over_a_link_that_speaks_our_version() {
+        assert!(keyboard_is_there(&KeyboardLink::Connected));
+        assert!(!keyboard_is_there(&KeyboardLink::Unreachable));
+        assert!(!keyboard_is_there(&KeyboardLink::Incompatible { keyboard: 13, host: 14 }));
+    }
 
     fn entry(package: &str, at: u64, options: serde_json::Value) -> SideEntry {
         SideEntry {
