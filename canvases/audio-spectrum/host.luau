@@ -1,8 +1,8 @@
--- What the speakers play, 30 times a second; silence goes once rather than over and over.
+-- What the speakers play, 60 times a second; silence goes once rather than over and over.
 local BANDS = 24
 local silent = false
 
-every(1 / 30, function()
+every(1 / 60, function()
     local levels = audio.bands(BANDS)
     local quiet = true
     for _, level in levels do

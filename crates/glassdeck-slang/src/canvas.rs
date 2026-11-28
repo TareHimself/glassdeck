@@ -304,10 +304,15 @@ fn storage(slot: &InputSlot) -> String {
 fn load(slot: &InputSlot) -> String {
     let name = &slot.field.name;
     match slot.field.kind {
-        InputKind::FloatArray { len } => {
-            let element = slot.slang_type.split('[').next().expect("split always yields one part");
-            format!("for (int k = 0; k < {len}; k++) i.{name}[k] = {element}({INPUTS_UNIFORM}.{name}[k]);")
-        }
+        // Whole arrays at once: indexing the uniform per element makes Slang rebuild the std140
+        // array for every element, which costs a frame hundreds of milliseconds on the keyboard's Mali.
+        InputKind::FloatArray { len } => match slot.slang_type.split('[').next().expect("split always yields one part") {
+            "float" => format!("i.{name} = {INPUTS_UNIFORM}.{name};"),
+            element => format!(
+                "float gd_{name}[{len}] = {INPUTS_UNIFORM}.{name};
+    for (int k = 0; k < {len}; k++) i.{name}[k] = {element}(gd_{name}[k]);"
+            ),
+        },
         _ => format!("i.{name} = {}({INPUTS_UNIFORM}.{name});", slot.slang_type),
     }
 }
@@ -377,7 +382,8 @@ mod tests {
         assert!(glue.contains("    float3 night;\n    float2 roseAt;\n    float bands[8];\n"), "{glue}");
         assert!(glue.contains("uniform GdInputs gd_inputs;"));
         assert!(glue.contains("i.night = half3(gd_inputs.night);"));
-        assert!(glue.contains("for (int k = 0; k < 8; k++) i.bands[k] = half(gd_inputs.bands[k]);"));
+        assert!(glue.contains("float gd_bands[8] = gd_inputs.bands;
+    for (int k = 0; k < 8; k++) i.bands[k] = half(gd_bands[k]);"));
         assert!(glue.contains("return float4(gradient(p, gd_load()));"));
     }
 

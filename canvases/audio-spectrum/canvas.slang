@@ -8,6 +8,7 @@ struct Inputs {
 }
 
 [Canvas]
+[FrameRate(60)]
 half4 spectrum(Pixel p, Inputs i) {
     float x = p.uv.x * float(BANDS);
     int band = min(int(x), BANDS - 1);
