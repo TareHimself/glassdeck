@@ -287,11 +287,12 @@ function Installed({ keyboard }: { keyboard: KeyboardInfo }) {
 
 export function Keyboard() {
   const keyboard = useKeyboard((s) => s.keyboard);
+  const lookError = useKeyboard((s) => s.lookError);
   return (
     <div className={styles.page}>
       <PageHeader title="Keyboard" id={keyboard?.serial ? `Serial ${keyboard.serial}` : undefined} />
       {keyboard === null || keyboard.software === "absent" ? (
-        <div className={styles.hint}>{keyboard === null ? "Looking for the keyboard…" : "No keyboard found. Plug it into this PC."}</div>
+        <div className={styles.hint}>{keyboard === null ? (lookError ?? "Looking for the keyboard…") : "No keyboard found. Plug it into this PC."}</div>
       ) : keyboard.software === "flux" ? (
         <SetUp keyboard={keyboard} />
       ) : (

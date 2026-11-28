@@ -65,7 +65,9 @@ export function transfer(progress: string | null): { percent: number; amount: st
   return { percent: Math.min(100, Math.round((done / total) * 100)), amount: `${done.toFixed(1)} / ${Number(total.toFixed(1))} ${m[3]}` };
 }
 
-export function describeKeyboardError(error: KeyboardError): string {
+/** Tauri itself rejects with a plain string (a command it won't run), not one of our errors. */
+export function describeKeyboardError(error: KeyboardError | string): string {
+  if (typeof error === "string") return error;
   switch (error.kind) {
     case "busy":
       return "A backup is already running";
@@ -80,16 +82,19 @@ const FOLDER_KEY = "glassdeck.backupsFolder";
 type Store = {
   /** null until the first look. */
   keyboard: Keyboard | null;
+  /** Why the last look failed, if it did. */
+  lookError: string | null;
   folder: string | null;
   backups: BackupSummary[];
   run: Run;
 };
 
-export const useKeyboard = create<Store>(() => ({ keyboard: null, folder: null, backups: [], run: IDLE }));
+export const useKeyboard = create<Store>(() => ({ keyboard: null, lookError: null, folder: null, backups: [], run: IDLE }));
 
 export async function refreshKeyboard() {
   const looked = await commands.keyboard();
-  if (looked.status === "ok") useKeyboard.setState({ keyboard: looked.data });
+  if (looked.status === "ok") useKeyboard.setState({ keyboard: looked.data, lookError: null });
+  else useKeyboard.setState({ lookError: describeKeyboardError(looked.error) });
 }
 
 export async function refreshBackups() {

@@ -815,4 +815,20 @@ mod tests {
         let fresh = std::fs::read_to_string(&fresh).expect("reading the fresh bindings");
         assert!(committed == fresh, "src/bindings.ts is stale: run the app in debug once (pnpm tauri dev) and commit it");
     }
+
+    /// Tauri refuses a command missing from build.rs's manifest or the capability ("not allowed"),
+    /// which the mock frontend never shows.
+    #[test]
+    fn every_command_the_frontend_calls_is_allowed() {
+        let bindings = std::fs::read_to_string(BINDINGS).expect("reading the bindings");
+        let manifest = include_str!("../build.rs");
+        let capability = include_str!("../capabilities/default.json");
+        let called: Vec<&str> = bindings.split("__TAURI_INVOKE").filter(|call| call.starts_with('<')).filter_map(|call| call.split('"').nth(1)).collect();
+        assert!(!called.is_empty(), "no commands found in the bindings");
+        for command in called {
+            assert!(manifest.contains(&format!("\"{command}\"")), "{command} is missing from build.rs's command manifest");
+            let permission = format!("\"allow-{}\"", command.replace('_', "-"));
+            assert!(capability.contains(&permission), "{permission} is missing from capabilities/default.json");
+        }
+    }
 }
